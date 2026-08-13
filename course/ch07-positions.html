@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 7 — Position: Sinusoidal → Learned → RoPE → ALiBi</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>7 · Position: Sinusoidal → Learned → RoPE → ALiBi</h1>
+<p class="lead">
+Attention has a strange property: it does not know what order the tokens are in. <em>"Dog bites man"</em> and
+<em>"man bites dog"</em> produce identical outputs unless you do something about it. This chapter is about
+what that something is — ending with RoPE, which essentially every model shipped since 2023 uses.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; position enters through the q-k dot product</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; MLA has to split RoPE off to work<br><a href="ch17-scaling.html">Ch&nbsp;17</a> &mdash; context extension is RoPE scaling</div>
+<div class="mn orient"><span class="k">Why this chapter</span>Attention cannot see order. Everything here is about telling it.</div>
+
+<h2>7.1 · Proving attention is position-blind</h2>
+
+<p>This isn't a hand-wave. Let <span class="math">P</span> be a permutation matrix that shuffles the token
+order. Then:</p>
+
+<div class="mathblock">
+Attention(PQ, PK, PV) = softmax<big>(</big><span class="frac"><span class="n">PQ (PK)<sup>T</sup></span><span class="d">√d</span></span><big>)</big> PV
+= softmax<big>(</big>P <span class="frac"><span class="n">QK<sup>T</sup></span><span class="d">√d</span></span> P<sup>T</sup><big>)</big> PV
+= P · Attention(Q, K, V)
+<span class="lbl">shuffle the input → the output is shuffled the same way, but otherwise unchanged</span>
+</div>
+
+<p>This is called <b>permutation equivariance</b>. The set of tokens is all attention sees; their order is
+invisible. And the MLP that follows works on each position independently, so it can't fix this either.</p>
+
+<div class="box intuition">
+<span class="t">Why this is actually a feature</span>
+<p style="margin-bottom:0">An RNN gets order for free but pays with sequential computation. A transformer
+gets full parallelism but must be <i>told</i> about order. Because position is injected explicitly rather
+than baked into the architecture, we can <b>choose the encoding</b> — and that freedom is why context windows
+grew from 512 to 1M tokens. You cannot retrofit an RNN's notion of position; you can swap a transformer's.</p>
+</div>
+
+<h2>7.2 · Approach 1 — Sinusoidal (the original, 2017)</h2>
+
+<p>Add a fixed, hand-designed vector to each token's embedding before layer 1:</p>
+
+<div class="mathblock">
+PE<sub>(pos, 2i)</sub> = sin<big>(</big>pos / 10000<sup>2i/d</sup><big>)</big>
+&nbsp;&nbsp;&nbsp;&nbsp;
+PE<sub>(pos, 2i+1)</sub> = cos<big>(</big>pos / 10000<sup>2i/d</sup><big>)</big>
+</div>
+
+<pre><code>def sinusoidal(T, d):
+    pos = torch.arange(T)[:, None]                            # (T, 1)
+    i   = torch.arange(0, d, 2)[None, :]                      # (1, d/2)
+    ang = pos / (10000 ** (i / d))                            # (T, d/2)
+    pe  = torch.zeros(T, d)
+    pe[:, 0::2] = torch.sin(ang)
+    pe[:, 1::2] = torch.cos(ang)
+    return pe                                                  # (T, d)
+
+x = embed(ids) + sinusoidal(T, C)[None]        # (B,T,C) + (1,T,C)
+</code></pre>
+
+<p>Each dimension is a sine wave of a different frequency — fast on the left, slow on the right — so the
+vector encodes position the way a binary counter encodes a number, but continuously. The clever property is
+that <span class="math">PE<sub>pos+k</sub></span> is a <b>linear function</b> of
+<span class="math">PE<sub>pos</sub></span> (rotation by a fixed angle), so relative offsets are in principle
+learnable.</p>
+
+<p><b>Why it fell out of favour:</b> it's added <i>once</i> at the input, so by layer 20 the positional signal
+has been mangled by 20 rounds of attention and MLPs. Extrapolation beyond the trained length is poor in
+practice despite the theory.</p>
+
+<h2>7.3 · Approach 2 — Learned absolute (GPT-2, BERT, ViT)</h2>
+
+<pre><code>self.wpe = nn.Embedding(max_T, C)              # (1024, 768) for GPT-2
+x = self.wte(ids) + self.wpe(torch.arange(T))  # (B,T,C)
+</code></pre>
+
+<p>Simplest possible thing: a second lookup table indexed by position. Works well, and for a while was the
+default.</p>
+
+<div class="box gotcha">
+<span class="t">The hard ceiling</span>
+<p style="margin-bottom:0">The table has <code>max_T</code> rows. Position 1025 in a GPT-2 model
+<b>does not exist</b> — it's an index error, not a quality degradation. You cannot extend the context of a
+learned-absolute model without training new rows from scratch. This limitation, more than anything, is what
+pushed the field to relative schemes.</p>
+</div>
+
+<h2>7.4 · Approach 3 — RoPE (Rotary Position Embedding)</h2>
+
+<p>Su et al. (2021). The idea that won. Every one of Llama, Mistral, Qwen, Gemma, DeepSeek, Phi and GPT-NeoX
+uses it.</p>
+
+<div class="box intuition">
+<span class="t">The idea in one sentence</span>
+<p style="margin-bottom:0">Don't <b>add</b> anything to the embedding. Instead, <b>rotate</b> the query and
+key vectors by an angle proportional to their position — so that when you take their dot product, the
+angles subtract and what survives depends only on the <b>relative</b> distance.</p>
+</div>
+
+<h3>The 2D case</h3>
+
+<p>Take a pair of adjacent features and treat them as a point in a plane. For a token at position
+<span class="math">m</span>, rotate that point by <span class="math">mθ</span>:</p>
+
+<div class="mathblock">
+R<sub>m</sub> = <big>[</big> <span style="display:inline-block;text-align:center;line-height:1.4">cos mθ &nbsp;&nbsp;−sin mθ<br>sin mθ &nbsp;&nbsp;&nbsp;&nbsp;cos mθ</span> <big>]</big>
+</div>
+
+<p>Now the crucial algebra. Rotation matrices satisfy
+<span class="math">R<sub>m</sub><sup>T</sup>R<sub>n</sub> = R<sub>n−m</sub></span>, so:</p>
+
+<div class="mathblock" style="font-size:1.15em">
+⟨R<sub>m</sub>q, R<sub>n</sub>k⟩ = (R<sub>m</sub>q)<sup>T</sup>(R<sub>n</sub>k)
+= q<sup>T</sup>R<sub>m</sub><sup>T</sup>R<sub>n</sub>k
+= q<sup>T</sup>R<sub>n−m</sub>k
+<span class="lbl">the absolute positions m and n vanish — only (n − m) survives</span>
+</div>
+
+<p><b>That equation is the whole paper.</b> Absolute rotations applied separately to q and k produce an
+attention score that is a function of relative distance only, with zero parameters and no change to the
+attention formula itself.</p>
+
+<p>Drag the sliders. Notice how the rotation speed depends on which feature pair you're looking at:</p>
+
+<div data-viz="rope"></div>
+
+<h3>Scaling to <span class="math">d<sub>head</sub></span> dimensions</h3>
+
+<p>Split the head dimension into <span class="math">d/2</span> pairs, and give pair
+<span class="math">i</span> its own frequency:</p>
+
+<div class="mathblock">
+θ<sub>i</sub> = base<sup>−2i/d</sup>, &nbsp;&nbsp; i = 0, 1, …, d/2 − 1 &nbsp;&nbsp;&nbsp; (base = 10000 originally)
+</div>
+
+<p>Pair 0 rotates fast (full turn every ~6.3 tokens) and encodes fine local ordering; the last pair rotates
+extremely slowly and encodes coarse long-range position. One mechanism, all scales — the same logic as the
+sinusoidal frequencies, but applied multiplicatively inside attention instead of additively at the input.</p>
+
+<h3>Implementation</h3>
+
+<pre><code>def build_rope_cache(T, d_head, base=10000.0, device=None):
+    """Precompute cos/sin tables once; reuse every layer, every step."""
+    inv_freq = 1.0 / (base ** (torch.arange(0, d_head, 2, device=device).float() / d_head))
+    t = torch.arange(T, device=device).float()          # (T,)
+    freqs = torch.outer(t, inv_freq)                    # (T, d_head/2)
+    emb = torch.cat((freqs, freqs), dim=-1)             # (T, d_head)
+    return emb.cos(), emb.sin()                         # 2 × (T, d_head)
+
+def rotate_half(x):
+    x1, x2 = x.chunk(2, dim=-1)                         # split the head dim in half
+    return torch.cat((-x2, x1), dim=-1)
+
+def apply_rope(q, k, cos, sin):
+    # q, k: (B, n_head, T, d_head);  cos, sin: (T, d_head)
+    cos, sin = cos[None, None], sin[None, None]         # (1, 1, T, d_head)
+    q = q * cos + rotate_half(q) * sin
+    k = k * cos + rotate_half(k) * sin
+    return q, k
+</code></pre>
+
+<div class="box math-note">
+<span class="t">Two conventions, both correct</span>
+<p style="margin-bottom:0">The original paper pairs <b>adjacent</b> dimensions
+<code>(x0,x1), (x2,x3), …</code>. The HuggingFace/Llama implementation above pairs
+<code>(x0, x_{d/2}), (x1, x_{1+d/2}), …</code> — it splits the head in half instead. These are related by a
+fixed permutation of the feature axis, so they are <b>mathematically equivalent</b> (the model just learns
+its weights in the corresponding permuted basis). But they are <b>not interchangeable at inference</b>:
+loading Llama weights into an adjacent-pair implementation produces garbage. If you ever port RoPE between
+codebases, check this first.</p>
+</div>
+
+<h3>Where RoPE is applied — and where it isn't</h3>
+
+<pre><code>q = W_q(x).view(B, T, nh, hd).transpose(1, 2)     # (B, nh, T, hd)
+k = W_k(x).view(B, T, nh, hd).transpose(1, 2)
+v = W_v(x).view(B, T, nh, hd).transpose(1, 2)
+
+q, k = apply_rope(q, k, cos, sin)                  # ← q and k ONLY. Never v.
+
+out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+</code></pre>
+
+<p><b>V is never rotated.</b> Position matters for deciding <i>who to attend to</i> (which is the dot product,
+i.e. q and k). It should not distort the <i>content</i> being retrieved. Rotating v would make the same
+information mean different things at different positions.</p>
+
+<p>Also note: RoPE is applied <b>inside every layer</b>, freshly, on every forward pass. Unlike sinusoidal
+encoding, the positional signal cannot be washed out by depth.</p>
+
+<div class="quiz" data-title="Checkpoint 1 — RoPE">
+<div class="qitem" data-answer="2">
+  <div class="qq">What is the key mathematical property that makes RoPE encode <i>relative</i> position?</div>
+  <div class="opts">
+    <div class="opt">Rotations preserve vector norms</div>
+    <div class="opt">sin and cos are periodic</div>
+    <div class="opt">R<sub>m</sub><sup>T</sup>R<sub>n</sub> = R<sub>n−m</sub>, so absolute positions cancel in the dot product</div>
+    <div class="opt">The frequencies form a geometric series</div>
+  </div>
+  <div class="expl"><b>The composition property of rotations.</b> Options A and D are true statements about
+  RoPE (norm preservation is why it doesn't change vector magnitudes; the geometric frequency series gives
+  multi-scale coverage) but neither produces relative encoding. Only the group property
+  R<sub>m</sub><sup>T</sup>R<sub>n</sub> = R<sub>n−m</sub> makes the absolute positions cancel.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">Why is RoPE applied to q and k but not v?</div>
+  <div class="opts">
+    <div class="opt">It would be too slow</div>
+    <div class="opt">Position should influence <i>which</i> tokens are selected, not <i>what</i> those tokens contain</div>
+    <div class="opt">v has a different shape than q and k</div>
+    <div class="opt">It is applied to v in most implementations</div>
+  </div>
+  <div class="expl"><b>Separation of concerns.</b> q·k determines the attention weights — that's where
+  position belongs. v is the payload. Rotating v would mean the same retrieved fact gets a different vector
+  depending on where it sat, forcing the model to undo the rotation. (Note in GQA/MHA v often <i>does</i>
+  have the same shape as k — that's not the reason.)</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">A model is trained with RoPE at <code>base=10000</code> and 4k context. You run it at 32k
+  tokens with no other change. What happens?</div>
+  <div class="opts">
+    <div class="opt">It runs without error but quality degrades badly — the rotation angles are far outside the trained range</div>
+    <div class="opt">It raises an index error</div>
+    <div class="opt">It works perfectly — RoPE extrapolates by design</div>
+    <div class="opt">Only the first 4k tokens are used</div>
+  </div>
+  <div class="expl"><b>Runs, degrades.</b> Unlike a learned table there's no hard limit — you can compute
+  cos(m·θ) for any m. But the model never saw those angle regimes and generalises poorly. The fixes
+  (position interpolation, NTK-aware scaling, YaRN) are Chapter 17. This "silently gets worse rather than
+  crashing" behaviour is why long-context claims need to be benchmarked, not trusted.</div>
+</div>
+</div>
+
+<h2>7.5 · Approach 4 — ALiBi (and the "no positional encoding" result)</h2>
+
+<p><b>ALiBi</b> (Press et al. 2021) is almost aggressively simple: add a linear penalty to attention scores
+based on distance. No embeddings at all.</p>
+
+<pre><code># head h gets slope m_h; slopes form a geometric sequence, e.g. 1/2, 1/4, 1/8, ...
+scores = q @ k.transpose(-2,-1) / sqrt(d)
+scores = scores + m_h * (j - i)      # (j - i) <= 0 for causal, so this is a penalty
+</code></pre>
+
+<p>Distant tokens get systematically down-weighted, with different heads decaying at different rates — some
+near-sighted, some far-sighted. ALiBi extrapolates to longer sequences remarkably well and was used by
+BLOOM and MPT. It has largely lost to RoPE in new models, but the idea survives inside sliding-window
+attention.</p>
+
+<p><b>NoPE:</b> it turns out causally-masked decoders can learn position <i>implicitly</i> — the mask itself
+breaks the permutation symmetry, since token <code>i</code> sees exactly <code>i+1</code> tokens.
+Kazemnejad et al. (2023) showed NoPE models can match or beat explicit schemes on some length-generalisation
+tasks. It's not mainstream, but it's a good reminder that the "attention has no position" story is subtler
+for decoders than for encoders.</p>
+
+<h2>7.6 · The comparison table</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Scheme</th><th>Where applied</th><th>Params</th><th>Extrapolates?</th><th>Used by</th></tr></thead>
+<tbody>
+<tr><td><b>Sinusoidal</b></td><td>added at input</td><td>0</td><td>poorly</td><td>original Transformer</td></tr>
+<tr><td><b>Learned absolute</b></td><td>added at input</td><td>max_T · d</td><td>impossible (hard limit)</td><td>GPT-2, BERT, ViT</td></tr>
+<tr><td><b>T5 relative bias</b></td><td>added to scores</td><td>small (bucketed)</td><td>moderately</td><td>T5, UL2</td></tr>
+<tr><td><b>ALiBi</b></td><td>added to scores</td><td>0</td><td>well</td><td>BLOOM, MPT</td></tr>
+<tr><td><b>RoPE</b></td><td>rotates q, k in every layer</td><td>0</td><td>with scaling (YaRN etc.)</td><td><b>essentially everything since 2023</b></td></tr>
+<tr><td><b>NoPE</b></td><td>nothing</td><td>0</td><td>surprisingly well</td><td>research</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box sota">
+<span class="t">Where this stands in 2026</span>
+<p style="margin-bottom:0">RoPE is the default, and the interesting action has moved to <b>how you scale
+its base frequency</b> for long context. Llama 3 raised the base from 10,000 to <b>500,000</b> specifically
+to make 128k context viable — a one-line change with a large effect. Many current long-context models also
+interleave <b>local (sliding-window) RoPE layers</b> with a few <b>global</b> layers, so most layers only pay
+attention cost over a small window. Gemma 2/3 popularised that pattern. Chapter 17 covers the scaling
+methods properly.</p>
+</div>
+
+<h2>7.7 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">7.1</span><span class="ti">Demonstrate permutation equivariance</span><span class="lvl">warm-up</span></div>
+<div class="eb">
+<p>Build a 1-layer attention module with <b>no</b> positional encoding and no causal mask. Feed it
+<code>x</code> and <code>x[:, perm]</code> for a random permutation. Show
+<code>out[:, perm] == out_permuted</code>. Then add RoPE and show the property breaks.</p>
+<details class="reveal"><summary>Note</summary><div>
+<p style="margin-bottom:0">With a <b>causal mask</b> the equivariance already breaks, even without positional
+encoding — that's the NoPE observation from §7.5. To see clean equivariance you must remove the mask. This
+is a good exercise precisely because it forces you to notice that the mask is itself a source of positional
+information.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">7.2</span><span class="ti">Verify the relative-position property numerically</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>The claim is <span class="math">⟨R<sub>m</sub>q, R<sub>n</sub>k⟩</span> depends only on
+<span class="math">n − m</span>. Test it:</p>
+<pre><code>d = 64
+cos, sin = build_rope_cache(200, d)
+q, k = torch.randn(1,1,1,d), torch.randn(1,1,1,d)
+
+def score(m, n):
+    qm = q * cos[m] + rotate_half(q) * sin[m]
+    kn = k * cos[n] + rotate_half(k) * sin[n]
+    return (qm * kn).sum().item()
+
+print(score(5, 8), score(50, 53), score(100, 103))   # all offset +3
+print(score(5, 9))                                    # offset +4 → different
+</code></pre>
+<details class="reveal"><summary>Expected</summary><div>
+<p style="margin-bottom:0">The first three agree to ~6 decimal places. The fourth differs. If yours don't
+match, your <code>rotate_half</code> convention is inconsistent with your cos/sin table construction — the
+exact issue described in §7.4's convention box.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">7.3</span><span class="ti">Plot the frequency spectrum</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>For <code>d_head=128</code>, plot the <b>wavelength</b> (2π/θ_i, in tokens) of each RoPE pair
+<code>i = 0..63</code> on a log y-axis, for <code>base=10000</code> and <code>base=500000</code>.</p>
+<ol>
+<li>What is the shortest wavelength? The longest?</li>
+<li>How many pairs have wavelength longer than 4096 at each base?</li>
+<li>Explain in one sentence why raising the base helps long context.</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<ol>
+<li>Shortest is always 2π ≈ 6.28 tokens (i=0, θ=1). Longest at base=10000 is
+2π·10000<sup>126/128</sup> ≈ 5.9×10⁴ tokens; at base=500000 it's ≈ 3.0×10⁶ tokens.</li>
+<li>Roughly 21 of 64 pairs exceed 4096 tokens at base 10000; roughly 30 at base 500000.</li>
+<li>Raising the base <b>stretches all wavelengths</b>, so more dimensions still complete less than one full
+rotation across the whole context — meaning they encode position <i>unambiguously</i> rather than wrapping
+around. Dimensions that wrap many times within the context can't distinguish distance 100 from distance
+100 + wavelength.</li>
+</ol>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/2104.09864">Su et al. 2021 — RoFormer (RoPE)</a></li>
+<li><a href="https://blog.eleuther.ai/rotary-embeddings/">EleutherAI — Rotary Embeddings: A Relative Revolution</a> — the best intuitive explanation.</li>
+<li><a href="https://arxiv.org/abs/2108.12409">Press et al. 2021 — ALiBi</a></li>
+<li><a href="https://arxiv.org/abs/2305.19466">Kazemnejad et al. 2023 — The Impact of Positional Encoding on Length Generalization</a> (NoPE)</li>
+<li>Companion notebook: <code>notebooks/07_positions.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("07");</script>
+</body>
+</html>

@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 11 — Decoding and Sampling</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>11 · Decoding and Sampling</h1>
+<p class="lead">
+The model gives you a probability distribution over 128,000 tokens. Turning that into text is a separate
+algorithm with its own parameters — and those parameters change model behaviour more than most people
+realise. A "bad" model is quite often a well-trained model with a badly configured sampler.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; logits come out of the forward pass</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; this loop is quadratically wasteful — the cache fixes it<br><a href="ch15-serving.html">Ch&nbsp;15</a> &mdash; speculative decoding rewrites it again</div>
+<div class="mn orient"><span class="k">Why this chapter</span>The model gives a distribution. Turning it into text is a separate algorithm with its own bugs.</div>
+
+<h2>11.1 · The generation loop</h2>
+
+<pre><code>@torch.no_grad()
+def generate(model, ids, max_new=100, **sampler_kwargs):
+    for _ in range(max_new):
+        logits, _ = model(ids[:, -model.cfg.max_T:])   # (B, T, V)
+        next_logits = logits[:, -1, :]                 # (B, V) ← ONLY the last position
+        probs = process(next_logits, **sampler_kwargs) # (B, V)
+        nxt = torch.multinomial(probs, num_samples=1)  # (B, 1)
+        ids = torch.cat([ids, nxt], dim=1)             # (B, T+1)
+    return ids
+</code></pre>
+
+<div class="box gotcha">
+<span class="t">Two things to notice</span>
+<ol style="margin-bottom:0">
+<li><b><code>logits[:, -1, :]</code></b> — the model computed a prediction for <i>every</i> position, but
+during generation you only want the last one. The other T−1 predictions are thrown away. (During
+<i>training</i> you use all of them; that asymmetry is exactly what the causal mask buys you.)</li>
+<li><b>This loop is quadratically wasteful.</b> Every iteration re-runs the whole prefix through the model.
+That is what the KV cache fixes — Chapter 12.</li>
+</ol>
+</div>
+
+<h2>11.2 · The sampling strategies</h2>
+
+<p>Play with this before reading on. Move temperature first, then try top-k and top-p:</p>
+
+<div data-viz="softmax" data-logits="4.1,3.6,2.9,2.2,1.4,0.6,-0.3,-1.8"
+     data-labels="mat,floor,ground,rug,chair,table,idea,purple"></div>
+
+<h3>Greedy — always take the argmax</h3>
+<pre><code>nxt = logits.argmax(dim=-1, keepdim=True)
+</code></pre>
+<p>Deterministic and locally optimal. Also, for open-ended text, <b>reliably degenerate</b>: it falls into
+repetition loops ("I think that I think that I think…"). The reason is subtle and worth knowing —
+high-probability sequences are not typical sequences. Natural human text is full of moderately surprising
+choices, and always picking the safest token produces text that is statistically <i>too</i> likely to be
+human.</p>
+
+<p>Greedy <i>is</i> the right choice for tasks with one correct answer: extraction, classification,
+structured output, most tool-calling.</p>
+
+<h3>Temperature — reshape before sampling</h3>
+<div class="mathblock">
+p<sub>i</sub> = softmax(z<sub>i</sub> / T)
+</div>
+<pre><code>probs = (logits / temperature).softmax(dim=-1)
+</code></pre>
+<div class="tw">
+<table>
+<thead><tr><th>T</th><th>Effect</th><th>Use for</th></tr></thead>
+<tbody>
+<tr><td>→ 0</td><td>approaches greedy (one spike)</td><td>deterministic tasks</td></tr>
+<tr><td>0.6–0.8</td><td>focused but not rigid</td><td>most assistant use, code</td></tr>
+<tr><td>1.0</td><td>the model's own distribution, untouched</td><td>calibration studies</td></tr>
+<tr><td>&gt; 1.2</td><td>flattened — rare tokens get real probability</td><td>brainstorming, poetry; degrades fast</td></tr>
+</tbody>
+</table>
+</div>
+<p class="tiny">Note temperature divides <b>logits</b>, not probabilities. Dividing probabilities and
+renormalising is a different (and wrong) operation.</p>
+
+<h3>Top-k — keep the k best</h3>
+<pre><code>v, ix = logits.topk(k, dim=-1)
+logits = torch.full_like(logits, float('-inf')).scatter_(-1, ix, v)
+probs = logits.softmax(dim=-1)
+</code></pre>
+<p>Simple, but the fixed <code>k</code> is the flaw. When the model is confident (after "the capital of
+France is"), k=50 lets in 49 nonsense options. When it's genuinely uncertain (start of a story), k=50 cuts
+off legitimate continuations.</p>
+
+<h3>Top-p / nucleus — keep the smallest set summing to p</h3>
+<pre><code>sorted_logits, sorted_ix = logits.sort(descending=True, dim=-1)
+cum = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
+remove = cum - sorted_logits.softmax(dim=-1) > p       # keep the token that crosses p
+remove_orig = remove.scatter(-1, sorted_ix, remove)
+logits = logits.masked_fill(remove_orig, float('-inf'))
+</code></pre>
+<p><b>Adaptive</b>, which is why it won. Confident step → the nucleus might be 1 token. Uncertain step →
+it might be 200. <code>p = 0.9–0.95</code> is the common default, and it's the single most important
+sampler knob after temperature.</p>
+
+<h3>Min-p — the newer alternative</h3>
+<pre><code>threshold = min_p * probs.max(dim=-1, keepdim=True).values
+probs = probs.masked_fill(probs < threshold, 0)
+</code></pre>
+<p>Keep tokens with probability at least <code>min_p ×</code> (the top token's probability). Scales the
+cutoff with model confidence directly rather than through a cumulative sum. It's noticeably more robust than
+top-p at high temperature, and has been adopted across llama.cpp, vLLM and HuggingFace.</p>
+
+<h3>Repetition controls</h3>
+<pre><code># Penalise tokens already present (applied to logits, before softmax)
+for tok in set(generated_ids):
+    logits[tok] /= penalty if logits[tok] > 0 else 1/penalty   # penalty ≈ 1.1
+
+# Or: frequency / presence penalties (OpenAI-style, additive)
+logits[tok] -= frequency_penalty * count[tok] + presence_penalty * (count[tok] > 0)
+</code></pre>
+<div class="box warn">
+<span class="t">Use repetition penalties sparingly</span>
+<p style="margin-bottom:0">They are blunt instruments. A penalty of 1.2 will suppress <code>"the"</code> and
+<code>"("</code> just as hard as it suppresses a looping phrase, and in code generation it will actively
+break syntax by discouraging required repeated tokens. If a model loops badly, the usual real fixes are a
+better sampler configuration or a better model — not a heavier penalty.</p>
+</div>
+
+<h2>11.3 · Beam search, and why LLMs don't use it</h2>
+
+<p>Beam search keeps the <code>k</code> highest-probability <i>sequences</i> rather than tokens, expanding
+all of them each step. It's the right algorithm when there is a single correct output and you want to
+maximise sequence likelihood.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th></th><th>Beam search</th><th>Sampling</th></tr></thead>
+<tbody>
+<tr><td>Optimises</td><td>total sequence probability</td><td>draws from the distribution</td></tr>
+<tr><td>Output diversity</td><td>very low</td><td>tunable</td></tr>
+<tr><td>Cost</td><td>k× the compute and k× the KV cache</td><td>1×</td></tr>
+<tr><td>Good for</td><td>translation, ASR, constrained transduction</td><td>open-ended generation</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>For open-ended text, higher sequence probability actively makes output <i>worse</i> — the same "likely ≠
+typical" problem as greedy, amplified. Holtzman et al.'s "The Curious Case of Neural Text Degeneration"
+(2019) demonstrated this and introduced nucleus sampling as the fix. Beam search is still standard in
+Whisper and translation models, where there genuinely is a right answer.</p>
+
+<div class="quiz" data-title="Checkpoint 1 — samplers">
+<div class="qitem" data-answer="2">
+  <div class="qq">Why does top-p generally beat top-k?</div>
+  <div class="opts">
+    <div class="opt">It's faster to compute</div>
+    <div class="opt">It never truncates the distribution</div>
+    <div class="opt">The number of candidates adapts to the model's confidence at each step</div>
+    <div class="opt">It works better with high temperature</div>
+  </div>
+  <div class="expl"><b>Adaptivity.</b> A fixed k is wrong in both directions — too permissive when the model
+  is certain, too restrictive when it isn't. Top-p keeps a variable-sized set defined by probability mass.
+  (It's actually slightly <i>slower</i> — it needs a sort.)</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">You set <code>temperature=0</code> and <code>top_p=0.9</code>. What happens?</div>
+  <div class="opts">
+    <div class="opt">Greedy decoding — temperature 0 collapses to argmax and top-p becomes irrelevant</div>
+    <div class="opt">A division-by-zero error</div>
+    <div class="opt">The nucleus is applied first, then greedy within it — same as top-p alone</div>
+    <div class="opt">Random sampling from the top 90%</div>
+  </div>
+  <div class="expl"><b>Greedy.</b> Most implementations special-case T=0 to argmax (rather than actually
+  dividing by zero). The top token has probability ~1.0, so the 0.9 nucleus contains exactly one token
+  anyway. <b>Setting both is a very common source of confusion</b> — people tune top_p and see no effect
+  because temperature 0 already decided everything.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">A code-generation model keeps producing repeated lines. Best first intervention?</div>
+  <div class="opts">
+    <div class="opt">Set repetition_penalty=1.5</div>
+    <div class="opt">Check the prompt format and chat template, then try modest temperature (0.2–0.6) with top-p</div>
+    <div class="opt">Increase temperature to 1.5</div>
+    <div class="opt">Switch to beam search</div>
+  </div>
+  <div class="expl"><b>Check the format first.</b> Looping in an instruct model is very often a chat-template
+  mismatch (Ch 3) rather than a sampler problem. A heavy repetition penalty is actively harmful for code —
+  it discourages the repeated <code>    </code>, <code>)</code>, and keyword tokens that valid syntax
+  requires. High temperature makes code worse, and beam search makes it repetitive.</div>
+</div>
+</div>
+
+<h2>11.4 · Constrained decoding</h2>
+
+<p>If you need output to be valid JSON or match a grammar, don't ask nicely — <b>make invalid tokens
+impossible</b>:</p>
+
+<pre><code># At each step, a state machine tells you which tokens are legal.
+allowed = grammar.allowed_token_ids(state)      # e.g. after '{' only '"' or '}' is valid
+logits[~allowed] = float('-inf')
+</code></pre>
+
+<p>This gives a <b>100% guarantee</b> of syntactic validity — you cannot generate malformed JSON because
+malformed tokens have zero probability. Implementations: <code>outlines</code>, <code>guidance</code>,
+llama.cpp's GBNF grammars, vLLM's structured-output backends, and the OpenAI/Anthropic structured-output
+APIs.</p>
+
+<div class="box warn">
+<span class="t">Constrained ≠ correct</span>
+<p style="margin-bottom:0">You are guaranteed valid <i>syntax</i>, not valid <i>content</i>. Forcing a schema
+can also hurt quality: if the model wants to reason before answering and the grammar forbids it, you've
+removed its working space. The usual fix is a two-stage approach — free-form reasoning first, then a
+constrained extraction pass.</p>
+</div>
+
+<h2>11.5 · Recommended settings</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Task</th><th>Temperature</th><th>Top-p</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Factual Q&amp;A, extraction</td><td>0</td><td>—</td><td>greedy; you want reproducibility</td></tr>
+<tr><td>Code generation</td><td>0 – 0.2</td><td>0.95</td><td>no repetition penalty</td></tr>
+<tr><td>General assistant</td><td>0.7</td><td>0.9</td><td>the usual default</td></tr>
+<tr><td>Creative writing</td><td>0.9 – 1.1</td><td>0.95</td><td>or min_p ≈ 0.05 at higher T</td></tr>
+<tr><td>Brainstorming (want variety)</td><td>1.0+</td><td>0.98</td><td>sample n times rather than raising T further</td></tr>
+<tr><td>Reasoning models</td><td>~0.6</td><td>0.95</td><td>often specified by the model card — follow it</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box sota">
+<span class="t">Note on reasoning models</span>
+<p style="margin-bottom:0">Models trained with RL on verifiable rewards (Chapter 21) frequently have
+<b>publisher-specified</b> sampling parameters, and deviating measurably hurts benchmark scores — greedy
+decoding in particular can cause repetition loops in some of them. This is a real behavioural difference
+from base/instruct models. Always read the model card's recommended settings before benchmarking anything.</p>
+</div>
+
+<h2>11.6 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">11.1</span><span class="ti">Implement every sampler</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Write <code>sample(logits, temperature, top_k, top_p, min_p)</code> handling all combinations, in the
+correct order: <b>temperature → top-k → top-p → min-p → renormalise → sample</b>. Test that
+<code>temperature=0</code> gives argmax and that each filter reduces the support as expected.</p>
+<details class="reveal"><summary>Solution</summary><div>
+<pre><code>def sample(logits, temperature=1.0, top_k=0, top_p=1.0, min_p=0.0):
+    if temperature == 0:
+        return logits.argmax(-1, keepdim=True)
+
+    logits = logits / temperature
+
+    if top_k > 0:
+        kth = logits.topk(min(top_k, logits.size(-1)), dim=-1).values[..., -1:]
+        logits = logits.masked_fill(logits < kth, float('-inf'))
+
+    if top_p < 1.0:
+        sl, si = logits.sort(descending=True, dim=-1)
+        cum = sl.softmax(-1).cumsum(-1)
+        drop = cum - sl.softmax(-1) > top_p        # keep the crossing token
+        logits = logits.masked_fill(drop.scatter(-1, si, drop), float('-inf'))
+
+    probs = logits.softmax(-1)
+
+    if min_p > 0:
+        probs = probs.masked_fill(probs < min_p * probs.amax(-1, keepdim=True), 0)
+        probs = probs / probs.sum(-1, keepdim=True)
+
+    return torch.multinomial(probs, 1)
+</code></pre>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">11.2</span><span class="ti">Map the temperature–quality curve</span><span class="lvl">exploration</span></div>
+<div class="eb">
+<p>With your Chapter 10 Shakespeare model, generate 500 characters at
+<code>T ∈ {0.1, 0.5, 0.8, 1.0, 1.3, 2.0}</code>. For each, measure: distinct-token ratio (unique/total),
+longest repeated substring, and your own 1–5 readability score.</p>
+<details class="reveal"><summary>What you'll see</summary><div>
+<p style="margin-bottom:0">T=0.1 produces loops and a low distinct ratio. T=2.0 produces high diversity and
+non-words. The readability peak is usually 0.7–0.9, and — importantly — <b>the diversity and quality metrics
+peak at different temperatures</b>. There is no single best T; there's a trade-off curve, and where you sit
+on it should be a product decision.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">11.3</span><span class="ti">Reproduce neural text degeneration</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>Using GPT-2, generate 200 tokens from the same prompt with (a) greedy and (b) top-p 0.95. Then compute,
+for both outputs and for a real human paragraph, the average <code>−log p</code> the model assigns to each
+token.</p>
+<details class="reveal"><summary>The result, and why it matters</summary><div>
+<p style="margin-bottom:0">Greedy text has <i>much lower</i> average surprisal than human text. Nucleus text
+sits close to the human value. This is Holtzman et al.'s central figure: <b>human language is not the most
+probable language.</b> Maximising likelihood at generation time moves you away from the distribution you
+trained to match — a genuinely counterintuitive result, and the reason nobody uses greedy decoding for prose.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/1904.09751">Holtzman et al. 2019 — The Curious Case of Neural Text Degeneration</a> — the nucleus sampling paper.</li>
+<li><a href="https://arxiv.org/abs/2407.01082">Nguyen et al. 2024 — Min-p sampling</a></li>
+<li><a href="https://huggingface.co/blog/how-to-generate">HuggingFace — How to generate text</a></li>
+<li><a href="https://github.com/dottxt-ai/outlines">outlines</a> — structured generation via token masking.</li>
+<li>Companion notebook: <code>notebooks/11_decoding.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("11");</script>
+</body>
+</html>

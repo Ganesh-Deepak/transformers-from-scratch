@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 4 — Embeddings and the Residual Stream</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>4 · Embeddings and the Residual Stream</h1>
+<p class="lead">
+Two ideas here. The first is mechanical and easy: an embedding is a lookup table. The second is the most
+useful mental model in this entire course — <em>the residual stream</em> — and it is what turns a transformer
+from "a stack of mystery boxes" into something you can reason about.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch03-tokenization.html">Ch&nbsp;03</a> &mdash; you need token ids before you can look them up</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; every block reads and writes this stream<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; the stream is the model's spine</div>
+<div class="mn orient"><span class="k">Why this chapter</span>The residual stream is the single most useful mental model in this course.</div>
+
+<h2>4.1 · An embedding is a lookup, not a matmul</h2>
+
+<p><code>nn.Embedding(V, C)</code> holds a single weight matrix of shape <code>(V, C)</code>: one row per
+vocabulary entry, each row a <code>C</code>-dimensional vector.</p>
+
+<pre><code>import torch, torch.nn as nn
+
+V, C = 50257, 768
+emb = nn.Embedding(V, C)
+emb.weight.shape                  # (50257, 768)  → 38.6M parameters
+
+ids = torch.tensor([[15496, 995, 0],
+                    [  464, 3797, 3332]])    # (B=2, T=3)
+x = emb(ids)
+x.shape                           # (2, 3, 768)   ← (B, T, C)
+</code></pre>
+
+<div class="box intuition">
+<span class="t">What just happened, shape-wise</span>
+<p style="margin-bottom:0">Every <b>integer</b> in a <code>(B, T)</code> tensor was replaced by a
+<b>vector of length C</b>. So the rank went up by one and the last axis appeared:
+<code>(B, T) → (B, T, C)</code>. This is the only place in the whole model where the rank increases like
+this. From here to the very end, the shape stays <code>(B, T, C)</code>.</p>
+</div>
+
+<div data-viz="tensor" data-dims="2,3,8" data-names="batch,token,embedding"
+     data-title="After embedding: (B=2, T=3, C=8)"
+     data-sub="Each row of 8 squares is one token's vector. In a real model that row is 768–16384 wide."></div>
+
+<h3>It is equivalent to a one-hot matmul (but never implemented that way)</h3>
+
+<div class="mathblock">
+onehot(<span class="num">i</span>) &nbsp;·&nbsp; W<sub>E</sub> &nbsp;=&nbsp; row <span class="num">i</span> of W<sub>E</sub>
+<span class="lbl">(1, V) @ (V, C) → (1, C)</span>
+</div>
+
+<pre><code># These are numerically identical:
+onehot = torch.zeros(1, V); onehot[0, 15496] = 1.0
+(onehot @ emb.weight)          # (1, 768)  — 50257 multiplies, 50256 of them by zero
+emb.weight[15496]              # (768,)    — one memory read
+</code></pre>
+
+<p>The one-hot view is conceptually useful (it explains why an embedding layer <i>is</i> a linear layer, and
+why gradients flow to exactly one row per token). The lookup view is what actually runs.</p>
+
+<div class="box math-note">
+<span class="t">Consequence: embeddings are sparse to train</span>
+<p style="margin-bottom:0">Each training step only updates the rows for tokens that actually appeared in the
+batch. A token appearing once in 10 billion gets one gradient update, ever — which is precisely the
+mechanism behind the under-trained "glitch tokens" from Chapter 3.</p>
+</div>
+
+<h2>4.2 · Weight tying</h2>
+
+<p>At the end of the model you need to go the other way: from a <code>C</code>-dimensional vector back to a
+score for every vocabulary entry.</p>
+
+<pre><code>lm_head = nn.Linear(C, V, bias=False)     # weight shape (V, C)
+logits = lm_head(x)                        # (B, T, C) → (B, T, V)
+</code></pre>
+
+<p>Notice <code>lm_head.weight</code> has shape <code>(V, C)</code> — <b>the same shape as the embedding
+matrix.</b> That is not a coincidence, and many models share the same tensor for both:</p>
+
+<pre><code>model.lm_head.weight = model.embed.weight     # weight tying
+</code></pre>
+
+<div class="tw">
+<table>
+<thead><tr><th>Approach</th><th>Params</th><th>Used by</th><th>Rationale</th></tr></thead>
+<tbody>
+<tr><td><b>Tied</b></td><td>V·C</td><td>GPT-2, Gemma, Qwen3-small, most &lt;3B models</td><td>Saves a lot of parameters when V·C is a big fraction of the model. Acts as a regulariser.</td></tr>
+<tr><td><b>Untied</b></td><td>2·V·C</td><td>Llama-3-8B+, DeepSeek-V3, most large models</td><td>"What a token means as input" and "what predicts it as output" are genuinely different functions. At large scale the extra parameters are cheap and help.</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Rule of thumb: <b>tie when the model is small</b> (embeddings dominate the parameter count),
+<b>untie when it's large</b> (they're a rounding error and the extra capacity pays for itself).</p>
+
+<h2>4.3 · The residual stream — the model you should carry in your head</h2>
+
+<p>Here is the mental model. It comes from mechanistic interpretability work at Anthropic, and once you have
+it, transformers stop looking like a stack of boxes.</p>
+
+<div class="box intuition">
+<span class="t">The residual stream</span>
+<p>A transformer maintains, for each token position, <b>one vector of size <code>d_model</code></b> that
+persists from the embedding all the way to the output. Call it the <b>residual stream</b>.</p>
+<p style="margin-bottom:0">Every layer <b>reads</b> from the stream, computes something, and <b>adds</b> its
+result back. No layer ever <i>replaces</i> the stream. It is a running total — a shared blackboard that every
+layer writes to and every later layer can read.</p>
+</div>
+
+<pre><code>x = embed(tokens)                 # (B, T, C)  ← the stream is born
+
+for block in blocks:
+    x = x + block.attn(block.ln1(x))     # attention writes into the stream
+    x = x + block.mlp (block.ln2(x))     # MLP writes into the stream
+
+logits = lm_head(final_norm(x))   # (B, T, V) ← the stream is read out
+</code></pre>
+
+<p>Look at the shape of <code>x</code>. It is <code>(B, T, C)</code> on <i>every single line</i>. A 70-billion
+parameter model with 80 layers has exactly one tensor shape running through its spine.</p>
+
+<figure>
+<svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 z" fill="var(--accent,#0B6E62)"/>
+    </marker>
+    <marker id="ar2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 z" fill="var(--ink-3,#6E7885)"/>
+    </marker>
+  </defs>
+  <!-- the stream -->
+  <line x1="60" y1="270" x2="60" y2="30" stroke="var(--accent,#0B6E62)" stroke-width="7" opacity=".35"/>
+  <line x1="60" y1="270" x2="60" y2="30" stroke="var(--accent,#0B6E62)" stroke-width="2.5" marker-end="url(#ar)"/>
+  <text x="30" y="155" fill="var(--accent,#0B6E62)" font-size="12" font-family="monospace" font-weight="700"
+        transform="rotate(-90 30 155)" text-anchor="middle">residual stream (B, T, C)</text>
+
+  <!-- blocks -->
+  <g font-family="monospace" font-size="11.5">
+    <!-- attn 1 -->
+    <rect x="150" y="215" width="130" height="42" rx="8" fill="var(--surface,#fff)" stroke="var(--dim-1,#A8761C)" stroke-width="1.4"/>
+    <text x="215" y="240" fill="var(--dim-1,#A8761C)" text-anchor="middle">Attention 1</text>
+    <path d="M60 250 H150" stroke="var(--ink-3,#6E7885)" stroke-width="1.3" fill="none" marker-end="url(#ar2)"/>
+    <path d="M280 236 H330 V222 H62" stroke="var(--dim-4,#5A7A2E)" stroke-width="1.3" fill="none" marker-end="url(#ar2)"/>
+    <circle cx="60" cy="222" r="7" fill="var(--paper,#FAFAF9)" stroke="var(--dim-4,#5A7A2E)" stroke-width="1.5"/>
+    <text x="60" y="226" fill="var(--dim-4,#5A7A2E)" text-anchor="middle" font-size="11">+</text>
+
+    <!-- mlp 1 -->
+    <rect x="150" y="155" width="130" height="42" rx="8" fill="var(--surface,#fff)" stroke="var(--dim-3,#A8484F)" stroke-width="1.4"/>
+    <text x="215" y="180" fill="var(--dim-3,#A8484F)" text-anchor="middle">MLP 1</text>
+    <path d="M60 190 H150" stroke="var(--ink-3,#6E7885)" stroke-width="1.3" fill="none" marker-end="url(#ar2)"/>
+    <path d="M280 176 H330 V162 H62" stroke="var(--dim-4,#5A7A2E)" stroke-width="1.3" fill="none" marker-end="url(#ar2)"/>
+    <circle cx="60" cy="162" r="7" fill="var(--paper,#FAFAF9)" stroke="var(--dim-4,#5A7A2E)" stroke-width="1.5"/>
+    <text x="60" y="166" fill="var(--dim-4,#5A7A2E)" text-anchor="middle" font-size="11">+</text>
+
+    <!-- attn 2 -->
+    <rect x="150" y="95" width="130" height="42" rx="8" fill="var(--surface,#fff)" stroke="var(--dim-1,#A8761C)" stroke-width="1.4"/>
+    <text x="215" y="120" fill="var(--dim-1,#A8761C)" text-anchor="middle">Attention 2</text>
+    <path d="M60 130 H150" stroke="var(--ink-3,#6E7885)" stroke-width="1.3" fill="none" marker-end="url(#ar2)"/>
+    <path d="M280 116 H330 V102 H62" stroke="var(--dim-4,#5A7A2E)" stroke-width="1.3" fill="none" marker-end="url(#ar2)"/>
+    <circle cx="60" cy="102" r="7" fill="var(--paper,#FAFAF9)" stroke="var(--dim-4,#5A7A2E)" stroke-width="1.5"/>
+    <text x="60" y="106" fill="var(--dim-4,#5A7A2E)" text-anchor="middle" font-size="11">+</text>
+  </g>
+
+  <text x="60" y="288" fill="var(--ink-3,#6E7885)" font-size="11" font-family="monospace" text-anchor="middle">embed</text>
+  <text x="60" y="22"  fill="var(--dim-1,#A8761C)" font-size="11" font-family="monospace" text-anchor="middle">logits</text>
+
+  <g font-family="monospace" font-size="10.5" fill="var(--ink-3,#6E7885)">
+    <text x="400" y="245">read → compute → ADD BACK</text>
+    <text x="400" y="262">the stream is never overwritten</text>
+    <text x="400" y="120">every layer can read anything</text>
+    <text x="400" y="137">any earlier layer wrote</text>
+  </g>
+</svg>
+<figcaption>The residual stream. Layers are side-computations that add into a persistent per-token vector.</figcaption>
+</figure>
+
+<h3>Why this model is so useful</h3>
+
+<ul>
+<li><b>It explains why gradients flow.</b> The <code>+</code> means the gradient has a direct highway from the
+loss back to layer 1, bypassing every non-linearity. This is the whole reason ResNets and transformers can be
+100+ layers deep. (§4.4)</li>
+<li><b>It explains what layers "do".</b> A layer isn't a transformation of everything; it's a specialist that
+reads a subspace and writes a subspace. Early layers write syntactic features; later layers write semantic
+ones.</li>
+<li><b>It explains the logit lens.</b> Because the stream lives in the same space throughout, you can apply
+the <i>final</i> unembedding to an <i>intermediate</i> layer's stream and get readable predictions. Doing so
+shows the model's guess sharpening layer by layer — an experiment you'll run in the notebook.</li>
+<li><b>It explains "superposition".</b> With <code>d_model</code> = 4096 but far more than 4096 concepts to
+represent, features must share dimensions at near-orthogonal angles. That's the central puzzle of
+interpretability research.</li>
+</ul>
+
+<div class="box math-note">
+<span class="t">Bandwidth, precisely</span>
+<p style="margin-bottom:0">The residual stream is a fixed-width communication channel. Every attention head
+and every MLP in the whole network competes for the same <code>d_model</code> dimensions. That is a real
+constraint, and it is one reason <code>d_model</code> scales with depth in practice: wider models can be
+deeper before the blackboard gets crowded.</p>
+</div>
+
+<h2>4.4 · Why <code>x + f(x)</code> instead of <code>f(x)</code></h2>
+
+<p>Consider the derivative of a residual block versus a plain block:</p>
+
+<div class="mathblock">
+plain: &nbsp; y = f(x) &nbsp;→&nbsp; <span class="frac"><span class="n">∂y</span><span class="d">∂x</span></span> = f′(x)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+residual: &nbsp; y = x + f(x) &nbsp;→&nbsp; <span class="frac"><span class="n">∂y</span><span class="d">∂x</span></span> = <b>1</b> + f′(x)
+<span class="lbl">the identity term is what keeps the gradient alive through 100 layers</span>
+</div>
+
+<p>Stack <code>L</code> plain layers and the gradient is a product of <code>L</code> Jacobians — if each has
+magnitude 0.9, after 80 layers you have 0.9<sup>80</sup> ≈ 0.0002 and the early layers learn nothing.
+With residuals, the product is of terms like <code>(1 + f′)</code>, which stays near 1. That's it. That's
+the whole trick, and it's why He et al.'s ResNet paper (2015) is one of the most-cited papers in science.</p>
+
+<div class="quiz" data-title="Checkpoint 1 — embeddings &amp; the stream">
+<div class="qitem" data-answer="1">
+  <div class="qq">A model has <code>V=128256</code>, <code>C=4096</code>, untied embeddings. What fraction of
+  an 8B-parameter model is embedding tables?</div>
+  <div class="opts">
+    <div class="opt">~3%</div>
+    <div class="opt">~13%</div>
+    <div class="opt">~26%</div>
+    <div class="opt">~50%</div>
+  </div>
+  <div class="expl"><b>~13%.</b> Each table is 128256 × 4096 ≈ 525M; two of them ≈ 1.05B out of 8B ≈ 13%.
+  For a 1B model with the same vocab it would be over 100% — which is exactly why small models tie their
+  embeddings and large ones don't.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">What shape is the residual stream at layer 40 of an 80-layer model with
+  <code>d_model=8192</code>, batch 4, sequence 2048?</div>
+  <div class="opts">
+    <div class="opt">(4, 2048, 8192, 40)</div>
+    <div class="opt">(4, 40, 2048, 8192)</div>
+    <div class="opt">(4, 2048, 327680)</div>
+    <div class="opt">(4, 2048, 8192)</div>
+  </div>
+  <div class="expl"><b>(4, 2048, 8192)</b> — identical at every layer. That invariance is the whole point of
+  the residual stream. Depth is a <i>loop</i> over the same shape, not an axis of the tensor.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Why does the residual connection help training deep networks?</div>
+  <div class="opts">
+    <div class="opt">∂(x + f(x))/∂x = 1 + f′(x), so gradients have a path that doesn't shrink multiplicatively</div>
+    <div class="opt">It reduces the number of parameters</div>
+    <div class="opt">It makes the forward pass faster</div>
+    <div class="opt">It prevents overfitting by adding noise</div>
+  </div>
+  <div class="expl"><b>The identity term.</b> Without it, backprop multiplies L Jacobians and the signal
+  dies exponentially in depth. With it, there's an unobstructed highway from the loss to every layer.
+  Note it costs a small amount of extra compute and memory, not less.</div>
+</div>
+</div>
+
+<h2>4.5 · What embeddings actually learn</h2>
+
+<p>The classic word2vec result — <code>king − man + woman ≈ queen</code> — holds, weakly, in transformer
+input embeddings too. But the more important modern finding is about the <b>output</b> side.</p>
+
+<p>Because the unembedding maps the stream to vocabulary logits, <b>directions in the residual stream
+correspond to "makes token X more likely"</b>. The final layernorm plus <code>lm_head</code> is a readout
+head, and you can apply it early:</p>
+
+<pre><code># The "logit lens": decode an intermediate layer as if it were the last one.
+with torch.no_grad():
+    x = model.embed(ids)
+    for i, blk in enumerate(model.blocks):
+        x = blk(x)
+        logits_i = model.lm_head(model.final_norm(x))     # (B, T, V)
+        top = logits_i[0, -1].argmax().item()
+        print(f"layer {i:2d}: {tokenizer.decode([top])!r}")
+</code></pre>
+
+<p>Run this and you typically see generic/frequent tokens early, snapping to the correct answer in the last
+third of the network. It is one of the most striking things you can observe in a language model with ten
+lines of code, and you'll do it in the notebook for Chapter 9.</p>
+
+<h2>4.6 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">4.1</span><span class="ti">Embedding = one-hot matmul</span><span class="lvl">warm-up</span></div>
+<div class="eb">
+<p>Prove the equivalence numerically. Build <code>emb = nn.Embedding(10, 4)</code>, then show that
+<code>emb(torch.tensor([3]))</code> equals <code>F.one_hot(torch.tensor([3]), 10).float() @ emb.weight</code>.
+Then time both for <code>V=50000</code>. What's the speed ratio, and where does it come from?</p>
+<details class="reveal"><summary>Answer</summary><div>
+<p style="margin-bottom:0">They match exactly. The lookup is typically 100–1000× faster because the matmul
+does <code>V×C</code> multiply-adds (49,999 of every 50,000 by zero) plus materialises a
+<code>(B, T, V)</code> one-hot tensor, while the lookup does <code>C</code> memory reads. It's the same
+computation with completely different <i>arithmetic intensity</i> — a theme that returns in Chapter 12.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">4.2</span><span class="ti">Nearest neighbours in embedding space</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Load GPT-2's embedding matrix. Write <code>nearest(word, k=10)</code> that returns the <code>k</code>
+tokens whose embeddings have highest <b>cosine similarity</b> to a given token's embedding.</p>
+<pre><code>W = model.transformer.wte.weight            # (50257, 768)
+Wn = W / W.norm(dim=-1, keepdim=True)       # normalise rows → cosine = dot
+
+def nearest(token_str, k=10):
+    i = tokenizer.encode(token_str)[0]
+    sims = Wn @ Wn[i]                       # (50257,)
+    top = sims.topk(k + 1).indices[1:]      # skip itself
+    return [(tokenizer.decode([j]), sims[j].item()) for j in top]
+</code></pre>
+<p>Try <code>" king"</code>, <code>" Monday"</code>, <code>" Paris"</code>, <code>" 7"</code>.
+Note the leading spaces — Chapter 3 explains why they matter.</p>
+<details class="reveal"><summary>What to expect</summary><div>
+<p style="margin-bottom:0"><code>" Monday"</code> gives you the other weekdays, which is a clean win.
+<code>" king"</code> gives royalty-adjacent words but also a lot of noise. Input embeddings in a transformer
+are <i>less</i> semantically clean than word2vec vectors, because the model can defer meaning to later
+layers — the embedding only needs to be a useful <i>starting point</i>, not a finished representation.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">4.3</span><span class="ti">Break the residual stream</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Take any small transformer implementation and change <code>x = x + attn(ln(x))</code> to
+<code>x = attn(ln(x))</code> in every block. Train both on the same tiny dataset for the same number of
+steps. Plot both loss curves.</p>
+<details class="reveal"><summary>What you'll see, and why</summary><div>
+<p style="margin-bottom:0">The residual-free model trains dramatically worse, and the gap widens with depth —
+at 2 layers it's marginal, at 8 layers it's severe, at 24 layers the non-residual version often fails to
+learn at all. Inspect <code>block[0].attn.weight.grad.norm()</code> in both: the non-residual version's
+first-layer gradients are orders of magnitude smaller. That measurement <i>is</i> the vanishing gradient
+problem, and it's much more convincing than reading about it.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://transformer-circuits.pub/2021/framework/index.html">Elhage et al. — A Mathematical Framework for Transformer Circuits</a> — where the residual-stream framing was made precise. Dense but transformative.</li>
+<li><a href="https://arxiv.org/abs/1512.03385">He et al. 2015 — Deep Residual Learning</a> — the original ResNet paper.</li>
+<li><a href="https://arxiv.org/abs/1608.05859">Press &amp; Wolf 2016 — Using the Output Embedding to Improve Language Models</a> — the weight-tying result.</li>
+<li><a href="https://www.lesswrong.com/posts/AcKRB8wDpdaN6v6ru/interpreting-gpt-the-logit-lens">nostalgebraist — the logit lens</a></li>
+<li>Companion notebook: <code>notebooks/04_embeddings.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("04");</script>
+</body>
+</html>

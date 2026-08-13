@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 15 — Serving at Scale</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>15 · Serving at Scale</h1>
+<p class="lead">
+Everything in this chapter is systems engineering rather than machine learning — and collectively it buys
+more throughput than any architectural change since GQA. If you ever deploy a model, this is the chapter
+that saves you money.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; prefill vs decode<br><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; the kernel<br><a href="ch11-decoding.html">Ch&nbsp;11</a> &mdash; sampling</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; where the frontier went next</div>
+<div class="mn orient"><span class="k">Why this chapter</span>Systems engineering that buys more throughput than any architectural change since GQA.</div>
+
+<h2>15.1 · PagedAttention — virtual memory for the KV cache</h2>
+
+<p>The naive approach pre-allocates a contiguous buffer of <code>max_length</code> per sequence. If a user's
+generation stops at 200 tokens out of a 4096 reservation, <b>95% of that memory is wasted</b>. vLLM's authors
+measured real systems wasting 60–80% of their KV memory to this.</p>
+
+<div class="box intuition">
+<span class="t">The fix, borrowed wholesale from operating systems</span>
+<p style="margin-bottom:0">Split the cache into fixed-size <b>blocks</b> (typically 16 tokens). A sequence
+gets a <b>block table</b> mapping logical positions to physical blocks, which need not be contiguous.
+Allocate blocks on demand as generation proceeds. This is paged virtual memory, applied to attention — hence
+the name.</p>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th></th><th>Contiguous allocation</th><th>PagedAttention</th></tr></thead>
+<tbody>
+<tr><td>Internal fragmentation</td><td>up to max_len − actual_len</td><td>&lt; 1 block (≈16 tokens)</td></tr>
+<tr><td>External fragmentation</td><td>significant</td><td>none — all blocks are the same size</td></tr>
+<tr><td>Memory utilisation</td><td>20–40%</td><td>&gt; 90%</td></tr>
+<tr><td>Sharing a common prefix</td><td>impossible</td><td>free — just point at the same blocks</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>That last row is the sleeper feature. <b>Copy-on-write block sharing</b> means parallel samples from one
+prompt, or a thousand users hitting the same system prompt, share cache blocks physically. Combined with
+<b>prefix caching</b> (persist those blocks across requests), a long shared system prompt becomes nearly free
+after the first request — often the single biggest latency win available to an application developer.</p>
+
+<h2>15.2 · Continuous batching</h2>
+
+<p>Static batching waits for every sequence in a batch to finish. If one user asks for 20 tokens and another
+for 2000, the short request's GPU slot idles for the whole 2000 steps.</p>
+
+<pre><code>Static batching (bad):
+  seq A: ####----------------------------   done at step 4, slot wasted for 28
+  seq B: ################################
+  seq C: ########------------------------
+         ^ batch cannot retire until B finishes
+
+Continuous batching (good):
+  seq A: ####
+  seq D:     ############
+  seq B: ################################
+  seq C: ########
+  seq E:         ####################
+         ^ finished sequences are evicted and replaced every single step
+</code></pre>
+
+<p>Because the model weights are read once per step regardless of batch composition (Chapter 12), keeping the
+batch full is nearly pure profit. Reported throughput gains over static batching are typically
+<b>2–4×, sometimes over 20×</b> on skewed length distributions. Every serious server — vLLM, TensorRT-LLM,
+SGLang, TGI — does this.</p>
+
+<h2>15.3 · Speculative decoding</h2>
+
+<p>The cleverest idea in inference. It exploits the fact from Chapter 12 that decode is memory-bound:
+verifying <code>k</code> tokens costs almost exactly the same as generating 1, because either way you read
+all the weights once.</p>
+
+<div class="box intuition">
+<span class="t">The algorithm</span>
+<ol style="margin-bottom:0">
+<li>A small, fast <b>draft model</b> proposes <code>k</code> tokens autoregressively (cheap).</li>
+<li>The big <b>target model</b> scores all <code>k</code> in <b>one forward pass</b> (one weight read).</li>
+<li>A <b>rejection-sampling</b> rule accepts the longest prefix that's consistent with the target's own
+distribution, and resamples at the first disagreement.</li>
+<li>You advance by 1 to <code>k+1</code> tokens for the price of roughly one target forward pass.</li>
+</ol>
+</div>
+
+<div class="box math-note">
+<span class="t">The guarantee that makes it usable</span>
+<p style="margin-bottom:0">The acceptance rule (Leviathan et al. 2023; Chen et al. 2023) is constructed so
+the output distribution is <b>provably identical</b> to sampling from the target model alone. Accept draft
+token <span class="math">x</span> with probability
+<span class="math">min(1, p<sub>target</sub>(x) / p<sub>draft</sub>(x))</span>; on rejection, sample from the
+normalised residual <span class="math">max(0, p<sub>target</sub> − p<sub>draft</sub>)</span>. This is not an
+approximation with a quality knob — it is exact. That's why it can be turned on by default.</p>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th>Draft source</th><th>Typical speedup</th><th>Note</th></tr></thead>
+<tbody>
+<tr><td>Small model of the same family (e.g. 1B drafting for 70B)</td><td>2–3×</td><td>needs a matching tokenizer</td></tr>
+<tr><td><b>Medusa / EAGLE</b> — extra heads on the target itself</td><td>2–4×</td><td>no separate model to host</td></tr>
+<tr><td><b>n-gram / prompt lookup</b></td><td>1.5–3× on summarisation, RAG, editing</td><td>zero extra parameters; drafts by copying from the prompt</td></tr>
+<tr><td><b>Multi-token prediction</b> (trained in, e.g. DeepSeek-V3)</td><td>~1.8×</td><td>the model learns to draft for itself</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Speedup depends entirely on the <b>acceptance rate</b>. Predictable text (code, structured output,
+summarising a provided document) accepts most drafts; creative text accepts few. And note the trade: at
+<b>large batch sizes</b> you're already compute-bound, so the free verification capacity disappears and
+speculative decoding can be a net loss. It is a low-batch / low-latency optimisation.</p>
+
+<h2>15.4 · Quantization</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Method</th><th>Bits</th><th>What it quantizes</th><th>Quality cost</th></tr></thead>
+<tbody>
+<tr><td><b>bf16</b></td><td>16</td><td>baseline</td><td>—</td></tr>
+<tr><td><b>FP8</b> (e4m3)</td><td>8</td><td>weights + activations</td><td>near-zero on H100+; native tensor-core support</td></tr>
+<tr><td><b>GPTQ / AWQ</b></td><td>4</td><td>weights only</td><td>small; AWQ protects salient channels using activation statistics</td></tr>
+<tr><td><b>GGUF k-quants</b></td><td>2–8</td><td>weights, mixed per-tensor</td><td>Q4_K_M is the usual sweet spot for local inference</td></tr>
+<tr><td><b>KV cache fp8/int4</b></td><td>8 / 4</td><td>the cache only</td><td>small; 2–4× more concurrent users</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box intuition">
+<span class="t">Why quantizing <i>weights</i> speeds up decode</span>
+<p style="margin-bottom:0">Because decode is bandwidth-bound. Int4 weights are 4× fewer bytes to read from
+HBM, so you get roughly 4× the token rate — even though the arithmetic is dequantized back to fp16 before
+the matmul. You're not saving FLOPs, you're saving <i>traffic</i>. This also means quantization helps decode
+far more than prefill.</p>
+</div>
+
+<div class="box warn">
+<span class="t">Evaluate quantized models on your actual task</span>
+<p style="margin-bottom:0">Perplexity barely moves under 4-bit quantization, which has led to a lot of
+"lossless" claims. Multi-step reasoning, long-context retrieval, and code generation degrade noticeably
+earlier than perplexity suggests — the errors compound across steps. Always test the thing you actually
+care about, not a proxy.</p>
+</div>
+
+<h2>15.5 · Prefill–decode disaggregation</h2>
+
+<p>Chapter 12 showed prefill is compute-bound and decode is memory-bound. Running them on the same GPU in
+the same batch means each interferes with the other — a long prefill stalls every decode in flight
+("head-of-line blocking"), which shows up as inter-token latency jitter.</p>
+
+<p>The 2024–2026 answer is to run them on <b>separate GPU pools</b>: prefill workers produce the KV cache
+and transfer it over the interconnect to decode workers. Prefill nodes optimise for throughput, decode nodes
+for bandwidth and batch size. Systems like DistServe, Splitwise, Mooncake and current vLLM/SGLang builds
+support this, and it's now standard in large deployments. An intermediate option — <b>chunked prefill</b>,
+which slices long prompts into pieces interleaved with decode steps — gets much of the benefit on a single
+pool.</p>
+
+<div class="quiz" data-title="Checkpoint 1 — serving">
+<div class="qitem" data-answer="1">
+  <div class="qq">Why does speculative decoding give a speedup at all, given it does <i>more</i> total work?</div>
+  <div class="opts">
+    <div class="opt">The draft model is more accurate</div>
+    <div class="opt">Decode is memory-bound, so verifying k tokens in one pass costs about the same as generating 1 — the extra FLOPs are free capacity</div>
+    <div class="opt">It skips layers of the target model</div>
+    <div class="opt">It reduces the KV cache</div>
+  </div>
+  <div class="expl"><b>Free FLOPs in a bandwidth-bound regime.</b> One target forward pass reads all the
+  weights whether you score 1 token or 8. Speculative decoding converts idle arithmetic capacity into
+  tokens. This also predicts its failure mode: at large batch sizes you're compute-bound already, the
+  capacity isn't free, and the technique stops helping.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">Your service has 1000 users sharing a 2000-token system prompt. Biggest single win?</div>
+  <div class="opts">
+    <div class="opt">Speculative decoding</div>
+    <div class="opt">Int4 weight quantization</div>
+    <div class="opt">Prefix caching — compute the shared prefix's KV once and share the blocks</div>
+    <div class="opt">A larger batch size</div>
+  </div>
+  <div class="expl"><b>Prefix caching.</b> Without it you recompute 2000 tokens of prefill 1000 times.
+  With it, that cost is paid once and every subsequent request starts at token 2001 — often a 5–10×
+  reduction in time-to-first-token and a large drop in prefill compute. The others help too, but none
+  eliminates a redundancy this large.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">A 70B model quantized to int4 runs ~4× faster in decode. Why?</div>
+  <div class="opts">
+    <div class="opt">Weight bytes read from HBM drop 4×, and decode is bandwidth-bound</div>
+    <div class="opt">Int4 arithmetic is 4× faster than bf16</div>
+    <div class="opt">The KV cache shrinks 4×</div>
+    <div class="opt">Fewer layers are executed</div>
+  </div>
+  <div class="expl"><b>Bandwidth.</b> 140 GB → 35 GB per forward pass. The math is usually still done in
+  fp16 after dequantization, so arithmetic throughput is unchanged, and weight quantization does nothing
+  to the KV cache (that's quantized separately). Prefill, being compute-bound, speeds up far less.</div>
+</div>
+</div>
+
+<h2>15.6 · Choosing a serving stack</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Stack</th><th>Best for</th></tr></thead>
+<tbody>
+<tr><td><b>vLLM</b></td><td>the default open-source choice; PagedAttention, continuous batching, wide model support</td></tr>
+<tr><td><b>SGLang</b></td><td>structured output, complex multi-call programs, aggressive prefix reuse (RadixAttention)</td></tr>
+<tr><td><b>TensorRT-LLM</b></td><td>maximum NVIDIA throughput when you can afford the build complexity</td></tr>
+<tr><td><b>llama.cpp / Ollama</b></td><td>local, CPU or Apple Silicon, GGUF quantization</td></tr>
+<tr><td><b>HF TGI</b></td><td>tight HuggingFace ecosystem integration</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>15.7 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">15.1</span><span class="ti">Implement speculative decoding</span><span class="lvl">hard</span></div>
+<div class="eb">
+<p>Using two models from the same family (e.g. GPT-2 small as draft, GPT-2 large as target), implement
+speculative decoding with the exact acceptance rule. Then verify the guarantee <b>empirically</b>: generate
+2000 tokens with (a) plain sampling from the target and (b) speculative decoding, both at T=1.0, and compare
+the resulting unigram distributions with a chi-squared test.</p>
+<details class="reveal"><summary>Core loop</summary><div>
+<pre><code>def speculative_step(target, draft, ids, k=4):
+    # 1. draft k tokens autoregressively
+    draft_ids, q_probs = [], []
+    cur = ids
+    for _ in range(k):
+        q = draft(cur)[:, -1].softmax(-1)
+        t = torch.multinomial(q, 1)
+        draft_ids.append(t); q_probs.append(q.gather(-1, t))
+        cur = torch.cat([cur, t], dim=1)
+
+    # 2. ONE target pass scores all k+1 positions
+    p_all = target(cur)[:, -(k+1):].softmax(-1)
+
+    # 3. accept/reject left to right
+    n = 0
+    for i in range(k):
+        p_i = p_all[:, i].gather(-1, draft_ids[i])
+        if torch.rand(1) < min(1.0, (p_i / q_probs[i]).item()):
+            n += 1
+        else:
+            # resample from the normalised residual
+            resid = (p_all[:, i] - draft(...)[i]).clamp(min=0)
+            return torch.cat([ids, *draft_ids[:n],
+                              torch.multinomial(resid / resid.sum(), 1)], dim=1)
+    # all k accepted → bonus token from the target's (k+1)-th distribution
+    return torch.cat([ids, *draft_ids, torch.multinomial(p_all[:, k], 1)], dim=1)
+</code></pre>
+<p style="margin-bottom:0">Report your acceptance rate. On natural text with a same-family draft, expect
+60–80%; on code, higher. The chi-squared test should show no significant difference — that's the
+distributional guarantee, verified rather than assumed.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">15.2</span><span class="ti">Simulate PagedAttention</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Write a block allocator: <code>BlockManager(total_blocks, block_size)</code> with
+<code>allocate(seq_id, n_tokens)</code>, <code>append(seq_id)</code>, <code>free(seq_id)</code>, and
+<code>fork(parent, child)</code> (copy-on-write). Simulate 1000 requests with lengths drawn from a
+lognormal distribution and compare memory utilisation against contiguous <code>max_len</code> allocation.</p>
+<details class="reveal"><summary>Expected result</summary><div>
+<p style="margin-bottom:0">With lognormal lengths (mean 300, max 4096) the contiguous scheme wastes 70–90%
+of its allocation. Paged wastes under 3%. That ratio is why vLLM's throughput numbers looked implausible
+when it launched — the gain was almost entirely from <i>not wasting memory</i>, not from faster kernels.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">15.3</span><span class="ti">Benchmark a real server</span><span class="lvl">applied</span></div>
+<div class="eb">
+<p>Serve any small model with vLLM. Measure time-to-first-token and inter-token latency at concurrency
+1, 4, 16, 64. Plot throughput (total tok/s) and per-user latency against concurrency.</p>
+<details class="reveal"><summary>What the curves show</summary><div>
+<p style="margin-bottom:0">Total throughput rises steeply then saturates; per-user latency is flat then
+degrades. The knee is where you stop being memory-bound and start being compute-bound (Chapter 12) — and
+it is the operating point you should actually deploy at. Running below it wastes GPU; running above it
+breaks your latency SLA. Almost nobody measures this, and almost everyone should.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/2309.06180">Kwon et al. 2023 — Efficient Memory Management for LLM Serving with PagedAttention</a></li>
+<li><a href="https://arxiv.org/abs/2211.17192">Leviathan et al. 2023 — Fast Inference via Speculative Decoding</a></li>
+<li><a href="https://arxiv.org/abs/2401.10774">Cai et al. 2024 — Medusa</a> · <a href="https://arxiv.org/abs/2401.15077">Li et al. 2024 — EAGLE</a></li>
+<li><a href="https://arxiv.org/abs/2401.09670">Zhong et al. 2024 — DistServe</a> (prefill/decode disaggregation)</li>
+<li><a href="https://docs.vllm.ai/">vLLM documentation</a></li>
+<li>Companion notebook: <code>notebooks/15_serving.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("15");</script>
+</body>
+</html>

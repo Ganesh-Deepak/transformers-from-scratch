@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 12 — The KV Cache and the Memory Wall</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>12 · The KV Cache and the Memory Wall</h1>
+<p class="lead">
+This chapter explains why serving an LLM is a fundamentally different engineering problem from training one,
+and why almost every architectural innovation since 2023 — GQA, MLA, MoE, speculative decoding — is aimed
+at the same bottleneck. It is not FLOPs. It is memory bandwidth.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch11-decoding.html">Ch&nbsp;11</a> &mdash; the generation loop<br><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; arithmetic intensity</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; shrinking the cache<br><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; a different bottleneck<br><a href="ch15-serving.html">Ch&nbsp;15</a> &mdash; serving is built on this arithmetic</div>
+<div class="mn orient"><span class="k">Why this chapter</span>Not FLOPs. Memory bandwidth. This chapter reframes everything after it.</div>
+
+<h2>12.1 · The waste in the naive loop</h2>
+
+<p>Look again at generation. To produce token 101, we feed tokens 1–100 through the model. To produce token
+102, we feed tokens 1–101. We recompute K and V for tokens 1–100 <b>a second time</b> — and they are
+identical, because the causal mask means token 50's representation cannot depend on anything after it.</p>
+
+<div class="box intuition">
+<span class="t">The insight</span>
+<p style="margin-bottom:0">In a causal model, <b>the K and V vectors for a token never change once
+computed.</b> So compute them once and keep them. Generating token <code>t+1</code> then only needs a
+<b>single</b> new query vector attending against the stored keys and values.</p>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th></th><th>Without cache</th><th>With cache</th></tr></thead>
+<tbody>
+<tr><td>Q, K, V computed per step</td><td>all T tokens</td><td><b>1 token</b></td></tr>
+<tr><td>Attention shape per step</td><td>(T, T)</td><td><b>(1, T)</b></td></tr>
+<tr><td>FLOPs to generate T tokens</td><td>O(T³)</td><td><b>O(T²)</b></td></tr>
+<tr><td>Extra memory</td><td>none</td><td>the cache — and it's large</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>12.2 · Implementation</h2>
+
+<pre><code>class CachedAttention(nn.Module):
+    def forward(self, x, cache=None):
+        """
+        Training / prefill:  x is (B, T, C), cache is None
+        Decoding:            x is (B, 1, C), cache holds (k_prev, v_prev)
+        """
+        B, T, C = x.shape
+        q, k, v = self.qkv(x).split(C, dim=-1)
+        q = q.view(B, T, self.nh, self.hd).transpose(1, 2)     # (B, nh, T, hd)
+        k = k.view(B, T, self.nh, self.hd).transpose(1, 2)
+        v = v.view(B, T, self.nh, self.hd).transpose(1, 2)
+
+        q, k = apply_rope(q, k, self.cos[pos:pos+T], self.sin[pos:pos+T])
+
+        if cache is not None:
+            k_prev, v_prev = cache                             # (B, nh, T_past, hd)
+            k = torch.cat([k_prev, k], dim=2)                  # (B, nh, T_past+T, hd)
+            v = torch.cat([v_prev, v], dim=2)
+        new_cache = (k, v)
+
+        # During decode T=1, so this is (B, nh, 1, T_total) — a single row.
+        # No causal mask needed: the one query is the newest token, it may see everything.
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=(T > 1))
+
+        return self.proj(y.transpose(1, 2).reshape(B, T, C)), new_cache
+</code></pre>
+
+<div class="box gotcha">
+<span class="t">Three cache bugs that produce subtly wrong output</span>
+<ol style="margin-bottom:0">
+<li><b>RoPE position offset.</b> During decode the new token is at absolute position <code>T_past</code>,
+not 0. Using <code>cos[0]</code> every step makes every token think it's first. Symptom: coherent for a few
+tokens, then degenerates.</li>
+<li><b><code>is_causal=True</code> during decode.</b> With a single query row, PyTorch's causal mask
+aligns to the <i>top-left</i>, so the one query is treated as position 0 and can see only key 0.
+Symptom: output ignores the entire prompt.</li>
+<li><b>Not clearing the cache between sequences.</b> The next request inherits the previous conversation's
+keys. Symptom: bizarre contamination that only appears under batching.</li>
+</ol>
+</div>
+
+<h2>12.3 · Prefill vs decode — two different machines</h2>
+
+<p>This distinction is the core of LLM serving, and it is not obvious until someone points it out.</p>
+
+<div class="grid2">
+<div class="box math-note" style="margin:0">
+<span class="t">Prefill — process the prompt</span>
+<ul style="margin-bottom:0">
+<li>All <code>T</code> prompt tokens, one pass</li>
+<li>Big matmuls: <code>(T, C) @ (C, C)</code></li>
+<li><b>Compute-bound</b> — saturates the GPU</li>
+<li>Cost ∝ prompt length</li>
+<li>Determines <b>time to first token</b></li>
+</ul>
+</div>
+<div class="box warn" style="margin:0">
+<span class="t">Decode — generate, one token at a time</span>
+<ul style="margin-bottom:0">
+<li>Exactly 1 token per pass</li>
+<li>Skinny matmuls: <code>(1, C) @ (C, C)</code></li>
+<li><b>Memory-bandwidth-bound</b> — GPU mostly idle</li>
+<li>Cost ∝ number of output tokens</li>
+<li>Determines <b>tokens per second</b></li>
+</ul>
+</div>
+</div>
+
+<h3>Why decode is memory-bound — the arithmetic</h3>
+
+<p>Consider a single <code>(4096, 4096)</code> weight matrix in bf16, generating one token.</p>
+
+<pre><code>Bytes moved:   4096 × 4096 × 2 bytes            = 33.5 MB   (read the weights)
+FLOPs done:    2 × 1 × 4096 × 4096              = 33.6 MFLOP
+
+Arithmetic intensity = 33.6e6 / 33.5e6 ≈ 1.0 FLOP per byte
+</code></pre>
+
+<p>An H100 delivers roughly <b>990 TFLOP/s</b> (bf16, with sparsity off) against <b>3.35 TB/s</b> of HBM
+bandwidth. Its <i>ridge point</i> — the intensity above which you're compute-bound — is about
+<b>295 FLOP/byte</b>.</p>
+
+<div class="mathblock">
+1 FLOP/byte &nbsp;≪&nbsp; 295 FLOP/byte
+<span class="lbl">decode sits ~300× below the ridge: the GPU is a memory-transfer device that occasionally multiplies</span>
+</div>
+
+<div class="box intuition">
+<span class="t">The consequence, stated plainly</span>
+<p style="margin-bottom:0">During decode, you read <b>every weight in the model</b> and <b>every byte of the
+KV cache</b> from HBM to produce <b>one token</b>. Your token rate is therefore approximately:</p>
+<div class="mathblock" style="margin:.8em 0 0">
+tokens/sec ≈ <span class="frac"><span class="n">memory bandwidth</span><span class="d">model bytes + KV cache bytes</span></span>
+</div>
+</div>
+
+<p>Sanity check: a 7B model in bf16 is 14 GB. On an H100 at 3.35 TB/s, that's
+<code>3350/14 ≈ 240 tokens/sec</code> ceiling for batch size 1. Real systems hit 100–150 — the gap is
+overheads, and the KV cache. This calculation predicts real inference speed to within a factor of ~2, which
+is remarkable for a one-line model.</p>
+
+<h3>The fix: batching</h3>
+
+<p>Because the weights are read once regardless of how many sequences you process, batching is nearly free:</p>
+
+<div class="tw">
+<table>
+<thead><tr><th class="num">Batch</th><th class="num">Weight bytes read</th><th class="num">FLOPs</th><th class="num">Intensity</th><th>Regime</th></tr></thead>
+<tbody>
+<tr><td class="num">1</td><td class="num">14 GB</td><td class="num">14 GFLOP</td><td class="num">~1</td><td>hopeless</td></tr>
+<tr><td class="num">32</td><td class="num">14 GB</td><td class="num">448 GFLOP</td><td class="num">~32</td><td>better</td></tr>
+<tr><td class="num">256</td><td class="num">14 GB</td><td class="num">3.6 TFLOP</td><td class="num">~256</td><td>approaching the ridge</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Batch 256 gives you roughly <b>256× the throughput for the same weight traffic</b>. This is why inference
+providers batch aggressively, and why your API latency is better when the service is <i>busy</i> than when
+it's idle. It is also why the KV cache matters so much: <b>the cache is the thing that limits batch size.</b></p>
+
+<h2>12.4 · The cache size calculation</h2>
+
+<div class="mathblock">
+bytes = 2 × n_layer × n_kv_head × d_head × seq_len × batch × dtype_bytes
+<span class="lbl">the leading 2 is for K and V</span>
+</div>
+
+<p>Play with this. Notice how fast it grows, and what GQA and MLA do to it:</p>
+
+<div data-viz="kv"></div>
+
+<h3>Worked example: Llama-3-70B</h3>
+
+<pre><code>n_layer = 80, n_kv_head = 8, d_head = 128, bf16
+
+per token per layer = 2 × 8 × 128 × 2 bytes  = 4,096 bytes
+per token           = 4096 × 80              = 327,680 bytes ≈ 320 KB
+
+At  8k context:  8192 × 320 KB   ≈  2.5 GB   per sequence
+At 128k context: 131072 × 320 KB ≈  40 GB    per sequence
+</code></pre>
+
+<p>The model weights are 140 GB (needs 2×H100 at minimum, realistically 4). On 4×H100 = 320 GB, that leaves
+~180 GB for cache — so <b>4 concurrent users at 128k context</b>, or ~70 at 8k. Your maximum concurrency
+falls straight out of this arithmetic.</p>
+
+<div class="box warn">
+<span class="t">Without GQA, this model would be unservable</span>
+<p style="margin-bottom:0">With <code>n_kv_head = 64</code> (full MHA) instead of 8, the cache would be
+<b>8× larger</b>: 20 GB at 8k, 320 GB at 128k — a single 128k-context user would not fit on 4 H100s at all.
+GQA is not a nice optimisation; it is what makes long-context serving possible. That's Chapter 13.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 1 — the memory wall">
+<div class="qitem" data-answer="2">
+  <div class="qq">Why is decode memory-bound while prefill is compute-bound, given both use the same weights?</div>
+  <div class="opts">
+    <div class="opt">Decode uses a different kernel</div>
+    <div class="opt">The KV cache is only read during decode</div>
+    <div class="opt">Prefill does T tokens' worth of arithmetic per weight read; decode does 1 — so arithmetic intensity is T× lower</div>
+    <div class="opt">Decode can't use tensor cores</div>
+  </div>
+  <div class="expl"><b>Arithmetic intensity.</b> The weights read is identical; the work done per byte read
+  differs by a factor of T. Prefill's <code>(T,C)@(C,C)</code> reuses each loaded weight T times; decode's
+  <code>(1,C)@(C,C)</code> uses it once. That single ratio explains the entire difference in behaviour.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">A 13B bf16 model on an A100 (2 TB/s HBM). Rough upper bound on batch-1 decode speed?</div>
+  <div class="opts">
+    <div class="opt">~77 tokens/sec</div>
+    <div class="opt">~770 tokens/sec</div>
+    <div class="opt">~7 tokens/sec</div>
+    <div class="opt">Depends only on FLOPs</div>
+  </div>
+  <div class="expl"><b>~77 tok/s.</b> 13e9 × 2 bytes = 26 GB per token. 2000 GB/s ÷ 26 GB = 77.
+  Real-world you'd see 40–60. Notice you can do this estimate for any model on any GPU in ten seconds,
+  and it's usually within 2×.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">You have 40 GB of KV cache budget. Llama-3-8B (GQA, 128 KB/token) at 8k context per user.
+  How many concurrent users?</div>
+  <div class="opts">
+    <div class="opt">~20</div>
+    <div class="opt">~39</div>
+    <div class="opt">~156</div>
+    <div class="opt">~5</div>
+  </div>
+  <div class="expl"><b>~39.</b> Per user: 8192 × 128 KB ≈ 1.05 GB. 40 GB ÷ 1.05 GB ≈ 38–39. In practice
+  fragmentation cuts this further — which is exactly the problem PagedAttention solves (Chapter 15) by
+  allocating the cache in fixed-size blocks like OS virtual memory.</div>
+</div>
+</div>
+
+<h2>12.5 · Making the cache smaller — the map of Part IV</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Technique</th><th>Reduction</th><th>Cost</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td><b>GQA</b></td><td>4–8×</td><td>small quality loss</td><td>Ch 13</td></tr>
+<tr><td><b>MQA</b></td><td>= n_head ×</td><td>noticeable quality loss</td><td>Ch 13</td></tr>
+<tr><td><b>MLA</b></td><td>up to ~64× vs MHA</td><td>extra compute; quality ≥ MHA</td><td>Ch 13</td></tr>
+<tr><td><b>KV quantization (fp8/int4)</b></td><td>2–4×</td><td>small accuracy loss</td><td>Ch 15</td></tr>
+<tr><td><b>Sliding window</b></td><td>T/window</td><td>loses long-range attention</td><td>Ch 17</td></tr>
+<tr><td><b>PagedAttention</b></td><td>~2× effective (removes fragmentation)</td><td>none — pure engineering</td><td>Ch 15</td></tr>
+<tr><td><b>Prefix / prompt caching</b></td><td>huge for shared prefixes</td><td>none</td><td>Ch 15</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>12.6 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">12.1</span><span class="ti">Add a KV cache and measure it</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Add caching to your Chapter 9 model. Then:</p>
+<ol>
+<li><b>Correctness:</b> assert that cached generation produces <b>token-identical</b> output to uncached
+generation with the same seed and greedy decoding. This is non-negotiable — if they differ, you have one of
+the three bugs from §12.2.</li>
+<li><b>Speed:</b> time generating 200 tokens with and without the cache. Plot time-per-token against
+position for both.</li>
+</ol>
+<details class="reveal"><summary>What the plot shows</summary><div>
+<p style="margin-bottom:0">Uncached: time per token grows <b>linearly</b> with position (each step
+reprocesses the whole prefix), so cumulative time is quadratic. Cached: time per token is nearly
+<b>flat</b>, rising only slightly as the attention row gets longer. At 200 tokens the speedup is typically
+10–30×; at 2000 tokens it's 100×+. This is the single highest-leverage optimisation in LLM inference.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">12.2</span><span class="ti">Build a serving calculator</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Write <code>plan(model_cfg, gpu_gb, gpu_bandwidth_tbs, context, dtype_bytes)</code> returning: weight
+memory, KV bytes per token, max concurrent sequences, and estimated batch-1 tokens/sec. Validate it against
+the Llama-3-70B numbers in §12.4, then use it to answer:</p>
+<ol>
+<li>How many H100s to serve Llama-3-70B at 128k context to 20 concurrent users?</li>
+<li>What happens to that answer with fp8 KV cache?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<ol>
+<li>Weights 140 GB + 20 users × 40 GB = 800 GB of cache → 940 GB → <b>12 H100s</b> (80 GB each), and
+realistically more for activations and fragmentation.</li>
+<li>fp8 halves the cache: 140 + 400 = 540 GB → <b>7 H100s</b>. Cutting your fleet by 40% is why KV
+quantization is standard in production despite the small accuracy cost.</li>
+</ol>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">12.3</span><span class="ti">Find the roofline crossover</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>For a 7B model on an H100 (990 TFLOP/s bf16, 3.35 TB/s), at what batch size does decode stop being
+memory-bound? Compare that to prefill with a 2000-token prompt at batch 1 — which regime is it in, and why?</p>
+<details class="reveal"><summary>Answer</summary><div>
+<p>Ridge point = 990e12 / 3.35e12 ≈ <b>295 FLOP/byte</b>. Decode intensity ≈ batch size (each sequence
+does 2 FLOPs per weight byte... in bf16, 2 bytes/weight and 2 FLOPs/weight → ~1 FLOP/byte per sequence).
+So you need <b>batch ≈ 300</b> to reach the ridge — which is why production serving runs batches in the
+hundreds.</p>
+<p style="margin-bottom:0">Prefill with T=2000 at batch 1 has intensity ≈ 2000, comfortably
+<b>compute-bound</b>. This is the key asymmetry behind <b>prefill–decode disaggregation</b>: the two phases
+want different hardware and different batching strategies, so several 2025–2026 serving stacks now run them
+on <i>separate GPU pools</i>. Chapter 15.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/2211.05102">Pope et al. 2022 — Efficiently Scaling Transformer Inference</a> — the definitive analysis of this chapter's arithmetic.</li>
+<li><a href="https://kipp.ly/transformer-inference-arithmetic/">kipply — Transformer Inference Arithmetic</a> — excellent, concrete, worked numbers.</li>
+<li><a href="https://arxiv.org/abs/2309.06180">Kwon et al. 2023 — PagedAttention / vLLM</a></li>
+<li>Companion notebook: <code>notebooks/12_kv_cache.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("12");</script>
+</body>
+</html>

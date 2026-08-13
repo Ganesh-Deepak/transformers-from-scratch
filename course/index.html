@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transformers From Scratch</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+
+<main>
+
+<div class="hero">
+  <h1><span class="num">A hands-on course</span>Transformers From Scratch</h1>
+  <p class="lead">
+    From <em>“what is a tensor”</em> to <em>“here is why DeepSeek’s latent attention shrinks the
+    KV&nbsp;cache 57×”</em>. Every dimension is drawn. Every claim is derived or measured.
+    Every chapter ends with problems you have to actually solve.
+  </p>
+  <div class="stats">
+    <div><b>22</b> chapters</div>
+    <div><b>25</b> hours</div>
+    <div><b>12</b> widgets</div>
+    <div><b>155</b> exercises &amp; questions</div>
+  </div>
+  <div class="bar"><i id="pbar"></i></div>
+  <div class="tiny" style="margin-top:.6rem" id="pnote">Progress is saved in this browser.</div>
+</div>
+
+<div class="mn">
+  <span class="k">Reading it</span>
+  Set in <b>Sitka</b>, Matthew Carter’s family designed from legibility research for long
+  on-screen reading. Use the toggle in the top bar for light or dark; it follows your system
+  by default.
+</div>
+
+<h2>Do you have the prerequisites?</h2>
+
+<p>This course assumes <b>surprisingly little</b>, but it does assume some things. Check yourself
+honestly against this list — the fastest way to have a bad time is to start with a gap you
+haven’t noticed.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>You need</th><th>Concretely, you can…</th><th>If not</th></tr></thead>
+<tbody>
+<tr>
+  <td><b>Python</b></td>
+  <td>write a function, a loop, a class; use a list comprehension; read a traceback</td>
+  <td>Do a Python basics course first. This one won’t teach it.</td>
+</tr>
+<tr>
+  <td><b>Arrays</b></td>
+  <td>index a nested list; know what <code>a[2][0]</code> means</td>
+  <td>Chapter 1 covers the rest from zero.</td>
+</tr>
+<tr>
+  <td><b>School algebra</b></td>
+  <td>rearrange <span class="math">y = mx + b</span>; read a summation <span class="math"><span class="op">Σ</span></span>; know what a logarithm is</td>
+  <td>Chapter 1 has a refresher box for each.</td>
+</tr>
+<tr>
+  <td><b>Nothing else</b></td>
+  <td>—</td>
+  <td>Calculus, linear algebra and neural-network experience are <b>not</b> required. Where a chapter needs one, it derives it.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="box intuition">
+<span class="t">You do not need to know calculus</span>
+<p style="margin-bottom:0">People assume deep learning requires multivariable calculus. For
+<i>understanding</i> and <i>building</i> a transformer, it does not — the derivatives are computed
+for you by autograd. Where gradients matter to the argument (Chapter 4’s residual stream,
+Chapter 8’s pre-LN, Chapter 20’s DPO) the course shows the one line of calculus that matters and
+explains what it means. You need to read it, not derive it.</p>
+</div>
+
+<h2>How to work through this</h2>
+
+<p>Chapters are ordered by dependency, not by topic. Each one uses what the last one built, and
+the margin column tells you where an idea came from and where it goes next.</p>
+
+<div class="mn">
+  <span class="k">The margin</span>
+  Cross-references live out here, so you can see how a chapter connects without losing your
+  place in the main column.
+</div>
+
+<ol>
+  <li><b>Work in order.</b> Parts 0 and I look elementary. Do not skip them. Almost everyone who
+  finds transformers confusing is actually confused about tensor shapes.</li>
+  <li><b>Drag the sliders.</b> The interactive panels are the point, not decoration. Reading one
+  is not the same as using it.</li>
+  <li><b>Answer the checkpoints before revealing.</b> Being wrong and noticing is the mechanism
+  that makes this stick. Guessing then reading the explanation works; reading the explanation
+  first does not.</li>
+  <li><b>Do the exercises in the notebook, not in your head.</b> The gap between “I understand
+  attention” and “my attention passes the causality test” is where the learning is.</li>
+</ol>
+
+<h3>Three routes through</h3>
+
+<div class="tw">
+<table>
+<thead><tr><th>If you want to…</th><th>Read</th><th>Time</th></tr></thead>
+<tbody>
+<tr><td><b>Understand how LLMs work</b>, no code</td><td>Ch 1–10, skim the code blocks</td><td>~8 h</td></tr>
+<tr><td><b>Build one</b> end to end</td><td>Ch 1–10 + 22, all notebooks</td><td>~15 h</td></tr>
+<tr><td><b>The whole thing</b>, including why serving and alignment look the way they do</td><td>Ch 1–22</td><td>~25 h</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box warn">
+<span class="t">If a chapter isn’t landing</span>
+<p style="margin-bottom:0">Do not push forward — the dependency chain means the next chapter will
+be worse. Instead: (1) open the companion notebook and <i>run</i> the code, changing numbers until
+the shapes make sense; (2) re-read the chapter that this one lists as its prerequisite; (3) try
+the exercise you skipped. Confusion in Chapter 6 is almost always an unfinished Chapter 1.</p>
+</div>
+
+<h2>Setup</h2>
+
+<p>The pages you are reading need nothing but a browser. The <b>notebooks</b> need Python.</p>
+
+<pre><code class="nohl">cd D:\ai-llms
+python -m venv .venv
+.venv\Scripts\Activate.ps1          # PowerShell
+pip install -r requirements.txt
+
+python tests\test_tfs.py            # 30 checks, ~1 min — confirms it all works
+jupyter lab                         # opens notebooks/</code></pre>
+
+<p class="tiny">No GPU is required anywhere. Everything is sized for a laptop CPU. Chapter 10
+trains a real language model in about 14 minutes.</p>
+
+<div class="parts" id="parts"></div>
+
+<h2>The dimension cheat sheet</h2>
+
+<p>Every symbol used in this course, in one place. You will come back to this.</p>
+
+<div class="mn">
+  <span class="k">Colour is meaning</span>
+  Throughout the course, colour marks <b>which axis</b> you are looking at — never decoration.
+  Four hues, one per role, consistent in every diagram.
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th>Symbol</th><th>Name</th><th class="num">Typical</th><th>What it counts</th></tr></thead>
+<tbody>
+<tr><td><code>B</code></td><td>batch size</td><td class="num">1–512</td><td>independent sequences processed together</td></tr>
+<tr><td><code>T</code></td><td>sequence length</td><td class="num">512–128k</td><td>tokens in one sequence (also <code>S</code>, <code>L</code>, <code>N</code>)</td></tr>
+<tr><td><code>d_model</code></td><td>model width</td><td class="num">768–16384</td><td>the residual-stream vector per token (also <code>C</code>, <code>n_embd</code>)</td></tr>
+<tr><td><code>n_head</code></td><td>attention heads</td><td class="num">12–128</td><td>independent attention patterns per layer</td></tr>
+<tr><td><code>d_head</code></td><td>head dimension</td><td class="num">64–128</td><td><code>d_model / n_head</code> in classic MHA</td></tr>
+<tr><td><code>n_kv_head</code></td><td>KV heads</td><td class="num">1–8</td><td>GQA: how many K/V heads the query heads share</td></tr>
+<tr><td><code>d_ff</code></td><td>MLP width</td><td class="num">4·d_model</td><td>inner dimension of the feed-forward block</td></tr>
+<tr><td><code>n_layer</code></td><td>depth</td><td class="num">12–128</td><td>stacked transformer blocks</td></tr>
+<tr><td><code>V</code></td><td>vocab size</td><td class="num">32k–256k</td><td>distinct tokens the model can emit</td></tr>
+<tr><td><code>N</code></td><td>parameters</td><td class="num">1M–1T</td><td>trainable weights</td></tr>
+<tr><td><code>D</code></td><td>training tokens</td><td class="num">1B–20T</td><td>tokens seen during pretraining</td></tr>
+</tbody>
+</table>
+</div>
+
+<h4>The five shapes in every transformer</h4>
+<pre><code>tokens        (B, T)                        # int64 token ids
+embeddings    (B, T, d_model)               # the residual stream
+q, k, v       (B, n_head, T, d_head)        # after the reshape dance
+attn weights  (B, n_head, T, T)             # rows sum to 1
+logits        (B, T, V)                     # one distribution per position</code></pre>
+
+<div class="box math-note">
+<span class="t">On accuracy</span>
+<p style="margin-bottom:0">Architectural numbers (DeepSeek-V3 MLA ranks, GQA head counts,
+FlashAttention versions, Chinchilla coefficients) come from primary papers and public model configs,
+checked <b>August 2026</b>. Every quantitative claim the course makes about its own code is backed by
+a test in <code>tests/test_tfs.py</code>. Where something is contested or open, the text says so
+rather than stating it flatly. Chapter 18 is deliberately dated and will age; Chapters 1–17 cover
+mechanisms that have been stable for years.</p>
+</div>
+
+<div style="margin-top:2.5rem;display:flex;gap:.7rem;align-items:center;flex-wrap:wrap">
+  <a class="btn primary" href="ch01-tensors.html" style="text-decoration:none;border-bottom:0">Start Chapter 1 &rarr;</a>
+  <button class="btn" id="reset" type="button">Reset progress</button>
+</div>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script>
+(function () {
+  const wrap = document.getElementById("parts");
+  PARTS.forEach(p => {
+    const d = document.createElement("div");
+    d.className = "part";
+    d.innerHTML =
+      `<div class="ph"><span class="pn">${p.n}</span><span class="pt">${p.t}</span>` +
+      `<span class="pd">${p.d}</span></div><div class="clist">` +
+      p.ch.map(c => `
+        <a class="ccard ${isDone(c.id) ? "done" : ""}" href="${c.f}">
+          <div class="num">${c.id}</div>
+          <div class="txt"><div class="t">${c.t}</div><div class="s">${c.s}</div></div>
+          <div class="tag">${c.tag}</div>
+        </a>`).join("") + `</div>`;
+    wrap.appendChild(d);
+  });
+
+  const done = CHAPTERS.filter(c => isDone(c.id)).length;
+  document.getElementById("pbar").style.width = (done / CHAPTERS.length * 100) + "%";
+  document.getElementById("pnote").textContent = Store.available()
+    ? `${done} of ${CHAPTERS.length} chapters complete. Progress is saved in this browser.`
+    : "Progress can’t be saved — browser storage is blocked on file:// URLs. Run serve.py instead.";
+
+  document.getElementById("reset").onclick = () => {
+    if (confirm("Clear all chapter completion marks?")) { Store.reset(); location.reload(); }
+  };
+
+  buildLayout();
+  buildTopbar(null);
+  decorateCode();
+})();
+</script>
+</body>
+</html>

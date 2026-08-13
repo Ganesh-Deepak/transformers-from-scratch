@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 16 — Mixture of Experts</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>16 · Mixture of Experts</h1>
+<p class="lead">
+Chapter 8 established that two-thirds of a transformer's parameters live in the MLP, and that every token
+passes through all of them. MoE breaks that link: keep a very large number of parameters, but use only a
+small slice per token. It is how a 671-billion-parameter model runs at the cost of a 37-billion one.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; MoE replaces the MLP<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; where the parameters live</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; every frontier model is now sparse</div>
+<div class="mn orient"><span class="k">Why this chapter</span>Decouple capacity from compute: 671B parameters that cost 37B to run.</div>
+
+<h2>16.1 · The idea</h2>
+
+<div class="box intuition">
+<span class="t">Decouple capacity from compute</span>
+<p style="margin-bottom:0">Replace the single MLP in each block with <b>N independent MLPs ("experts")</b>
+plus a small <b>router</b> that picks <code>k</code> of them per token. Parameters scale with
+<code>N</code>; FLOPs scale with <code>k</code>. With N=256 and k=8 you get 32× the parameters for the same
+per-token compute.</p>
+</div>
+
+<pre><code>class MoELayer(nn.Module):
+    def __init__(self, d_model, d_ff, n_expert, top_k):
+        super().__init__()
+        self.router  = nn.Linear(d_model, n_expert, bias=False)   # tiny
+        self.experts = nn.ModuleList([SwiGLU(d_model, d_ff) for _ in range(n_expert)])
+        self.top_k   = top_k
+
+    def forward(self, x):                       # x: (B, T, C)
+        B, T, C = x.shape
+        x = x.view(-1, C)                       # (B*T, C) — routing is PER TOKEN
+
+        logits = self.router(x)                 # (B*T, n_expert)
+        weights, idx = logits.softmax(-1).topk(self.top_k, dim=-1)   # (B*T, k) each
+        weights = weights / weights.sum(-1, keepdim=True)            # renormalise
+
+        out = torch.zeros_like(x)
+        for e, expert in enumerate(self.experts):
+            mask = (idx == e).any(dim=-1)       # which tokens chose expert e
+            if not mask.any(): continue
+            tokens = x[mask]                                  # (n_e, C)
+            w = weights[mask][(idx[mask] == e)].unsqueeze(-1) # (n_e, 1)
+            out[mask] += w * expert(tokens)
+        return out.view(B, T, C)
+</code></pre>
+
+<p class="tiny">This loop is for clarity. Production kernels sort tokens by expert and run grouped GEMMs
+(<code>MegaBlocks</code>, <code>grouped_gemm</code>) so no expert stalls the others.</p>
+
+<div class="box gotcha">
+<span class="t">Routing is per <i>token</i>, not per sequence</span>
+<p style="margin-bottom:0">Notice the <code>x.view(-1, C)</code>. Every token in the batch independently
+picks its own experts, and the choice changes at <b>every layer</b>. There is no "the maths expert" —
+a single sentence will touch dozens of different experts on its way through the network. Expert
+specialisation is real but far more granular and less interpretable than the name suggests.</p>
+</div>
+
+<h2>16.2 · The load-balancing problem</h2>
+
+<p>Left alone, routers collapse. An expert that happens to be slightly better early gets picked more, trains
+more, gets better, gets picked more. You end up with 4 experts doing all the work and 252 dead ones — all
+the memory cost of a huge model with the capacity of a small one.</p>
+
+<h3>Solution 1: auxiliary loss (Switch Transformer, GShard)</h3>
+
+<div class="mathblock">
+ℒ<sub>aux</sub> = α · N · <span class="op">Σ</span><sub>i=1</sub><sup>N</sup> f<sub>i</sub> · P<sub>i</sub>
+<span class="lbl">f<sub>i</sub> = fraction of tokens routed to expert i &nbsp;·&nbsp; P<sub>i</sub> = mean router probability for expert i</span>
+</div>
+
+<p>This product is minimised when both are uniform, so it pushes toward balanced routing. Typically
+<code>α ≈ 0.01</code>. The drawback is real: you are adding a term that <b>fights the language-modelling
+objective</b>. Too much and you damage quality by forcing tokens to experts that suit them poorly.</p>
+
+<h3>Solution 2: auxiliary-loss-free balancing (DeepSeek-V3, 2024)</h3>
+
+<pre><code># Add a per-expert BIAS to the routing logits, used only for top-k SELECTION.
+# The bias is not learned by gradient descent — it's adjusted by a control rule.
+scores = router(x)                       # (n_tok, n_expert)
+idx = (scores + self.bias).topk(k, -1).indices     # bias affects WHO is chosen
+weights = scores.gather(-1, idx).sigmoid()         # but NOT the output weighting
+
+# After each step, nudge the bias toward balance:
+with torch.no_grad():
+    load = count_tokens_per_expert(idx)
+    self.bias += gamma * (load.mean() - load).sign()   # under-used → bias up
+</code></pre>
+
+<div class="box intuition">
+<span class="t">Why this is better</span>
+<p style="margin-bottom:0">The bias steers <i>selection</i> without adding any gradient to the loss. There
+is no interference term fighting the language-modelling objective, so you get balance <b>and</b> the best
+achievable quality. DeepSeek reported this outperforms auxiliary-loss balancing, and the technique has
+spread quickly.</p>
+</div>
+
+<h3>Capacity factor and token dropping</h3>
+
+<p>In expert-parallel training each expert lives on a device with a fixed buffer:
+<code>capacity = capacity_factor × tokens / n_expert</code>. Tokens overflowing that buffer are
+<b>dropped</b> — they skip the MoE layer entirely and pass through on the residual connection only. A
+capacity factor of 1.0 drops a lot; 1.25 is a common compromise. Modern "dropless" implementations
+(MegaBlocks) use block-sparse kernels to avoid the issue altogether.</p>
+
+<h2>16.3 · DeepSeekMoE: fine-grained + shared experts</h2>
+
+<p>Two refinements that are now widely copied:</p>
+
+<div class="grid2">
+<div class="box math-note" style="margin:0">
+<span class="t">Fine-grained experts</span>
+<p style="margin-bottom:0">Instead of 8 large experts choosing 2, use <b>256 small experts choosing 8</b>
+(each 1/4 the size). Same active parameters, but the number of possible expert <i>combinations</i> explodes
+from C(8,2)=28 to C(256,8)≈10<sup>14</sup>. Far more precise specialisation for the same compute.</p>
+</div>
+<div class="box math-note" style="margin:0">
+<span class="t">Shared experts</span>
+<p style="margin-bottom:0">Designate 1–2 experts that <b>every</b> token uses, always. Common knowledge
+(grammar, basic syntax) lives there instead of being redundantly duplicated across all 256 routed experts —
+which frees the routed experts to specialise properly.</p>
+</div>
+</div>
+
+<pre><code># DeepSeek-V3 MoE layer
+out = shared_expert(x)                       # ALWAYS runs, for every token
+for e in top_8_of_256_routed:
+    out = out + weight[e] * expert[e](x)     # plus 8 routed experts
+</code></pre>
+
+<h2>16.4 · What real MoE models look like</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Model</th><th class="num">Total</th><th class="num">Active</th><th>Experts</th><th>Note</th></tr></thead>
+<tbody>
+<tr><td>Switch Transformer</td><td class="num">1.6 T</td><td class="num">~7 B</td><td>2048, top-1</td><td>the paper that proved it scales</td></tr>
+<tr><td>Mixtral 8×7B</td><td class="num">46.7 B</td><td class="num">12.9 B</td><td>8, top-2</td><td>the model that made MoE mainstream in open weights</td></tr>
+<tr><td>DeepSeek-V3 / R1</td><td class="num">671 B</td><td class="num">37 B</td><td>256 routed + 1 shared, top-8</td><td>fine-grained; aux-loss-free balancing; first 3 layers dense</td></tr>
+<tr><td>Llama 4 Maverick</td><td class="num">400 B</td><td class="num">17 B</td><td>128, top-1 + shared</td><td>alternating dense/MoE layers</td></tr>
+<tr><td>Qwen3-235B-A22B</td><td class="num">235 B</td><td class="num">22 B</td><td>128, top-8</td><td>no shared expert</td></tr>
+<tr><td>gpt-oss-120b</td><td class="num">117 B</td><td class="num">5.1 B</td><td>128, top-4</td><td>very high sparsity ratio</td></tr>
+<tr><td>Kimi K2</td><td class="num">1 T</td><td class="num">32 B</td><td>384, top-8</td><td>DeepSeek-lineage; trained with a Muon variant</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The trend since 2024 is unmistakable: <b>more experts, sparser routing, smaller active fraction</b>.
+DeepSeek-V3 activates 5.5% of its parameters; gpt-oss-120b activates 4.4%.</p>
+
+<div class="box warn">
+<span class="t">The catch: memory</span>
+<p style="margin-bottom:0">MoE reduces <b>FLOPs</b>, not <b>memory</b>. All 671B parameters must be resident
+somewhere — DeepSeek-V3 needs roughly 1.3 TB in bf16, i.e. ~17 H100s just to hold the weights. MoE trades
+"cheap to run, expensive to host" against dense models' "expensive to run, cheap to host". It is a great
+deal at datacentre scale and a poor one on a single GPU, which is exactly why frontier labs use MoE and
+local-inference enthusiasts mostly don't.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 1 — MoE">
+<div class="qitem" data-answer="1">
+  <div class="qq">DeepSeek-V3 is 671B parameters but "only 37B active". What does active mean?</div>
+  <div class="opts">
+    <div class="opt">Only 37B parameters are trained; the rest are frozen</div>
+    <div class="opt">Each token's forward pass uses ~37B parameters, so per-token FLOPs match a 37B dense model</div>
+    <div class="opt">Only 37B fit in GPU memory at once</div>
+    <div class="opt">37B is the number after quantization</div>
+  </div>
+  <div class="expl"><b>Per-token compute.</b> All 671B are trained and all must be in memory. But any given
+  token touches attention + shared expert + 8 of 256 routed experts ≈ 37B parameters. So it costs like a
+  37B model to run and stores like a 671B model — and, critically, <i>learns</i> more like a 671B model.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">Why do MoE models need explicit load balancing?</div>
+  <div class="opts">
+    <div class="opt">To make training deterministic</div>
+    <div class="opt">To keep all GPUs at the same temperature</div>
+    <div class="opt">Because the router is randomly initialised</div>
+    <div class="opt">Because routing has a rich-get-richer dynamic that collapses onto a few experts, wasting the rest</div>
+  </div>
+  <div class="expl"><b>Self-reinforcing collapse.</b> A slightly-preferred expert gets more tokens → more
+  gradient → better → more tokens. Without a counter-pressure you end up paying for 256 experts and using
+  4. (Uneven load also does cause GPU stalls in expert-parallel training — but the quality collapse is the
+  fundamental problem.)</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Why does DeepSeek use 256 small experts with top-8 rather than 8 large experts with top-1?</div>
+  <div class="opts">
+    <div class="opt">Far more expert combinations for the same active parameters, enabling finer specialisation</div>
+    <div class="opt">Smaller experts train faster</div>
+    <div class="opt">It uses less total memory</div>
+    <div class="opt">Top-8 routing is cheaper to compute than top-1</div>
+  </div>
+  <div class="expl"><b>Combinatorics.</b> C(256,8) ≈ 4×10¹⁴ distinct expert subsets versus 8. The active
+  parameter count is comparable, but the model can express vastly more distinct "modes". Total memory is
+  the same, routing is slightly <i>more</i> expensive, and small experts don't train faster.</div>
+</div>
+</div>
+
+<h2>16.5 · Practical notes</h2>
+
+<ul>
+<li><b>Not every layer is MoE.</b> DeepSeek-V3 keeps its first 3 layers dense; Llama 4 alternates. Early
+layers seem to do general-purpose work that doesn't benefit from specialisation.</li>
+<li><b>Fine-tuning MoE is harder.</b> Routing distributions shift under a new data distribution, some experts
+receive almost no gradient, and results are less stable than dense fine-tuning.</li>
+<li><b>Expert parallelism</b> is its own distributed-training strategy: experts are sharded across devices
+and tokens are all-to-all'd to reach them. The all-to-all is often the communication bottleneck of the
+entire training run.</li>
+<li><b>MoE and MLA compose.</b> DeepSeek-V3 uses both — MLA for the attention/KV cache, MoE for the MLP.
+They address orthogonal costs.</li>
+</ul>
+
+<h2>16.6 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">16.1</span><span class="ti">Build an MoE layer and watch it collapse</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Implement <code>MoELayer</code> with 8 experts, top-2. Train a small model on Tiny Shakespeare
+<b>without</b> any load-balancing loss, logging the token count per expert every 100 steps.</p>
+<ol>
+<li>Plot expert utilisation over time. Does it collapse? How fast?</li>
+<li>Add the auxiliary loss with <code>α ∈ {0, 0.001, 0.01, 0.1}</code>. Plot final LM loss and a balance
+metric (e.g. the coefficient of variation of expert loads) for each.</li>
+<li>Implement the bias-based aux-loss-free scheme and compare.</li>
+</ol>
+<details class="reveal"><summary>What you'll see</summary><div>
+<p style="margin-bottom:0">Collapse usually begins within a few hundred steps and is severe by ~2000.
+<code>α=0.01</code> gives good balance at negligible LM-loss cost; <code>α=0.1</code> balances perfectly but
+measurably hurts the LM loss — you can <i>see</i> the objective conflict in the numbers. The bias method
+should reach comparable balance with LM loss closer to the α=0 run, which is exactly the claim DeepSeek
+makes.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">16.2</span><span class="ti">Do the MoE arithmetic</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>For a model with <code>d_model=4096</code>, <code>d_ff=14336</code>, 32 layers, SwiGLU:</p>
+<ol>
+<li>Dense parameter count of all MLPs.</li>
+<li>Same, but each MLP replaced by 64 experts with top-4 routing (experts each 1/8 the width).</li>
+<li>Active parameters per token in case 2.</li>
+<li>Memory to serve each in bf16, and FLOPs per token for each.</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">1. Dense: 3 × 4096 × 14336 × 32              = 5.64 B
+2. Expert d_ff = 14336/8 = 1792
+   per expert: 3 × 4096 × 1792               = 22.02 M
+   × 64 experts × 32 layers                  = 45.1 B      (8× the dense count)
+3. Active: 4 experts × 22.02 M × 32 layers   = 2.82 B      (half the dense count!)
+4. Memory: 11.3 GB dense  vs  90.2 GB MoE    (8× more)
+   FLOPs/token (MLP): 2×5.64e9 = 11.3 GFLOP  vs  2×2.82e9 = 5.6 GFLOP  (half)</code></pre>
+<p style="margin-bottom:0"><b>8× the parameters at half the compute.</b> That's the trade in one line — and
+the 8× memory bill is why it's a datacentre technique.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">16.3</span><span class="ti">Do experts actually specialise?</span><span class="lvl">exploration</span></div>
+<div class="eb">
+<p>Load Mixtral-8x7B (or any small open MoE). Feed it text from several domains — Python, French,
+mathematics, poetry — and record the router's expert choices at each layer. Build a heatmap of
+domain × expert for an early, middle, and late layer.</p>
+<details class="reveal"><summary>What the literature finds</summary><div>
+<p style="margin-bottom:0">Specialisation is real but <b>weaker and more syntactic than expected</b>. The
+Mixtral paper found routing correlates strongly with <i>token identity</i> and local syntax (indentation,
+punctuation, numerals) and only weakly with semantic domain. Consecutive tokens are often routed to the same
+expert. The "one expert for biology" mental model is wrong; think of experts as specialised
+<i>computational routines</i> rather than topic specialists.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/2101.03961">Fedus et al. 2021 — Switch Transformer</a></li>
+<li><a href="https://arxiv.org/abs/2401.04088">Jiang et al. 2024 — Mixtral of Experts</a></li>
+<li><a href="https://arxiv.org/abs/2401.06066">Dai et al. 2024 — DeepSeekMoE</a> (fine-grained + shared experts)</li>
+<li><a href="https://arxiv.org/abs/2408.15664">Wang et al. 2024 — Auxiliary-Loss-Free Load Balancing</a></li>
+<li><a href="https://arxiv.org/abs/2211.15841">Gale et al. 2022 — MegaBlocks</a> (dropless MoE kernels)</li>
+<li>Companion notebook: <code>notebooks/16_moe.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("16");</script>
+</body>
+</html>

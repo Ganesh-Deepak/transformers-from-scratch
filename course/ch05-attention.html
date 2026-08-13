@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 5 — Attention From Scratch</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>5 · Attention From Scratch</h1>
+<p class="lead">
+This is the chapter. Everything before it was preparation; everything after it is refinement. We will derive
+attention rather than assert it — including <em>why</em> that <span class="math">√d<sub>k</sub></span> is
+there, which most tutorials skip.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; q @ k.T is a batched matmul<br><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; attention reads from the residual stream</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; one head becomes many<br><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; the T x T matrix is what FlashAttention refuses to write down</div>
+<div class="mn orient"><span class="k">Why this chapter</span>The core mechanism, derived rather than asserted.</div>
+
+<h2>5.1 · The problem attention was invented to solve</h2>
+
+<p>Before 2014, translation worked like this: an RNN encoder read the source sentence one word at a time,
+squeezing it into a single fixed-size vector; an RNN decoder then unrolled that vector into the target
+sentence.</p>
+
+<figure>
+<svg viewBox="0 0 660 150" xmlns="http://www.w3.org/2000/svg">
+  <g font-family="monospace" font-size="11">
+    <text x="10" y="20" fill="var(--ink-3,#6E7885)">The seq2seq bottleneck (Sutskever et al. 2014)</text>
+    <g fill="var(--surface,#fff)" stroke="var(--dim-4,#5A7A2E)" stroke-width="1.3">
+      <rect x="20"  y="42" width="52" height="30" rx="6"/>
+      <rect x="82"  y="42" width="52" height="30" rx="6"/>
+      <rect x="144" y="42" width="52" height="30" rx="6"/>
+      <rect x="206" y="42" width="52" height="30" rx="6"/>
+    </g>
+    <g fill="var(--dim-4,#5A7A2E)" text-anchor="middle" font-size="10.5">
+      <text x="46"  y="61">the</text><text x="108" y="61">cat</text>
+      <text x="170" y="61">sat</text><text x="232" y="61">down</text>
+    </g>
+    <path d="M72 57 H82 M134 57 H144 M196 57 H206" stroke="var(--dim-4,#5A7A2E)" stroke-width="1.5"/>
+    <circle cx="300" cy="57" r="20" fill="var(--stop-bg,#F7EAE8)" stroke="var(--stop,#A33028)" stroke-width="2"/>
+    <text x="300" y="61" fill="var(--stop,#A33028)" text-anchor="middle" font-size="10">ctx</text>
+    <path d="M258 57 H278" stroke="var(--stop,#A33028)" stroke-width="1.5"/>
+    <text x="300" y="95" fill="var(--stop,#A33028)" text-anchor="middle" font-size="10">ONE vector</text>
+    <text x="300" y="110" fill="var(--stop,#A33028)" text-anchor="middle" font-size="10">must hold the</text>
+    <text x="300" y="125" fill="var(--stop,#A33028)" text-anchor="middle" font-size="10">whole sentence</text>
+
+    <g fill="var(--surface,#fff)" stroke="var(--dim-3,#A8484F)" stroke-width="1.3">
+      <rect x="360" y="42" width="52" height="30" rx="6"/>
+      <rect x="422" y="42" width="52" height="30" rx="6"/>
+      <rect x="484" y="42" width="52" height="30" rx="6"/>
+      <rect x="546" y="42" width="52" height="30" rx="6"/>
+    </g>
+    <g fill="var(--dim-3,#A8484F)" text-anchor="middle" font-size="10.5">
+      <text x="386" y="61">le</text><text x="448" y="61">chat</text>
+      <text x="510" y="61">s'est</text><text x="572" y="61">assis</text>
+    </g>
+    <path d="M322 57 H360 M412 57 H422 M474 57 H484 M536 57 H546" stroke="var(--dim-3,#A8484F)" stroke-width="1.5"/>
+  </g>
+</svg>
+<figcaption>Every word of the source has to fit through one vector. Translation quality collapsed on long sentences.</figcaption>
+</figure>
+
+<p>Bahdanau, Cho and Bengio's fix (2014) was: <b>don't compress. Keep all the encoder states, and let the
+decoder look back at whichever ones it needs, at every step.</b> "Which ones it needs" is computed by a
+small learned scoring function whose output is softmaxed into weights. That is attention.</p>
+
+<p>Vaswani et al. (2017) then asked the aggressive question: <i>if attention is doing all the work, do we need
+the RNN at all?</i> The answer was no — and the title <i>Attention Is All You Need</i> is not hyperbole,
+it's a literal description of the ablation.</p>
+
+<div class="box math-note">
+<span class="t">Why removing the RNN mattered so much</span>
+<p style="margin-bottom:0">An RNN must process token <code>t</code> before token <code>t+1</code> — it is
+<b>inherently sequential</b>, so training cannot be parallelised across the time axis. Attention computes all
+positions <b>simultaneously</b> as one big matmul. That is the entire reason transformers scaled and RNNs
+didn't: not that attention is smarter, but that it saturates a GPU.</p>
+</div>
+
+<h2>5.2 · The intuition: a soft dictionary lookup</h2>
+
+<p>Start with something you already know — a Python dict:</p>
+
+<pre><code>d = {"cat": [1, 0, 0], "dog": [0, 1, 0], "bird": [0, 0, 1]}
+d["cat"]        # exact match on the key → return that one value
+</code></pre>
+
+<p>A dictionary lookup is: compare my <b>query</b> against every <b>key</b>; where it matches, return the
+<b>value</b>. The match is hard — 100% on one key, 0% on the rest.</p>
+
+<div class="box intuition">
+<span class="t">Attention is the same operation, made soft and differentiable</span>
+<ul style="margin-bottom:0">
+<li>Compare the query to <b>every</b> key, getting a <b>similarity score</b> instead of a boolean.</li>
+<li>Softmax those scores into weights that sum to 1.</li>
+<li>Return a <b>weighted average of all the values</b> instead of just one.</li>
+</ul>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th></th><th>Python dict</th><th>Attention</th></tr></thead>
+<tbody>
+<tr><td><b>Query</b></td><td>the key you're looking up</td><td>"what information does this token need?"</td></tr>
+<tr><td><b>Key</b></td><td>the dict's keys</td><td>"what information does this token offer?"</td></tr>
+<tr><td><b>Value</b></td><td>the dict's values</td><td>"the actual content to pass along"</td></tr>
+<tr><td><b>Match</b></td><td><code>==</code>, exact</td><td>dot product, graded</td></tr>
+<tr><td><b>Result</b></td><td>one value</td><td>weighted average of all values</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Concretely, in <i>"The animal didn't cross the street because <b>it</b> was too tired"</i>: when processing
+<b>it</b>, the query encodes something like <i>"I am a pronoun and I need my referent"</i>. The keys of
+<i>animal</i> and <i>street</i> encode <i>"I am a noun that can be referred to"</i>. <i>animal</i> scores
+higher (it can be tired), so most of the weight lands there, and <b>it</b>'s output vector becomes heavily
+mixed with <i>animal</i>'s value.</p>
+
+<h2>5.3 · Where Q, K, and V come from</h2>
+
+<p>Crucially, they are all <b>projections of the same input</b>. This is what "self-attention" means.</p>
+
+<pre><code>x = ...                      # (B, T, C)   the residual stream
+
+W_q = nn.Linear(C, C, bias=False)
+W_k = nn.Linear(C, C, bias=False)
+W_v = nn.Linear(C, C, bias=False)
+
+q = W_q(x)                   # (B, T, C)   "what am I looking for?"
+k = W_k(x)                   # (B, T, C)   "what do I contain?"
+v = W_v(x)                   # (B, T, C)   "what do I pass on if selected?"
+</code></pre>
+
+<div class="box intuition">
+<span class="t">Why three different projections of the same thing?</span>
+<p style="margin-bottom:0">Because <b>asking</b> and <b>being asked about</b> are different roles. The word
+<i>"it"</i> should be a strong <i>query</i> for referents but a weak <i>key</i> — nothing wants to attend to
+<i>"it"</i>. One shared projection couldn't express that asymmetry. Splitting Q from K lets the score matrix
+be <b>non-symmetric</b>: <code>score(i→j) ≠ score(j→i)</code>. And separating V lets "how relevant am I"
+be decoupled from "what do I actually contribute".</p>
+</div>
+
+<h2>5.4 · The formula, derived</h2>
+
+<div class="mathblock" style="font-size:1.3em">
+Attention(Q, K, V) = softmax<big>(</big><span class="frac"><span class="n">Q K<sup>T</sup></span><span class="d">√d<sub>k</sub></span></span><big>)</big> V
+<span class="lbl">Vaswani et al., 2017 — "Scaled Dot-Product Attention"</span>
+</div>
+
+<p>Four steps. Let's take them one at a time, with shapes, for a single sequence
+(<code>T</code> tokens, <code>d_k</code> features).</p>
+
+<h3>Step 1 — score every query against every key</h3>
+<pre><code>scores = q @ k.transpose(-2, -1)        # (T, d_k) @ (d_k, T) → (T, T)
+</code></pre>
+<p><code>scores[i, j]</code> = how much token <code>i</code> should attend to token <code>j</code>.
+The <code>d_k</code> axis is consumed — that's the dot product. Output is <b>T×T</b>, and that quadratic
+term is the source of every efficiency problem in Part IV.</p>
+
+<h3>Step 2 — scale by <span class="math">√d<sub>k</sub></span></h3>
+<pre><code>scores = scores / math.sqrt(d_k)
+</code></pre>
+
+<div class="box math-note">
+<span class="t">Why √d<sub>k</sub>, derived properly</span>
+<p>Assume the components of <span class="math">q</span> and <span class="math">k</span> are independent with
+mean 0 and variance 1. Their dot product is</p>
+<div class="mathblock" style="margin:.8em 0">q · k = <span class="op">Σ</span><sub>i=1</sub><sup>d<sub>k</sub></sup> q<sub>i</sub> k<sub>i</sub></div>
+<p>Each term <span class="math">q<sub>i</sub>k<sub>i</sub></span> has mean 0 and variance 1 (product of
+independent unit-variance variables). Summing <span class="math">d<sub>k</sub></span> independent terms
+<b>adds the variances</b>:</p>
+<div class="mathblock" style="margin:.8em 0">
+Var(q · k) = d<sub>k</sub> &nbsp;&nbsp;⟹&nbsp;&nbsp; std(q · k) = √d<sub>k</sub>
+</div>
+<p style="margin-bottom:0">So with <span class="math">d<sub>k</sub></span> = 64, typical scores are around
+±8; with <span class="math">d<sub>k</sub></span> = 128, around ±11. Feed ±11 into a softmax and it saturates —
+one weight goes to ~1.0, the rest to ~0, and <b>the gradient of softmax at saturation is essentially zero</b>.
+Training stalls. Dividing by <span class="math">√d<sub>k</sub></span> restores unit variance regardless of
+head size, keeping softmax in its responsive region.</p>
+</div>
+
+<p>Turn off the "divide by √d_k" toggle below and push <code>d_k</code> up. Watch the weights collapse onto
+a single cell:</p>
+
+<div data-viz="attention" data-t="7" data-tokens="The cat sat on the warm mat"></div>
+
+<h3>Step 3 — mask, then softmax</h3>
+<pre><code>scores = scores.masked_fill(mask == 0, float('-inf'))    # BEFORE softmax
+attn   = scores.softmax(dim=-1)                          # (T, T), each ROW sums to 1
+</code></pre>
+
+<div class="box gotcha">
+<span class="t">The mask must be applied before the softmax, with −∞ not 0</span>
+<p style="margin-bottom:0">Setting masked scores to <code>-inf</code> makes <code>exp(-inf) = 0</code>, so
+they contribute nothing <i>and the remaining weights still sum to exactly 1</i>. Zeroing the weights
+<i>after</i> softmax would leave the row summing to less than 1 — a systematic, silent shrinkage of the
+output. In practice use a large negative number like <code>-1e9</code> for fp32 or
+<code>torch.finfo(dtype).min</code> for fp16/bf16, because <code>-inf</code> can produce <code>NaN</code>
+if an entire row is masked (which happens with padding).</p>
+</div>
+
+<p>Note <code>dim=-1</code>: we normalise across <b>keys</b>, so each query distributes 100% of its attention
+across the things it can see. Using <code>dim=-2</code> normalises across queries — a real bug that
+still trains, badly.</p>
+
+<h3>Step 4 — weighted sum of values</h3>
+<pre><code>out = attn @ v                          # (T, T) @ (T, d_v) → (T, d_v)
+</code></pre>
+<p>Row <code>i</code> of the output is <code>Σ_j attn[i,j] · v[j]</code> — a convex combination of every
+value vector. The <code>T</code> axis is consumed this time. The output has the same shape as the input,
+which is what lets you stack these forever.</p>
+
+<h2>5.5 · One complete pass, by hand, with real numbers</h2>
+
+<p>Formulas are easy to nod along to. Here is attention computed end to end on three tokens with
+<span class="math">d<sub>k</sub></span> = 2, small enough to check every number with a calculator.
+Do check them — that is the exercise.</p>
+
+<div class="mn">
+  <span class="k">Why so tiny</span>
+  Real models use <span class="math">d<sub>k</sub></span> = 64 or 128 and thousands of tokens. The
+  arithmetic is identical; only the size of the loops changes.
+</div>
+
+<div class="example">
+<span class="t">Worked example — "the cat sat", causal, d_k = 2</span>
+
+<div class="step"><div class="i">1</div><div>
+<b>Start from the projections.</b> Assume <code>W_q, W_k, W_v</code> have already produced:
+<pre style="margin:.5rem 0"><code class="nohl">        q                k                v
+the   [1,  0]        [1,  0]        [10,  0]
+cat   [0,  1]        [0,  1]        [ 0, 10]
+sat   [1,  1]        [1,  1]        [ 5,  5]</code></pre>
+Shapes: q, k, v are each <span class="shape"><b>3</b><span class="x">, </span><b>2</b></span> — 3 tokens, 2 features.
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Score: every query against every key.</b> Each entry is a dot product (Refresher 2, Ch 1).
+<code>s[i,j] = q[i] · k[j]</code>
+<pre style="margin:.5rem 0"><code class="nohl">s[0,0] = [1,0]·[1,0] = 1     s[0,1] = [1,0]·[0,1] = 0     s[0,2] = [1,0]·[1,1] = 1
+s[1,0] = [0,1]·[1,0] = 0     s[1,1] = [0,1]·[0,1] = 1     s[1,2] = [0,1]·[1,1] = 1
+s[2,0] = [1,1]·[1,0] = 1     s[2,1] = [1,1]·[0,1] = 1     s[2,2] = [1,1]·[1,1] = 2
+
+        the  cat  sat
+the  [   1    0    1  ]
+cat  [   0    1    1  ]      shape (3, 3) — T x T, the quadratic one
+sat  [   1    1    2  ]</code></pre>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>Scale by √d_k = √2 ≈ 1.414.</b>
+<pre style="margin:.5rem 0"><code class="nohl">[ 0.707   0.000   0.707 ]
+[ 0.000   0.707   0.707 ]
+[ 0.707   0.707   1.414 ]</code></pre>
+</div></div>
+
+<div class="step"><div class="i">4</div><div>
+<b>Apply the causal mask</b> — token <i>i</i> may not see <i>j &gt; i</i>. Set those to −∞
+<i>before</i> the softmax.
+<pre style="margin:.5rem 0"><code class="nohl">[ 0.707    -inf    -inf  ]
+[ 0.000   0.707    -inf  ]
+[ 0.707   0.707   1.414  ]</code></pre>
+</div></div>
+
+<div class="step"><div class="i">5</div><div>
+<b>Softmax each row.</b> Row 0 has one live entry, so it must be 1.0 regardless of its value —
+<i>softmax of a single number is always 1</i>. Row 1: <code>e⁰ = 1</code>, <code>e⁰·⁷⁰⁷ = 2.028</code>,
+sum 3.028 → <code>0.330, 0.670</code>. Row 2: <code>e⁰·⁷⁰⁷ = 2.028</code> (twice),
+<code>e¹·⁴¹⁴ = 4.113</code>, sum 8.169.
+<pre style="margin:.5rem 0"><code class="nohl">[ 1.000   0.000   0.000 ]   <- sums to 1
+[ 0.330   0.670   0.000 ]   <- sums to 1
+[ 0.248   0.248   0.503 ]   <- sums to 1</code></pre>
+</div></div>
+
+<div class="step"><div class="i">6</div><div>
+<b>Weighted sum of the value vectors.</b> <code>out[i] = Σ_j attn[i,j] · v[j]</code>
+<pre style="margin:.5rem 0"><code class="nohl">out[0] = 1.000·[10,0]                                  = [10.00,  0.00]
+out[1] = 0.330·[10,0] + 0.670·[0,10]                   = [ 3.30,  6.70]
+out[2] = 0.248·[10,0] + 0.248·[0,10] + 0.503·[5,5]     = [ 5.00,  5.00]</code></pre>
+Output shape <span class="shape"><b>3</b><span class="x">, </span><b>2</b></span> — same as the input.
+That is what lets you stack these forever.
+</div></div>
+
+<p style="margin-bottom:0"><b>Read the result.</b> Token 0 can only see itself, so its output <i>is</i> its
+own value. Token 1 blends itself with token 0, leaning towards its own. Token 2 sees everything and lands
+in the middle. <b>Every output is a weighted average of value vectors</b> — attention never invents a
+direction, it only mixes existing ones.</p>
+</div>
+
+<pre><code># Verify all of the above:
+import torch, math
+
+q = torch.tensor([[1.,0.], [0.,1.], [1.,1.]])
+k = q.clone()
+v = torch.tensor([[10.,0.], [0.,10.], [5.,5.]])
+
+s = q @ k.T / math.sqrt(2)
+s = s.masked_fill(torch.triu(torch.ones(3,3,dtype=torch.bool), 1), float('-inf'))
+attn = s.softmax(-1)
+print(attn.round(decimals=3))
+print((attn @ v).round(decimals=2))
+assert torch.allclose(attn.sum(-1), torch.ones(3))     # every row sums to 1</code></pre>
+
+<div class="box intuition">
+<span class="t">The one thing to carry forward</span>
+<p style="margin-bottom:0">Attention output is <b>always a convex combination of value vectors</b> —
+weights that are non-negative and sum to 1. It cannot amplify beyond the range of its inputs and it
+cannot invent a new direction. Everything a transformer "does" comes from choosing <i>which</i> values
+to mix, and from the MLP that follows.</p>
+</div>
+
+<h2>5.6 · The whole thing, in code</h2>
+
+<pre><code>import torch, torch.nn.functional as F, math
+
+def attention(q, k, v, mask=None):
+    """
+    q, k: (..., T_q, d_k)
+    v:    (..., T_k, d_v)
+    mask: (..., T_q, T_k) bool — True = keep, False = block
+    returns (..., T_q, d_v)
+    """
+    d_k = q.size(-1)
+    scores = q @ k.transpose(-2, -1) / math.sqrt(d_k)   # (..., T_q, T_k)
+    if mask is not None:
+        scores = scores.masked_fill(~mask, torch.finfo(scores.dtype).min)
+    attn = scores.softmax(dim=-1)                       # (..., T_q, T_k)
+    return attn @ v, attn                               # (..., T_q, d_v)
+
+
+# causal mask: token i may see j <= i
+T = 8
+causal = torch.tril(torch.ones(T, T, dtype=torch.bool))
+# tensor([[1,0,0,0,0,0,0,0],
+#         [1,1,0,0,0,0,0,0],
+#         [1,1,1,0,0,0,0,0],   ← row 2 sees tokens 0,1,2
+#         ...
+#         [1,1,1,1,1,1,1,1]])
+
+q = k = v = torch.randn(2, T, 64)
+out, w = attention(q, k, v, causal)
+out.shape            # (2, 8, 64)
+w[0, 3]              # row 3: nonzero for j<=3, exactly 0 for j>3
+</code></pre>
+
+<div class="box intuition">
+<span class="t">In production, call the fused kernel</span>
+<pre style="margin:.6em 0 0"><code>out = F.scaled_dot_product_attention(q, k, v, is_causal=True)</code></pre>
+<p style="margin-bottom:0">PyTorch dispatches this to FlashAttention when it can. It is <i>numerically
+identical</i> to the code above but never materialises the <code>(T,T)</code> matrix — the subject of
+Chapter 14. Write the loop version once to understand it; call the fused one forever after.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 1 — the mechanism">
+<div class="qitem" data-answer="2">
+  <div class="qq">Why divide by <span class="math">√d<sub>k</sub></span> rather than <span class="math">d<sub>k</sub></span>?</div>
+  <div class="opts">
+    <div class="opt">√d_k is faster to compute</div>
+    <div class="opt">Dividing by d_k would make scores too large</div>
+    <div class="opt">The <i>standard deviation</i> of the dot product grows like √d_k, so √d_k is exactly what restores unit variance</div>
+    <div class="opt">It's an empirical constant with no derivation</div>
+  </div>
+  <div class="expl"><b>Variance adds; standard deviation is its square root.</b> Var(q·k) = d_k, so
+  std = √d_k. Dividing by d_k would over-correct, shrinking scores toward zero and making the softmax
+  nearly uniform — attention would stop discriminating.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">You apply the causal mask <i>after</i> the softmax by multiplying the weights by a 0/1
+  triangular matrix. What goes wrong?</div>
+  <div class="opts">
+    <div class="opt">Rows no longer sum to 1, so early tokens' outputs get systematically shrunk</div>
+    <div class="opt">Nothing — it's equivalent</div>
+    <div class="opt">The model can still see the future</div>
+    <div class="opt">It produces NaN</div>
+  </div>
+  <div class="expl"><b>Broken normalisation.</b> Token 0 should attend 100% to itself. Post-masking, its row
+  sums to whatever fraction happened to land on position 0 before masking — maybe 0.1. Its output vector is
+  then scaled down 10×, and that scaling varies by position. The model can't see the future either way, but
+  it now has a position-dependent magnitude artifact it must waste capacity correcting.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq"><code>q</code> is <code>(B, T_q, d)</code> and <code>k</code>,<code>v</code> are
+  <code>(B, T_k, d)</code> with <code>T_q ≠ T_k</code> (cross-attention). What is the output shape?</div>
+  <div class="opts">
+    <div class="opt">(B, T_k, d)</div>
+    <div class="opt">(B, T_q, T_k)</div>
+    <div class="opt">(B, T_k, T_q)</div>
+    <div class="opt">(B, T_q, d)</div>
+  </div>
+  <div class="expl"><b>(B, T_q, d).</b> The scores are <code>(B, T_q, T_k)</code>, then
+  <code>(B,T_q,T_k) @ (B,T_k,d)</code> consumes <code>T_k</code>, leaving <code>(B, T_q, d)</code>.
+  <b>The output always has one vector per query</b>, regardless of how many keys there were. That's what
+  makes cross-attention work in encoder–decoder models: the decoder keeps its own length while reading an
+  encoder of any length.</div>
+</div>
+</div>
+
+<h2>5.7 · Self-attention vs cross-attention vs causal</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Variant</th><th>Q from</th><th>K, V from</th><th>Mask</th><th>Used in</th></tr></thead>
+<tbody>
+<tr><td><b>Bidirectional self-attention</b></td><td>x</td><td>x</td><td>padding only</td><td>BERT encoders, ViT</td></tr>
+<tr><td><b>Causal self-attention</b></td><td>x</td><td>x</td><td>causal + padding</td><td>every GPT-style LLM</td></tr>
+<tr><td><b>Cross-attention</b></td><td>decoder x</td><td>encoder output</td><td>padding only</td><td>T5, Whisper, translation</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The causal mask is what makes autoregressive training efficient. Because position <code>i</code> can only
+see <code>≤ i</code>, a single forward pass over a length-<code>T</code> sequence gives you <code>T</code>
+independent next-token predictions <i>at once</i>. Without the mask you'd need <code>T</code> separate forward
+passes. This is the trick that makes pretraining tractable.</p>
+
+<h2>5.8 · Complexity — the number that shapes everything after this</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Quantity</th><th>Cost</th><th>At T=1k, d=64</th><th>At T=128k, d=64</th></tr></thead>
+<tbody>
+<tr><td>score matrix memory</td><td>O(T²)</td><td>1M floats = 4 MB</td><td>1.6×10¹⁰ = <b>64 GB</b> (per head!)</td></tr>
+<tr><td>QKᵀ FLOPs</td><td>O(T²·d)</td><td>1.3×10⁸</td><td>2×10¹²</td></tr>
+<tr><td>projections FLOPs</td><td>O(T·d²)</td><td>8×10⁶</td><td>1×10⁹</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Two lessons:</p>
+<ul>
+<li><b>Attention is quadratic in sequence length.</b> Doubling context quadruples attention cost.</li>
+<li><b>At short context, the projections dominate; at long context, attention dominates.</b> The crossover
+for typical models is a few thousand tokens. This is why "attention is O(T²)" only became an emergency once
+people wanted 128k contexts.</li>
+</ul>
+
+<p>The 64 GB figure is not a typo, and it explains FlashAttention's existence: naive attention at long context
+doesn't fit in memory <i>at all</i>, even though the final output is tiny.</p>
+
+<h2>5.9 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">5.1</span><span class="ti">Implement and verify against PyTorch</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Write <code>attention(q, k, v, causal)</code> from scratch. Verify it matches
+<code>F.scaled_dot_product_attention(q, k, v, is_causal=True)</code> to within <code>1e-5</code> for
+random inputs of shape <code>(2, 4, 16, 64)</code>. Then <b>deliberately introduce each of these bugs</b>
+and describe what changes in the output:</p>
+<ol>
+<li>Forget the <code>/√d_k</code></li>
+<li>Use <code>softmax(dim=-2)</code></li>
+<li>Use <code>k @ q.transpose(-2,-1)</code> instead</li>
+<li>Apply the mask after softmax</li>
+</ol>
+<details class="reveal"><summary>What each bug does</summary><div>
+<ol>
+<li>Weights become near-one-hot; the output nearly equals a single value vector. Gradients through softmax
+shrink toward zero.</li>
+<li>Columns sum to 1 instead of rows. The output is no longer a convex combination of values — magnitudes
+vary wildly by position. Trains, badly.</li>
+<li>You get the <i>transpose</i> of the score matrix: token i's row now contains "how much everyone attends to
+i". With a causal mask this is catastrophic — it inverts the direction of information flow.</li>
+<li>Rows sum to &lt;1, position-dependent output shrinkage (see Checkpoint 1).</li>
+</ol>
+<p style="margin-bottom:0"><b>The point of this exercise:</b> none of these four bugs raises an exception.
+Three of them still train to a plausible-looking loss curve. This is why you verify against a reference
+implementation.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">5.2</span><span class="ti">Measure the √d_k effect</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>For <code>d_k in [4, 16, 64, 256, 1024]</code>, sample <code>q, k ~ N(0,1)</code> of shape
+<code>(1000, d_k)</code>, compute <code>(q*k).sum(-1)</code>, and report the empirical standard deviation.
+Confirm it equals <span class="math">√d<sub>k</sub></span>. Then compute the entropy of
+<code>softmax(scores)</code> with and without scaling, and plot it against <code>d_k</code>.</p>
+<details class="reveal"><summary>What you'll see</summary><div>
+<p style="margin-bottom:0">Empirical std tracks √d_k almost exactly. Unscaled entropy falls toward 0 as d_k
+grows (the distribution collapses to one-hot); scaled entropy stays roughly constant. That constant-entropy
+property across head sizes is exactly what the scaling factor buys you, and it's why the same architecture
+works at d_head=64 and d_head=256.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">5.3</span><span class="ti">Attention patterns on a real model</span><span class="lvl">exploration</span></div>
+<div class="eb">
+<p>Load GPT-2 with <code>output_attentions=True</code>, run the sentence
+<i>"The animal didn't cross the street because it was too tired"</i>, and plot the attention matrix for
+several (layer, head) pairs.</p>
+<ol>
+<li>Find a head where <i>"it"</i> attends strongly to <i>"animal"</i>.</li>
+<li>Find a "previous token" head — one whose matrix is a clean sub-diagonal.</li>
+<li>Find an "attention sink" — a head where most positions dump weight on token 0.</li>
+</ol>
+<details class="reveal"><summary>Notes on what you'll find</summary><div>
+<p>All three exist in GPT-2. Previous-token heads are common in early layers. The <b>attention sink</b> is
+the interesting one: the first token (often BOS) receives large attention from many heads for reasons
+unrelated to its content — it acts as a "null option" when a head has nothing it wants to attend to, because
+softmax forces every row to sum to 1 whether or not anything is relevant.</p>
+<p style="margin-bottom:0">This is not a curiosity. Attention sinks are why naive sliding-window KV eviction
+breaks models, and the <a href="https://arxiv.org/abs/2309.17453">StreamingLLM</a> paper's fix — always keep
+the first few tokens in the cache — comes directly from this observation. We return to it in Chapter 17.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">5.4</span><span class="ti">Reason about the quadratic</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>A model has <code>n_layer=32</code>, <code>n_head=32</code>, <code>d_head=128</code>, <code>B=1</code>.</p>
+<ol>
+<li>How much memory does the full set of attention score matrices take in bf16 at <code>T=4096</code>?
+At <code>T=32768</code>?</li>
+<li>At what <code>T</code> do attention FLOPs (<code>~12·n_layer·d_model·T²</code>) exceed the
+parameter FLOPs (<code>~2N·T</code>) for a 7B model?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<ol>
+<li>One layer's scores: <code>n_head × T² × 2 bytes</code>. At T=4096: 32 × 16.8M × 2 = <b>1.07 GB per
+layer</b>. All 32 layers at once would be 34 GB — though in practice you only hold one or two at a time.
+At T=32768 it's <b>68.7 GB for a single layer</b>. This is why FlashAttention isn't an optimisation, it's a
+prerequisite.</li>
+<li>Setting <code>12·32·4096·T² = 2·7e9·T</code> gives <code>T ≈ 8900</code>. So somewhere around
+<b>~9k tokens</b> attention overtakes the feed-forward path for a 7B model — comfortably inside the context
+lengths people actually use, which is why this stopped being a theoretical concern around 2023.</li>
+</ol>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017 — Attention Is All You Need</a> — read §3.2 alongside this chapter.</li>
+<li><a href="https://arxiv.org/abs/1409.0473">Bahdanau et al. 2014</a> — the original attention mechanism.</li>
+<li><a href="https://jalammar.github.io/illustrated-transformer/">Jay Alammar — The Illustrated Transformer</a> — the classic visual companion.</li>
+<li><a href="https://nlp.seas.harvard.edu/annotated-transformer/">The Annotated Transformer</a> (Harvard NLP) — the paper, line by line, as runnable code.</li>
+<li><a href="https://www.youtube.com/watch?v=kCc8FmEb1nY">Karpathy — Let's build GPT from scratch</a> — 2 hours, builds exactly this.</li>
+<li>Companion notebook: <code>notebooks/05_attention.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("05");</script>
+</body>
+</html>

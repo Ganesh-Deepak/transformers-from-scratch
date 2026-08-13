@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 22 — Capstone: Build a Modern LLM End to End</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>22 · Capstone: Build a Modern LLM End to End</h1>
+<p class="lead">
+Everything, assembled. You will build a small but architecturally current language model — RMSNorm, RoPE,
+GQA, SwiGLU, KV cache — train it, make it generate efficiently, then align it with DPO. On a laptop CPU,
+in a few hours.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; the architecture<br><a href="ch10-training.html">Ch&nbsp;10</a> &mdash; training<br><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; the cache<br><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; GQA<br><a href="ch20-dpo.html">Ch&nbsp;20</a> &mdash; DPO</div>
+<div class="mn orient"><span class="k">Why this chapter</span>Everything, assembled. If you build this, you have built the thing.</div>
+
+<div class="box intuition">
+<span class="t">Why this matters more than reading another paper</span>
+<p style="margin-bottom:0">You can follow every chapter of this course and still not be able to build one.
+The gap between "I understand attention" and "my attention implementation is causally correct, cache-correct,
+and matches a reference to 1e-5" is where the actual learning is. Everything below has a <b>testable</b>
+success criterion for exactly that reason.</p>
+</div>
+
+<h2>The specification</h2>
+
+<pre><code>@dataclass
+class Config:
+    vocab_size: int   = 8192        # your own BPE tokenizer (Ch 3)
+    d_model:    int   = 384
+    n_layer:    int   = 6
+    n_head:     int   = 6           # query heads
+    n_kv_head:  int   = 2           # GQA, 3 queries per KV head  (Ch 13)
+    d_head:     int   = 64
+    d_ff:       int   = 1024        # ≈ (8/3)·d_model rounded      (Ch 8)
+    max_T:      int   = 512
+    rope_base:  float = 10000.0     # (Ch 7)
+    tie_embed:  bool  = True        # (Ch 4)
+# ≈ 15 M parameters. Trains on CPU in ~30-60 minutes.
+</code></pre>
+
+<div class="tw">
+<table>
+<thead><tr><th>Component</th><th>Choice</th><th>From</th></tr></thead>
+<tbody>
+<tr><td>Tokenizer</td><td>byte-level BPE, 8192 merges</td><td>Ch 3</td></tr>
+<tr><td>Normalisation</td><td>RMSNorm, pre-norm, + final norm</td><td>Ch 8</td></tr>
+<tr><td>Position</td><td>RoPE on q and k, every layer</td><td>Ch 7</td></tr>
+<tr><td>Attention</td><td>GQA, 6 query heads / 2 KV heads, causal</td><td>Ch 6, 13</td></tr>
+<tr><td>MLP</td><td>SwiGLU, no biases</td><td>Ch 8</td></tr>
+<tr><td>Init</td><td>N(0, 0.02), residual projections × 1/√(2·n_layer)</td><td>Ch 9</td></tr>
+<tr><td>Optimizer</td><td>AdamW, β=(0.9, 0.95), wd 0.1 on 2-D params only</td><td>Ch 10</td></tr>
+<tr><td>Schedule</td><td>linear warmup → cosine decay to 10%</td><td>Ch 10</td></tr>
+<tr><td>Inference</td><td>KV cache + top-p sampling</td><td>Ch 11, 12</td></tr>
+<tr><td>Alignment</td><td>SFT → DPO</td><td>Ch 19, 20</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Milestone 1 — Tokenizer</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">M1</span><span class="ti">Train a byte-level BPE tokenizer</span><span class="lvl">~1 hr</span></div>
+<div class="eb">
+<p>Train on your chosen corpus. Provide <code>encode</code>, <code>decode</code>, and special tokens
+<code>&lt;|bos|&gt;</code>, <code>&lt;|eos|&gt;</code>, <code>&lt;|user|&gt;</code>,
+<code>&lt;|assistant|&gt;</code>.</p>
+<p><b>Tests that must pass:</b></p>
+<pre><code>assert tok.decode(tok.encode(s)) == s          # for 1000 random corpus slices
+assert tok.decode(tok.encode("🤖 émoji ñ 中文")) == "🤖 émoji ñ 中文"   # byte-level
+assert len(tok.encode(text)) &lt; len(text.encode()) * 0.4   # compression ≥ 2.5×
+assert all(i &lt; cfg.vocab_size for i in tok.encode(text))
+</code></pre>
+</div></div>
+
+<h2>Milestone 2 — The model</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">M2</span><span class="ti">Implement the architecture</span><span class="lvl">~2 hrs</span></div>
+<div class="eb">
+<p>Build <code>RMSNorm</code>, <code>build_rope_cache</code>/<code>apply_rope</code>,
+<code>GroupedQueryAttention</code>, <code>SwiGLU</code>, <code>Block</code>, <code>Model</code>.</p>
+<p><b>Tests that must pass — do not skip any of these:</b></p>
+<pre><code># 1. Shapes
+logits, loss = model(ids)                 # ids: (2, 16)
+assert logits.shape == (2, 16, cfg.vocab_size)
+
+# 2. Loss at init ≈ ln(V)                                        [Ch 9]
+assert abs(loss.item() - math.log(cfg.vocab_size)) &lt; 0.3
+
+# 3. CAUSALITY — perturb one token, earlier outputs must not move [Ch 9]
+ids2 = ids.clone(); ids2[0, 8] = (ids2[0, 8] + 1) % cfg.vocab_size
+assert torch.allclose(model(ids)[0][0, :8], model(ids2)[0][0, :8], atol=1e-5)
+assert not torch.allclose(model(ids)[0][0, 8], model(ids2)[0][0, 8])
+
+# 4. RoPE encodes RELATIVE position                               [Ch 7]
+assert abs(score(5, 8) - score(50, 53)) &lt; 1e-5
+
+# 5. GQA grouping is correct (loop vs vectorised)                 [Ch 13]
+assert torch.allclose(gqa_loop(x), gqa_vectorised(x), atol=1e-5)
+
+# 6. Every parameter receives a gradient
+loss.backward()
+for n, p in model.named_parameters():
+    assert p.grad is not None and p.grad.abs().sum() > 0, n
+
+# 7. Parameter count matches your hand calculation                [Ch 9]
+assert abs(count_params(cfg) - sum(p.numel() for p in model.parameters())) &lt; 10
+</code></pre>
+<p class="tiny" style="margin-bottom:0">Test 3 is the one people skip and regret. Test 6 catches a
+disconnected sub-module, which otherwise looks like "the model just learns slowly."</p>
+</div></div>
+
+<h2>Milestone 3 — Training</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">M3</span><span class="ti">Train it</span><span class="lvl">~1-2 hrs</span></div>
+<div class="eb">
+<p>Corpus options, in increasing order of interest: TinyStories (best results at this scale), Tiny
+Shakespeare (fastest), or ~20 MB of any text you like.</p>
+<p><b>Before the real run:</b> the overfit-one-batch test from Chapter 10. Loss must reach &lt; 0.1 on a
+single fixed batch within 500 steps. If it can't, stop and debug — nothing downstream will work.</p>
+<pre><code>Suggested: batch 32 × seq 256, lr 3e-4, warmup 200, ~5000 steps,
+grad clip 1.0, eval every 250 steps.
+</code></pre>
+<p><b>Deliverables:</b> train/val loss curves, final val perplexity, 500 tokens of generated text, and the
+loss-vs-<code>ln(V)</code> check at step 0.</p>
+<details class="reveal"><summary>Target numbers</summary><div>
+<p style="margin-bottom:0">On TinyStories with 15M parameters, expect val loss around <b>1.6–2.2</b>
+(perplexity 5–9) and genuinely coherent short stories with consistent characters — TinyStories is designed
+so small models can actually succeed. On Shakespeare expect loss ~1.4–1.8 with convincing form and no
+meaning. Either is a pass; TinyStories is much more satisfying.</p>
+</div></details>
+</div></div>
+
+<h2>Milestone 4 — Efficient inference</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">M4</span><span class="ti">KV cache + samplers</span><span class="lvl">~1 hr</span></div>
+<div class="eb">
+<p>Add KV caching and the full sampler suite (temperature, top-k, top-p, min-p).</p>
+<pre><code># The test that catches all three cache bugs from Ch 12:
+torch.manual_seed(0); a = generate(model, prompt, 100, use_cache=False, temperature=0)
+torch.manual_seed(0); b = generate(model, prompt, 100, use_cache=True,  temperature=0)
+assert torch.equal(a, b), "cache changes the output — check RoPE offset & is_causal"
+</code></pre>
+<p><b>Deliverables:</b> a plot of time-per-token vs position, cached and uncached; the measured speedup at
+100, 200 and 400 tokens; and generated samples at three temperatures.</p>
+</div></div>
+
+<h2>Milestone 5 — Alignment</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">M5</span><span class="ti">SFT then DPO</span><span class="lvl">~2 hrs</span></div>
+<div class="eb">
+<p>Build a small preference dataset — 200–500 triples is enough. The easiest way to make the effect
+<b>visible</b> at this scale is to choose a stylistic axis you can generate synthetically:</p>
+<ul>
+<li>short answers (chosen) vs rambling ones (rejected)</li>
+<li>stories that end happily (chosen) vs abruptly (rejected)</li>
+<li>always-in-character vs breaking character</li>
+</ul>
+<p>Then: <b>(a)</b> SFT with prompt masking, <b>(b)</b> DPO with β=0.1, logging loss, implicit rewards,
+margin, ranking accuracy, and <b>absolute</b> chosen/rejected log-probs.</p>
+<p><b>Deliverables:</b></p>
+<ol>
+<li>Reward-margin and ranking-accuracy curves. Accuracy should reach &gt; 0.8.</li>
+<li>Side-by-side generations from base, SFT, and DPO models on 10 held-out prompts.</li>
+<li>A β sweep {0.01, 0.1, 0.5} with samples from each — and a paragraph on what β=0.01 did.</li>
+<li>The implicit-reward evaluation from Exercise 20.3: does <code>β·log(π/π_ref)</code> rank held-out
+pairs above chance?</li>
+</ol>
+<details class="reveal"><summary>What success looks like</summary><div>
+<p style="margin-bottom:0">The DPO model should visibly follow your preference axis while remaining
+coherent. At β=0.01 you'll likely see it collapse — very short outputs, repetition, or degraded grammar —
+which is the KL constraint being too weak, exactly as Chapter 20 predicts. <b>Seeing that failure yourself
+is the most valuable part of this milestone.</b></p>
+</div></details>
+</div></div>
+
+<h2>Stretch goals</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Extension</th><th>Chapter</th><th>Difficulty</th></tr></thead>
+<tbody>
+<tr><td>Swap GQA → MLA and verify the absorption identity</td><td>13</td><td>hard</td></tr>
+<tr><td>Replace the MLP with a 4-expert MoE; plot expert collapse with and without balancing</td><td>16</td><td>medium</td></tr>
+<tr><td>Implement tiled FlashAttention in PyTorch; verify exactness</td><td>14</td><td>medium</td></tr>
+<tr><td>Speculative decoding using a 2-layer draft of your own model</td><td>15</td><td>hard</td></tr>
+<tr><td>Extend context 512 → 2048 with YaRN; plot perplexity vs length</td><td>17</td><td>medium</td></tr>
+<tr><td>GRPO on a toy verifiable task (2-digit addition)</td><td>21</td><td>hard</td></tr>
+<tr><td>Logit lens: decode every layer's residual stream</td><td>4</td><td>easy, very illuminating</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Self-assessment</h2>
+
+<p>You have understood this course if you can answer these without looking anything up:</p>
+
+<div class="quiz" data-title="Final check — 6 questions">
+<div class="qitem" data-answer="2">
+  <div class="qq">Why is <span class="math">√d<sub>k</sub></span> the right scaling factor?</div>
+  <div class="opts">
+    <div class="opt">It normalises the vector lengths</div>
+    <div class="opt">It makes attention weights sum to 1</div>
+    <div class="opt">Var(q·k) = d_k for unit-variance inputs, so std = √d_k — dividing by it keeps softmax out of saturation</div>
+    <div class="opt">It compensates for the number of heads</div>
+  </div>
+  <div class="expl">Ch 5. Variances add over the d_k summed terms; the standard deviation is the square root.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">Why is LLM decoding memory-bound?</div>
+  <div class="opts">
+    <div class="opt">The KV cache is larger than the model</div>
+    <div class="opt">One token's forward pass reads every weight but does only ~1 FLOP per byte read — hundreds of times below the GPU's ridge point</div>
+    <div class="opt">GPUs have slow memory</div>
+    <div class="opt">Attention is quadratic</div>
+  </div>
+  <div class="expl">Ch 12. Arithmetic intensity ≈ 1 vs a ridge point around 295 FLOP/byte on an H100.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Why does GQA reduce memory but not FLOPs?</div>
+  <div class="opts">
+    <div class="opt">All query heads still attend over the full sequence; only the number of stored/read K,V heads shrinks</div>
+    <div class="opt">It skips some attention computations</div>
+    <div class="opt">It uses lower precision for K and V</div>
+    <div class="opt">It reduces the sequence length</div>
+  </div>
+  <div class="expl">Ch 13. K and V are expanded back up (or re-read) before the matmul.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">Why is FlashAttention faster despite doing the same or more arithmetic?</div>
+  <div class="opts">
+    <div class="opt">It approximates the softmax</div>
+    <div class="opt">It uses fewer attention heads</div>
+    <div class="opt">It runs in lower precision</div>
+    <div class="opt">It never writes the N×N matrix to HBM — tiling plus the online softmax keep everything in SRAM</div>
+  </div>
+  <div class="expl">Ch 14. It is exact; the win is entirely in data movement.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">Why does DPO not need a reward model?</div>
+  <div class="opts">
+    <div class="opt">It uses a fixed heuristic reward</div>
+    <div class="opt">The KL-constrained optimum lets you express reward as β·log(π/π_ref) + β·log Z(x), and Z(x) cancels in the Bradley-Terry difference</div>
+    <div class="opt">It trains the reward model implicitly through a second head</div>
+    <div class="opt">It uses verifiable rewards instead</div>
+  </div>
+  <div class="expl">Ch 20. The policy <i>is</i> the reward model; the intractable term cancels exactly.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">Why does GRPO not need a value model?</div>
+  <div class="opts">
+    <div class="opt">It uses the reference model's values</div>
+    <div class="opt">It doesn't compute advantages</div>
+    <div class="opt">Sampling G completions per prompt makes the group mean an empirical baseline for the advantage</div>
+    <div class="opt">The reward model provides per-token values</div>
+  </div>
+  <div class="expl">Ch 21. Trade a learned critic for G× generation.</div>
+</div>
+</div>
+
+<h2>Where to go next</h2>
+
+<ul>
+<li><b>Interpretability</b> — <a href="https://transformer-circuits.pub/">Transformer Circuits</a>, sparse
+autoencoders, superposition. The most intellectually interesting open problem in the field.</li>
+<li><b>Systems</b> — read the vLLM or SGLang source. Write a Triton kernel. Chapters 12–15 are the
+prerequisites and you now have them.</li>
+<li><b>Post-training</b> — <a href="https://rlhfbook.com/">the RLHF Book</a>, then reproduce a GRPO run
+on a real benchmark.</li>
+<li><b>Build things</b> — the fastest remaining learning is deploying a model and discovering which of
+Chapters 11–15 you only <i>thought</i> you understood.</li>
+</ul>
+
+<div class="box intuition" style="margin-top:2.5em">
+<span class="t">One last thing</span>
+<p style="margin-bottom:0">The architecture in this capstone is, structurally, the same architecture as a
+frontier model. The differences are scale, data, and an enormous amount of engineering — not a different
+idea. If you built this, you have built the thing. Everything else is more of it.</p>
+</div>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("22");</script>
+</body>
+</html>

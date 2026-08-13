@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 20 — DPO From First Principles</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>20 · DPO From First Principles</h1>
+<p class="lead">
+Direct Preference Optimization replaces four models, a generation loop, and PPO's hyperparameter thicket
+with <em>a single loss function you can write in six lines</em>. It is not a heuristic or an approximation —
+it is derived from exactly the same objective PPO optimises. This chapter does the derivation completely.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch19-sft-rlhf.html">Ch&nbsp;19</a> &mdash; Bradley-Terry and the KL-constrained objective</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch21-grpo.html">Ch&nbsp;21</a> &mdash; the variants, and what replaced it for reasoning</div>
+<div class="mn orient"><span class="k">Why this chapter</span>Your language model is secretly a reward model. Eight lines of algebra prove it.</div>
+
+<div class="box intuition">
+<span class="t">The claim</span>
+<p style="margin-bottom:0">Rafailov et al. (2023) proved that <b>your language model is secretly a reward
+model</b>. Given the RLHF objective, the optimal policy and the reward function are related by a closed-form
+equation. Invert it, substitute into the Bradley-Terry likelihood, and the reward model disappears — leaving
+a supervised classification loss on preference pairs.</p>
+</div>
+
+<h2>20.1 · Setup: the objective we are actually solving</h2>
+
+<p>From Chapter 19, RLHF maximises:</p>
+
+<div class="mathblock">
+max<sub>π</sub> &nbsp; E<sub>x∼D, y∼π(·|x)</sub><big>[</big> r(x,y) <big>]</big> − β · KL<big>(</big>π(·|x) ‖ π<sub>ref</sub>(·|x)<big>)</big>
+</div>
+
+<p>Notation for the rest of the chapter:</p>
+<div class="dimkey">
+  <span class="chip"><b>π<sub>θ</sub></b> <span>the policy being trained</span></span>
+  <span class="chip"><b>π<sub>ref</sub></b> <span>frozen SFT model</span></span>
+  <span class="chip"><b>r(x,y)</b> <span>reward</span></span>
+  <span class="chip"><b>β</b> <span>KL strength (0.1 typical)</span></span>
+  <span class="chip"><b>y<sub>w</sub>, y<sub>l</sub></b> <span>chosen / rejected</span></span>
+</div>
+
+<h2>20.2 · Step 1 — the optimal policy has a closed form</h2>
+
+<p>Expand the KL and work with a single prompt <span class="math">x</span>:</p>
+
+<div class="mathblock" style="text-align:left;padding-left:28px">
+max<sub>π</sub> E<sub>y∼π</sub><big>[</big> r(x,y) − β log <span class="frac"><span class="n">π(y|x)</span><span class="d">π<sub>ref</sub>(y|x)</span></span> <big>]</big>
+</div>
+
+<p>Divide by <span class="math">β</span> and flip the sign to get a minimisation:</p>
+
+<div class="mathblock" style="text-align:left;padding-left:28px">
+min<sub>π</sub> E<sub>y∼π</sub><big>[</big> log <span class="frac"><span class="n">π(y|x)</span><span class="d">π<sub>ref</sub>(y|x)</span></span> − <span class="frac"><span class="n">1</span><span class="d">β</span></span> r(x,y) <big>]</big>
+&nbsp;=&nbsp;
+min<sub>π</sub> E<sub>y∼π</sub><big>[</big> log <span class="frac"><span class="n">π(y|x)</span><span class="d">π<sub>ref</sub>(y|x) · e<sup>r(x,y)/β</sup></span></span> <big>]</big>
+</div>
+
+<p>The denominator is a non-negative function of <span class="math">y</span>, but it isn't a probability
+distribution — it doesn't sum to 1. Define the normaliser (the <b>partition function</b>):</p>
+
+<div class="mathblock">
+Z(x) = <span class="op">Σ</span><sub>y</sub> π<sub>ref</sub>(y|x) · e<sup>r(x,y)/β</sup>
+<span class="lbl">a sum over every possible completion y — astronomically intractable. Remember this.</span>
+</div>
+
+<p>Now divide and multiply by <span class="math">Z(x)</span>:</p>
+
+<div class="mathblock" style="text-align:left;padding-left:28px">
+min<sub>π</sub> E<sub>y∼π</sub><big>[</big> log <span class="frac"><span class="n">π(y|x)</span><span class="d"><span class="frac" style="font-size:.9em"><span class="n">1</span><span class="d">Z(x)</span></span>π<sub>ref</sub>(y|x)e<sup>r(x,y)/β</sup></span></span> − log Z(x) <big>]</big>
+</div>
+
+<p>The first term is now exactly <span class="math">KL(π ‖ π*)</span> where
+<span class="math">π*</span> is the distribution in the denominator; the second doesn't depend on
+<span class="math">π</span> at all. A KL divergence is minimised (at zero) precisely when the two
+distributions are equal. Therefore:</p>
+
+<div class="mathblock" style="font-size:1.2em;border-left-color:var(--k)">
+π*(y|x) = <span class="frac"><span class="n">1</span><span class="d">Z(x)</span></span> π<sub>ref</sub>(y|x) · exp<big>(</big><span class="frac"><span class="n">1</span><span class="d">β</span></span> r(x,y)<big>)</big>
+<span class="lbl">the exact optimum of the KL-constrained RLHF objective</span>
+</div>
+
+<div class="box math-note">
+<span class="t">Read what this says</span>
+<p style="margin-bottom:0">The optimal policy is the <b>reference policy re-weighted exponentially by
+reward</b>. High-reward completions get up-weighted, low-reward ones down-weighted, and
+<span class="math">β</span> controls how aggressively. At <span class="math">β→∞</span> you get
+<span class="math">π<sub>ref</sub></span> back; at <span class="math">β→0</span> you get all mass on the
+argmax reward. This result is standard in the KL-regularised RL literature — it is not new to DPO. What DPO
+does next is.</p>
+</div>
+
+<h2>20.3 · Step 2 — invert it</h2>
+
+<p>Solve the same equation for <span class="math">r</span>. Take logs of both sides and rearrange:</p>
+
+<div class="mathblock" style="font-size:1.15em;border-left-color:var(--q)">
+r(x,y) = β log <span class="frac"><span class="n">π*(y|x)</span><span class="d">π<sub>ref</sub>(y|x)</span></span> + β log Z(x)
+</div>
+
+<p>This is the sentence in the chapter's opening. <b>Any policy implicitly defines a reward function.</b>
+The log-ratio between a policy and its reference <i>is</i> a reward, up to a prompt-dependent constant.</p>
+
+<p>So we could parameterise the reward <i>by the policy itself</i>:</p>
+
+<div class="mathblock">
+r<sub>θ</sub>(x,y) = β log <span class="frac"><span class="n">π<sub>θ</sub>(y|x)</span><span class="d">π<sub>ref</sub>(y|x)</span></span> + β log Z(x)
+</div>
+
+<p>…except <span class="math">Z(x)</span> requires summing over every possible completion. Intractable.
+This looks like a dead end.</p>
+
+<h2>20.4 · Step 3 — the partition function cancels</h2>
+
+<p>Here is the trick. Recall from Chapter 19 that Bradley-Terry depends only on the <b>difference</b> of
+two rewards:</p>
+
+<div class="mathblock">
+P(y<sub>w</sub> ≻ y<sub>l</sub> | x) = σ<big>(</big> r(x,y<sub>w</sub>) − r(x,y<sub>l</sub>) <big>)</big>
+</div>
+
+<p>Substitute our expression for <span class="math">r</span> into that difference:</p>
+
+<div class="mathblock" style="text-align:left;padding-left:24px;line-height:2.4">
+r(x,y<sub>w</sub>) − r(x,y<sub>l</sub>)
+= <big>[</big>β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>w</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>w</sub>|x)</span></span> + <span style="color:#ff6b6b">β log Z(x)</span><big>]</big>
+− <big>[</big>β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>l</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>l</sub>|x)</span></span> + <span style="color:#ff6b6b">β log Z(x)</span><big>]</big>
+<br>
+= β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>w</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>w</sub>|x)</span></span>
+− β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>l</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>l</sub>|x)</span></span>
+</div>
+
+<div class="box intuition">
+<span class="t">This is the whole paper</span>
+<p style="margin-bottom:0"><span class="math">Z(x)</span> depends only on the <b>prompt</b>, not on the
+completion. Both responses in a preference pair share the same prompt. So the intractable term appears
+identically in both and <b>cancels exactly</b>. No approximation, no bound, no sampling — it is simply
+gone.</p>
+</div>
+
+<h2>20.5 · The DPO loss</h2>
+
+<p>Plug that difference into the Bradley-Terry negative log-likelihood:</p>
+
+<div class="mathblock" style="font-size:1.1em;border-left-color:var(--o)">
+ℒ<sub>DPO</sub> = − E<sub>(x,y<sub>w</sub>,y<sub>l</sub>)∼D</sub> <big>[</big> log σ<big(</big>
+β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>w</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>w</sub>|x)</span></span>
+− β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>l</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>l</sub>|x)</span></span>
+<big>)</big> <big>]</big>
+</div>
+
+<p>No reward model. No value model. No generation during training. No RL. It is a binary classification
+loss over pairs, trained exactly like SFT.</p>
+
+<h3>In code</h3>
+
+<pre><code>def dpo_loss(policy_chosen_logps, policy_rejected_logps,
+             ref_chosen_logps,    ref_rejected_logps, beta=0.1):
+    """All arguments are (B,) — SUMMED log-probs of the full response."""
+    pi_logratios  = policy_chosen_logps - policy_rejected_logps
+    ref_logratios = ref_chosen_logps    - ref_rejected_logps
+
+    logits = pi_logratios - ref_logratios          # the "implicit reward margin"
+    loss = -F.logsigmoid(beta * logits).mean()
+
+    # Useful diagnostics — log these, they tell you what's happening
+    chosen_rewards   = beta * (policy_chosen_logps   - ref_chosen_logps).detach()
+    rejected_rewards = beta * (policy_rejected_logps - ref_rejected_logps).detach()
+    accuracy = (chosen_rewards > rejected_rewards).float().mean()
+    return loss, chosen_rewards, rejected_rewards, accuracy
+
+
+def sequence_logp(model, ids, labels):
+    """Sum of log P(token) over the RESPONSE tokens only."""
+    logits = model(ids).logits[:, :-1]                       # (B, T-1, V)
+    labels = labels[:, 1:]                                   # shift
+    mask = labels != -100
+    labels = labels.masked_fill(~mask, 0)
+    per_token = torch.gather(logits.log_softmax(-1), 2,
+                             labels.unsqueeze(2)).squeeze(2) # (B, T-1)
+    return (per_token * mask).sum(-1)                        # (B,)
+</code></pre>
+
+<div class="box gotcha">
+<span class="t">Three implementation details that decide whether it works</span>
+<ol style="margin-bottom:0">
+<li><b>Sum log-probs, don't average.</b> The derivation is about
+<span class="math">log π(y|x) = Σ<sub>t</sub> log π(y<sub>t</sub>|x, y<sub>&lt;t</sub>)</span> — a sum.
+Averaging by length changes the objective (that variant is <a href="#">SimPO</a>, Chapter 21, and it is a
+deliberate different choice, not a bug fix).</li>
+<li><b>Mask the prompt.</b> Only response tokens count, exactly as in SFT.</li>
+<li><b><code>π<sub>ref</sub></code> must be frozen and in eval mode.</b> Compute its log-probs under
+<code>torch.no_grad()</code>. Better: precompute them once for the whole dataset and cache — it halves
+memory and time, since the reference never changes.</li>
+</ol>
+</div>
+
+<h2>20.6 · What the gradient does</h2>
+
+<p>Differentiating the loss gives:</p>
+
+<div class="mathblock" style="font-size:1.02em">
+∇<sub>θ</sub>ℒ = −β E <big>[</big>
+<span style="color:#ffd166">σ(r̂<sub>l</sub> − r̂<sub>w</sub>)</span> ·
+<big(</big> <span style="color:#5cd6a8">∇ log π(y<sub>w</sub>|x)</span> − <span style="color:#ff6b6b">∇ log π(y<sub>l</sub>|x)</span> <big>)</big>
+<big>]</big>
+<span class="lbl">r̂ = the implicit reward β·log(π/π<sub>ref</sub>)</span>
+</div>
+
+<p>Three parts, each meaningful:</p>
+<ul>
+<li><span style="color:#5cd6a8"><b>Increase</b></span> the likelihood of the chosen response.</li>
+<li><span style="color:#ff6b6b"><b>Decrease</b></span> the likelihood of the rejected response.</li>
+<li><span style="color:#ffd166"><b>Weight by how wrong the model currently is.</b></span> If the implicit
+reward already ranks the pair correctly, <span class="math">σ(r̂<sub>l</sub>−r̂<sub>w</sub>)</span> is near
+0 and this example contributes almost nothing. Pairs the model gets wrong dominate the gradient.</li>
+</ul>
+
+<p>That adaptive weighting is a genuinely nice property — it's automatic hard-example mining, with no
+curriculum needed.</p>
+
+<div class="quiz" data-title="Checkpoint 1 — the derivation">
+<div class="qitem" data-answer="2">
+  <div class="qq">Why does the intractable partition function Z(x) disappear?</div>
+  <div class="opts">
+    <div class="opt">It's approximated by sampling</div>
+    <div class="opt">It equals 1 for a normalised policy</div>
+    <div class="opt">It depends only on the prompt, and Bradley-Terry uses the <i>difference</i> of two rewards for the same prompt — so it cancels exactly</div>
+    <div class="opt">It's absorbed into β</div>
+  </div>
+  <div class="expl"><b>Exact cancellation.</b> Both responses in a pair condition on the same x, so both
+  carry the identical <code>β log Z(x)</code> term and it subtracts away. This is the entire insight of the
+  paper — no approximation is involved anywhere.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">What does <code>β</code> control in DPO?</div>
+  <div class="opts">
+    <div class="opt">How far the policy may deviate from π<sub>ref</sub> — it is the same KL coefficient as in PPO</div>
+    <div class="opt">The learning rate</div>
+    <div class="opt">The ratio of chosen to rejected examples</div>
+    <div class="opt">The temperature used during generation</div>
+  </div>
+  <div class="expl"><b>The KL strength, inherited directly from the RLHF objective.</b> Small β (0.01)
+  permits large deviation and risks degeneration; large β (0.5) keeps the policy close to the SFT model and
+  changes little. 0.1 is the standard starting point. Note it is <i>not</i> a learning rate, though its
+  effects can look similar if you only watch the loss.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">During DPO training you observe that <b>both</b> chosen and rejected log-probs are
+  <i>decreasing</i>. Is something wrong?</div>
+  <div class="opts">
+    <div class="opt">Yes — chosen log-probs must increase</div>
+    <div class="opt">No — this is the normal, widely-reported behaviour. The loss only constrains the <i>margin</i>, and it is usually easier to push the rejected down than the chosen up</div>
+    <div class="opt">Yes — β is too large</div>
+    <div class="opt">No, but it means the data is mislabelled</div>
+  </div>
+  <div class="expl"><b>Normal, and worth understanding.</b> The loss depends only on the difference of
+  log-ratios, so it is satisfied by lowering both as long as the rejected falls faster. This is the known
+  <b>likelihood displacement</b> issue: pushed far enough, DPO can reduce probability mass on <i>good</i>
+  responses and shift it to unrelated outputs. Monitor absolute chosen log-probs, not just the margin — and
+  if they collapse, raise β or mix in an SFT loss term.</div>
+</div>
+</div>
+
+<h2>20.7 · DPO vs PPO — the honest comparison</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th></th><th>PPO (RLHF)</th><th>DPO</th></tr></thead>
+<tbody>
+<tr><td>Models in memory</td><td>4</td><td><b>2</b> (1 if you cache reference log-probs)</td></tr>
+<tr><td>Generation during training</td><td>yes — the slow part</td><td><b>no</b></td></tr>
+<tr><td>Implementation difficulty</td><td>high</td><td><b>low</b></td></tr>
+<tr><td>Hyperparameters</td><td>many, interacting</td><td>β, lr</td></tr>
+<tr><td>Data usage</td><td><b>on-policy</b> — fresh samples from the current model</td><td><b>off-policy</b> — a fixed dataset</td></tr>
+<tr><td>Can exceed the data distribution</td><td><b>yes</b></td><td>no</td></tr>
+<tr><td>Reported peak quality</td><td><b>higher</b> when done well</td><td>very competitive, far easier</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box warn">
+<span class="t">The real limitation of DPO: it is off-policy</span>
+<p style="margin-bottom:0">PPO samples from the <i>current</i> policy, so it gets feedback about what the
+model actually does now. DPO learns from a fixed dataset generated by some <i>other</i> model. As training
+proceeds, the policy drifts away from the data distribution and the preference signal becomes less relevant
+to its current behaviour. Several careful studies (notably <a href="https://arxiv.org/abs/2404.10719">Xu et
+al. 2024</a>) find PPO retains an edge on the hardest tasks for exactly this reason. The practical fix is
+<b>iterative/online DPO</b>: generate fresh completions with the current policy, label them with a reward
+model or judge, retrain, repeat — recovering much of the on-policy benefit while keeping DPO's simplicity.</p>
+</div>
+
+<h2>20.8 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">20.1</span><span class="ti">Derive it yourself</span><span class="lvl">essential — do this on paper</span></div>
+<div class="eb">
+<p>Without looking back at §20.2–20.4, derive the DPO loss from the KL-constrained objective. You should be
+able to produce, in order:</p>
+<ol>
+<li>The closed-form optimal policy <span class="math">π*</span>, including where <span class="math">Z(x)</span> comes from.</li>
+<li>The inverted expression for <span class="math">r(x,y)</span>.</li>
+<li>The substitution into Bradley-Terry and the cancellation.</li>
+<li>The final loss.</li>
+</ol>
+<p class="tiny" style="margin-bottom:0">If you can do this from memory, you understand DPO better than most
+people using it. It's about eight lines of algebra and it's worth the twenty minutes.</p>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">20.2</span><span class="ti">Implement DPO and run it</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>SFT a small model, then DPO it on a preference dataset. Log per step: loss, mean chosen reward, mean
+rejected reward, reward margin, ranking accuracy, and <b>absolute</b> chosen/rejected log-probs.</p>
+<ol>
+<li>Does accuracy exceed 0.5 and climb? (It should reach 0.7–0.9.)</li>
+<li>Do both log-probs decrease? By how much?</li>
+<li>Sweep <code>β ∈ {0.01, 0.1, 0.5}</code>. Generate samples from each. Describe the difference.</li>
+</ol>
+<details class="reveal"><summary>What you should see</summary><div>
+<p style="margin-bottom:0"><b>β=0.01:</b> the margin grows fast, and generations often degrade — short,
+repetitive, or oddly terse. This is under-constrained drift. <b>β=0.5:</b> barely differs from the SFT model.
+<b>β=0.1:</b> the usual sweet spot. The lesson is that <b>DPO's loss going down does not mean the model got
+better</b> — you must look at generations. A beautiful loss curve with degenerate samples is the single most
+common DPO failure.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">20.3</span><span class="ti">Verify the implicit reward is a real reward model</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>After DPO, compute <code>r̂(x,y) = β·(log π_θ(y|x) − log π_ref(y|x))</code> on a <b>held-out</b>
+preference set and measure its pairwise ranking accuracy — exactly as you would evaluate an explicit reward
+model.</p>
+<details class="reveal"><summary>Why this matters</summary><div>
+<p style="margin-bottom:0">You should get accuracy well above chance, often competitive with an explicitly
+trained Bradley-Terry model on the same data. That is the theory made empirical: <b>DPO really does train a
+reward model — it just stores it in the policy's weights.</b> This is also a genuinely useful technique —
+you can use a DPO'd model as a reranker for free, with no separate reward model to host.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/2305.18290">Rafailov et al. 2023 — Direct Preference Optimization</a> — read Appendix A.1 for the derivation in the authors' own notation.</li>
+<li><a href="https://arxiv.org/abs/2404.10719">Xu et al. 2024 — Is DPO Superior to PPO for LLM Alignment?</a> — the careful head-to-head.</li>
+<li><a href="https://arxiv.org/abs/2410.08847">Razin et al. 2024 — Unintentional Unalignment (likelihood displacement)</a></li>
+<li><a href="https://huggingface.co/docs/trl/dpo_trainer">TRL DPOTrainer</a> — the reference implementation.</li>
+<li>Companion notebook: <code>notebooks/20_dpo.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("20");</script>
+</body>
+</html>

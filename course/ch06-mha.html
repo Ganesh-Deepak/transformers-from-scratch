@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 6 — Multi-Head Attention: The Reshape Dance</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>6 · Multi-Head Attention: The Reshape Dance</h1>
+<p class="lead">
+Single-head attention computes one weighted average per token. That's one relationship at a time — but a word
+relates to its subject, its object, its adjective and its clause simultaneously. Multi-head attention runs
+several attention operations in parallel, and the only genuinely tricky part is the tensor gymnastics.
+This chapter draws every step.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; view and transpose, exactly<br><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; one head first</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; GQA changes how many K/V heads exist<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; this is the block's attention sublayer</div>
+<div class="mn orient"><span class="k">Why this chapter</span>Nothing is computed here — it is a reshape that turns one matmul into n parallel ones.</div>
+
+<h2>6.1 · Why more than one head</h2>
+
+<p>A softmax row sums to 1. That is a <b>budget</b>: if a head spends 0.8 of its attention on the subject, it
+has 0.2 left for everything else. One head cannot simultaneously do "find my grammatical subject" and "find
+the previous mention of this entity" — those want different weight distributions.</p>
+
+<div class="box intuition">
+<span class="t">The core trade</span>
+<p style="margin-bottom:0">Instead of <b>one</b> attention over <code>d_model=512</code> features, do
+<b>8</b> attentions over <code>d_head=64</code> features each. <b>Same parameter count, same FLOPs</b>
+— you've spent <i>representational width</i> to buy <i>relational diversity</i>. Each head is dumber, but you
+get eight of them, and empirically that is a very good trade.</p>
+</div>
+
+<p>Interpretability work has found heads that specialise cleanly: previous-token heads, duplicate-token heads,
+induction heads (which implement "I saw <code>A B</code> earlier, I just saw <code>A</code>, so predict
+<code>B</code>" — the mechanism behind in-context learning), and syntactic heads that track
+subject–verb agreement.</p>
+
+<h2>6.2 · The reshape dance, drawn</h2>
+
+<p>Here is the operation everyone gets wrong. Change <code>n_head</code> and watch what happens to the
+<i>same</i> numbers:</p>
+
+<div data-viz="heads" data-t="4" data-dmodel="12" data-nh="3"></div>
+
+<div class="box intuition">
+<span class="t">Nothing is computed here</span>
+<p style="margin-bottom:0"><code>view</code> and <code>transpose</code> move zero data (Chapter 1). The
+"dance" is purely about <b>which numbers are adjacent</b> so that a batched matmul treats each head as an
+independent problem. That's all multi-head attention is: a reshape that turns one big matmul into
+<code>n_head</code> small parallel ones.</p>
+</div>
+
+<h3>Step by step, with shapes</h3>
+
+<pre><code>B, T, C = 2, 100, 512
+nh = 8
+hd = C // nh                                   # 64 — MUST divide evenly
+
+x = torch.randn(B, T, C)                       # (2, 100, 512)
+
+# ── 1. Project ────────────────────────────────────────────────
+q = W_q(x)                                     # (2, 100, 512)
+k = W_k(x)                                     # (2, 100, 512)
+v = W_v(x)                                     # (2, 100, 512)
+
+# ── 2. Split the feature axis into (heads, head_dim) ──────────
+q = q.view(B, T, nh, hd)                       # (2, 100, 8, 64)
+#         ^^^^^^^^^^^^^ 512 = 8 × 64, re-labelled. No data moved.
+
+# ── 3. Move heads next to batch ──────────────────────────────
+q = q.transpose(1, 2)                          # (2, 8, 100, 64)
+#   now axes are (B, n_head, T, d_head)
+#   → the LAST TWO axes are a (T, d_head) matrix, one per (batch, head)
+
+k = k.view(B, T, nh, hd).transpose(1, 2)       # (2, 8, 100, 64)
+v = v.view(B, T, nh, hd).transpose(1, 2)       # (2, 8, 100, 64)
+
+# ── 4. Attention — batched over (B, n_head) ──────────────────
+scores = q @ k.transpose(-2, -1) / hd**0.5     # (2, 8, 100, 100)
+scores = scores.masked_fill(~causal, MIN)
+attn   = scores.softmax(dim=-1)                # (2, 8, 100, 100)
+out    = attn @ v                              # (2, 8, 100, 64)
+
+# ── 5. Put the heads back together ───────────────────────────
+out = out.transpose(1, 2)                      # (2, 100, 8, 64)
+out = out.contiguous().view(B, T, C)           # (2, 100, 512)
+#     ^^^^^^^^^^^^ REQUIRED — see below
+
+# ── 6. Mix the heads ─────────────────────────────────────────
+out = W_o(out)                                 # (2, 100, 512)
+</code></pre>
+
+<div class="box gotcha">
+<span class="t">Step 5 is where everyone's implementation breaks</span>
+<p>After <code>transpose(1,2)</code> the tensor is <b>not contiguous</b> — its strides are out of order.
+<code>.view()</code> then raises:</p>
+<pre style="margin:.6em 0"><code class="nohl">RuntimeError: view size is not compatible with input tensor's size and stride</code></pre>
+<p style="margin-bottom:0">Two valid fixes: <code>.contiguous().view(B,T,C)</code> or just
+<code>.reshape(B,T,C)</code> (which calls <code>contiguous</code> internally when needed). What you must
+<b>not</b> do is "fix" it by reordering the transpose — that silently interleaves head outputs and produces a
+model that trains to a mediocre loss and never tells you why.</p>
+</div>
+
+<h3>Why step 6 exists</h3>
+
+<p>After concatenation, the 512 features are 8 independent blocks of 64 that have never interacted.
+<code>W_o</code> — the output projection — is what lets information from head 3 combine with information from
+head 7. Without it, the heads would write to disjoint slices of the residual stream forever.</p>
+
+<div class="mathblock">
+MultiHead(Q,K,V) = Concat(head<sub>1</sub>, …, head<sub>h</sub>) W<sup>O</sup>
+&nbsp;&nbsp;where&nbsp;&nbsp; head<sub>i</sub> = Attention(QW<sub>i</sub><sup>Q</sup>, KW<sub>i</sub><sup>K</sup>, VW<sub>i</sub><sup>V</sup>)
+<span class="lbl">Vaswani et al. 2017, §3.2.2</span>
+</div>
+
+<div class="box math-note">
+<span class="t">The paper's notation vs the code</span>
+<p style="margin-bottom:0">The paper writes <span class="math">h</span> separate projection matrices
+<span class="math">W<sub>i</sub><sup>Q</sup></span> of shape
+<span class="math">(d<sub>model</sub>, d<sub>k</sub>)</span>. The code uses <b>one</b> matrix of shape
+<span class="math">(d<sub>model</sub>, d<sub>model</sub>)</span> and slices the output. These are
+mathematically identical — the big matrix is just the small ones stacked side by side — but the single
+matmul is far faster on a GPU. Most implementations go further and fuse Q, K, V into one
+<code>(C, 3C)</code> projection, then split.</p>
+</div>
+
+<h2>6.3 · A complete, correct implementation</h2>
+
+<pre><code>import math, torch, torch.nn as nn, torch.nn.functional as F
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model, n_head, max_T=2048, dropout=0.0, causal=True):
+        super().__init__()
+        assert d_model % n_head == 0, "d_model must be divisible by n_head"
+        self.nh, self.hd, self.causal = n_head, d_model // n_head, causal
+        self.qkv  = nn.Linear(d_model, 3 * d_model, bias=False)   # fused projection
+        self.proj = nn.Linear(d_model, d_model,     bias=False)   # W_o
+        self.drop = nn.Dropout(dropout)
+        self.register_buffer(
+            "mask", torch.tril(torch.ones(max_T, max_T, dtype=torch.bool))[None, None],
+            persistent=False)                                     # (1,1,max_T,max_T)
+
+    def forward(self, x):
+        B, T, C = x.shape
+
+        qkv = self.qkv(x)                              # (B, T, 3C)
+        q, k, v = qkv.split(C, dim=-1)                 # 3 × (B, T, C)
+
+        # (B, T, C) → (B, nh, T, hd)
+        q = q.view(B, T, self.nh, self.hd).transpose(1, 2)
+        k = k.view(B, T, self.nh, self.hd).transpose(1, 2)
+        v = v.view(B, T, self.nh, self.hd).transpose(1, 2)
+
+        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.hd)      # (B, nh, T, T)
+        if self.causal:
+            att = att.masked_fill(~self.mask[:, :, :T, :T],
+                                  torch.finfo(att.dtype).min)
+        att = self.drop(att.softmax(dim=-1))
+        y = att @ v                                    # (B, nh, T, hd)
+
+        y = y.transpose(1, 2).reshape(B, T, C)         # (B, T, C)
+        return self.proj(y)
+</code></pre>
+
+<p>And the version you should actually ship:</p>
+
+<pre><code>    def forward(self, x):
+        B, T, C = x.shape
+        q, k, v = self.qkv(x).split(C, dim=-1)
+        q, k, v = (t.view(B, T, self.nh, self.hd).transpose(1, 2) for t in (q, k, v))
+
+        y = F.scaled_dot_product_attention(         # → FlashAttention when available
+                q, k, v, is_causal=self.causal,
+                dropout_p=self.drop.p if self.training else 0.0)
+
+        return self.proj(y.transpose(1, 2).reshape(B, T, C))
+</code></pre>
+
+<p>Same maths, a fraction of the memory, several times faster. Chapter 14 explains exactly how.</p>
+
+<div class="quiz" data-title="Checkpoint 1 — the dance">
+<div class="qitem" data-answer="1">
+  <div class="qq"><code>d_model=768</code>, <code>n_head=12</code>. After
+  <code>q.view(B,T,12,64).transpose(1,2)</code>, what shape is <code>q</code> for <code>B=4, T=256</code>?</div>
+  <div class="opts">
+    <div class="opt">(4, 256, 12, 64)</div>
+    <div class="opt">(4, 12, 256, 64)</div>
+    <div class="opt">(4, 12, 64, 256)</div>
+    <div class="opt">(4, 256, 768)</div>
+  </div>
+  <div class="expl"><b>(4, 12, 256, 64).</b> <code>transpose(1,2)</code> swaps axes 1 and 2, so
+  <code>(B, T, nh, hd) → (B, nh, T, hd)</code>. The last two axes are now the <code>(T, d_head)</code>
+  matrix that attention operates on, batched over <code>B×nh = 48</code> independent problems.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Compared to single-head attention with the same <code>d_model</code>, 12-head attention has:</div>
+  <div class="opts">
+    <div class="opt">The same parameter count and roughly the same FLOPs</div>
+    <div class="opt">12× the parameters</div>
+    <div class="opt">1/12 the parameters</div>
+    <div class="opt">12× the FLOPs</div>
+  </div>
+  <div class="expl"><b>Same.</b> W_q is <code>(d_model, d_model)</code> either way — you're partitioning
+  its output, not adding to it. The <code>T×T</code> score matrices total
+  <code>12 × T × 64</code> vs <code>1 × T × 768</code> of contraction work: identical. Multi-head attention
+  is free.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">Someone replaces <code>y.transpose(1,2).reshape(B,T,C)</code> with
+  <code>y.reshape(B,T,C)</code> (no transpose). It runs. What is now wrong?</div>
+  <div class="opts">
+    <div class="opt">Nothing — reshape handles it</div>
+    <div class="opt">The batch dimension is corrupted</div>
+    <div class="opt">The output features are ordered (head, time) instead of (time, head) — each token's vector is now a mix of other tokens' head outputs</div>
+    <div class="opt">It will raise a RuntimeError</div>
+  </div>
+  <div class="expl"><b>Catastrophic silent scrambling.</b> <code>y</code> is <code>(B, nh, T, hd)</code>;
+  reshaping directly to <code>(B, T, C)</code> reinterprets <code>nh×T×hd</code> numbers in memory order —
+  so "token 0's feature vector" is actually built from head 0's outputs for tokens 0 and 1, etc.
+  The shapes are all valid, nothing errors, and the model learns something mediocre. <b>This is the single
+  most common bug in hand-written attention.</b> Test it: run one token through and check the output equals
+  the concatenation of per-head outputs.</div>
+</div>
+</div>
+
+<h2>6.4 · How many heads, and how wide?</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Model</th><th class="num">d_model</th><th class="num">n_head</th><th class="num">d_head</th><th class="num">n_kv_head</th></tr></thead>
+<tbody>
+<tr><td>GPT-2 small</td><td class="num">768</td><td class="num">12</td><td class="num">64</td><td class="num">12 (MHA)</td></tr>
+<tr><td>GPT-3 175B</td><td class="num">12288</td><td class="num">96</td><td class="num">128</td><td class="num">96 (MHA)</td></tr>
+<tr><td>Llama-3-8B</td><td class="num">4096</td><td class="num">32</td><td class="num">128</td><td class="num">8 (GQA)</td></tr>
+<tr><td>Llama-3-70B</td><td class="num">8192</td><td class="num">64</td><td class="num">128</td><td class="num">8 (GQA)</td></tr>
+<tr><td>DeepSeek-V3</td><td class="num">7168</td><td class="num">128</td><td class="num">128*</td><td class="num">MLA (rank 512)</td></tr>
+</tbody>
+</table>
+<p class="tiny">*DeepSeek-V3's query/key head dim is actually 192 (128 no-RoPE + 64 RoPE) with value dim 128 — Chapter 13.</p>
+</div>
+
+<p>Patterns worth noticing:</p>
+<ul>
+<li><b><code>d_head</code> is almost always 64 or 128.</b> It's held roughly fixed while
+<code>d_model</code> grows, so <code>n_head</code> is what scales. 64 and 128 are also what tensor cores
+like.</li>
+<li><b><code>n_kv_head</code> diverged from <code>n_head</code> starting around 2023.</b> That's GQA —
+Chapter 13.</li>
+<li>Too many tiny heads hurts: below <code>d_head ≈ 32</code> each head has too little room to express a
+useful query.</li>
+</ul>
+
+<h2>6.5 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">6.1</span><span class="ti">Prove your heads are independent</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>The definitive test that your reshape is correct. Implement MHA, then implement a naive loop version that
+runs single-head attention <code>n_head</code> times on explicit slices and concatenates. Assert they match.</p>
+<pre><code>def mha_loop(x, W_q, W_k, W_v, W_o, nh):
+    B, T, C = x.shape
+    hd = C // nh
+    q, k, v = W_q(x), W_k(x), W_v(x)          # (B,T,C) each
+    outs = []
+    for h in range(nh):
+        sl = slice(h * hd, (h + 1) * hd)      # this head's feature slice
+        qh, kh, vh = q[..., sl], k[..., sl], v[..., sl]     # (B,T,hd)
+        att = (qh @ kh.transpose(-2,-1) / hd**0.5).softmax(-1)
+        outs.append(att @ vh)                 # (B,T,hd)
+    return W_o(torch.cat(outs, dim=-1))       # (B,T,C)
+
+assert torch.allclose(mha_loop(...), mha_vectorised(...), atol=1e-5)
+</code></pre>
+<p>If this assert fails, your <code>view</code>/<code>transpose</code> order is wrong. Fix it before moving
+on — every later chapter builds on this.</p>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">6.2</span><span class="ti">einops rewrite</span><span class="lvl">warm-up</span></div>
+<div class="eb">
+<p>Rewrite the forward pass using only <code>einops.rearrange</code> — no <code>view</code>, no
+<code>transpose</code>. Confirm identical output.</p>
+<details class="reveal"><summary>Solution</summary><div>
+<pre><code>from einops import rearrange
+
+q, k, v = self.qkv(x).chunk(3, dim=-1)
+q, k, v = (rearrange(t, 'b t (h d) -> b h t d', h=self.nh) for t in (q, k, v))
+
+att = torch.einsum('bhqd,bhkd->bhqk', q, k) / self.hd**0.5
+att = att.masked_fill(~mask, MIN).softmax(-1)
+y   = torch.einsum('bhqk,bhkd->bhqd', att, v)
+
+y = rearrange(y, 'b h t d -> b t (h d)')
+return self.proj(y)
+</code></pre>
+<p style="margin-bottom:0">Notice that the bug from Checkpoint 1 Q3 is now <b>impossible to write by
+accident</b> — <code>'b h t d -&gt; b t (h d)'</code> states the intent explicitly, and
+<code>'b h t d -&gt; b t (d h)'</code> would be visibly different. This is the strongest argument for einops.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">6.3</span><span class="ti">Head ablation</span><span class="lvl">exploration</span></div>
+<div class="eb">
+<p>Load GPT-2. For each of the 144 (layer, head) pairs, zero out that head's output (set its slice of
+<code>y</code> to 0 before <code>W_o</code>) and measure the increase in perplexity on a held-out paragraph.
+Rank the heads.</p>
+<details class="reveal"><summary>What you'll find</summary><div>
+<p style="margin-bottom:0">The distribution is extremely skewed: most heads can be removed with almost no
+effect, while a handful cause large jumps. This replicates
+<a href="https://arxiv.org/abs/1905.10650">Michel et al. 2019, "Are Sixteen Heads Really Better than One?"</a>,
+which found many heads are prunable at inference. Two caveats worth internalising: (a) heads that are
+individually redundant may not be jointly redundant, and (b) heads that look useless on one distribution can
+be critical on another. Ablation tells you about <i>this</i> input, not about the head in general.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">6.4</span><span class="ti">Parameter accounting</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>For one MHA layer with <code>d_model=4096</code>, <code>n_head=32</code>, no biases:</p>
+<ol>
+<li>How many parameters in total? Break it down by matrix.</li>
+<li>How does that change if <code>n_head=64</code> with <code>d_head=64</code>?</li>
+<li>How does it change with GQA at <code>n_kv_head=8</code>?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<ol>
+<li>W_q, W_k, W_v, W_o are each 4096×4096 = 16,777,216 → <b>4 × 16.78M = 67.1M</b> per layer.</li>
+<li><b>Identical.</b> 64 heads × 64 dims = 4096 = 32 × 128. The head split doesn't touch parameter count at
+all — this is the point of §6.1.</li>
+<li>W_q and W_o stay 4096×4096. W_k and W_v shrink to 4096 × (8×128) = 4096×1024 = 4.19M each.
+Total = 16.78 + 16.78 + 4.19 + 4.19 = <b>41.9M</b>, a 37% reduction in attention parameters — and, far more
+importantly, a <b>4× reduction in KV cache</b>. Chapter 13.</li>
+</ol>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a>, §3.2.2.</li>
+<li><a href="https://transformer-circuits.pub/2021/framework/index.html">A Mathematical Framework for Transformer Circuits</a> — the QK/OV decomposition, and where induction heads were found.</li>
+<li><a href="https://arxiv.org/abs/1905.10650">Michel et al. 2019 — Are Sixteen Heads Really Better than One?</a></li>
+<li><a href="https://github.com/karpathy/nanoGPT/blob/master/model.py">nanoGPT model.py</a> — ~60 lines, the cleanest reference implementation in existence.</li>
+<li>Companion notebook: <code>notebooks/06_multihead.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("06");</script>
+</body>
+</html>

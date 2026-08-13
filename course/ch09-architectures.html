@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 9 — Whole Architectures + End-to-End Shape Trace</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>9 · Whole Architectures + End-to-End Shape Trace</h1>
+<p class="lead">
+You now have every component. This chapter assembles them three different ways — encoder-only, decoder-only,
+encoder–decoder — and then walks every single tensor from token id to loss, one shape at a time.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; the block<br><a href="ch03-tokenization.html">Ch&nbsp;03</a> &mdash; tokenizer<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch10-training.html">Ch&nbsp;10</a> &mdash; now train it<br><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; the KV cache changes this forward pass</div>
+<div class="mn orient"><span class="k">Why this chapter</span>Every component, assembled, with every tensor traced end to end.</div>
+
+<h2>9.1 · The three families</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th></th><th>Encoder-only</th><th>Decoder-only</th><th>Encoder–decoder</th></tr></thead>
+<tbody>
+<tr><td><b>Mask</b></td><td>none (bidirectional)</td><td>causal</td><td>none / causal / cross</td></tr>
+<tr><td><b>Trained by</b></td><td>masked language modelling</td><td>next-token prediction</td><td>span corruption / seq2seq</td></tr>
+<tr><td><b>Sees the future?</b></td><td>yes</td><td>no</td><td>encoder yes, decoder no</td></tr>
+<tr><td><b>Can generate?</b></td><td>no</td><td>yes</td><td>yes</td></tr>
+<tr><td><b>Examples</b></td><td>BERT, RoBERTa, DeBERTa, ViT</td><td><b>GPT, Llama, Qwen, Claude, Gemini</b></td><td>T5, BART, Whisper, NLLB</td></tr>
+<tr><td><b>Best at</b></td><td>classification, embeddings, retrieval</td><td>everything generative</td><td>translation, ASR, fixed transduction</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box intuition">
+<span class="t">Why decoder-only won</span>
+<p style="margin-bottom:0"><b>Training efficiency.</b> With a causal mask, a single forward pass over a
+length-<code>T</code> sequence produces <code>T</code> supervised predictions — every position predicts its
+successor. BERT-style masking only supervises the ~15% of positions that were masked. So a decoder extracts
+roughly <b>6× more learning signal per FLOP</b>. Add that any task can be phrased as text continuation, and
+the case for a second architecture largely evaporated.</p>
+</div>
+
+<h3>Encoder-only: BERT</h3>
+<pre><code># Training objective: mask 15% of tokens, predict them from BOTH sides.
+"the cat [MASK] on the mat"  →  predict "sat"
+# No causal mask — position 2 sees positions 0..5 freely.
+# Cannot generate: there is no notion of "next".
+</code></pre>
+<p>Still the right tool for embeddings and reranking, where you want a rich bidirectional representation of
+a fixed text and don't need generation. Modern retrieval stacks still run BERT-family encoders.</p>
+
+<h3>Decoder-only: GPT and everything after it</h3>
+<pre><code># Training objective: predict token t+1 from tokens 0..t, at EVERY position at once.
+input:  [the, cat, sat, on,  the]
+target: [cat, sat, on,  the, mat]
+# One forward pass = 5 predictions. The causal mask makes this valid.
+</code></pre>
+
+<h3>Encoder–decoder: T5</h3>
+<pre><code># Encoder reads the source bidirectionally.
+# Decoder generates causally, and CROSS-ATTENDS to the encoder output:
+#     Q from decoder  (T_dec, d)
+#     K, V from encoder output  (T_enc, d)
+#     → output (T_dec, d)   — decoder length preserved, any encoder length
+</code></pre>
+<p>Still dominant where input and output are genuinely different modalities or languages — Whisper
+(audio→text) is the clearest current example.</p>
+
+<h2>9.2 · The full shape trace</h2>
+
+<p>This is the centrepiece of the chapter. A decoder-only model with <code>B=2, T=6, V=32000,
+d_model=512, n_head=8, d_head=64, d_ff=1376, n_layer=6</code>. Step through every tensor.</p>
+
+<div data-viz="trace" data-title="GPT-style forward pass: 18 steps from text to loss">
+<script type="application/json">[
+{"name":"Raw text","shape":"—","op":"\"The cat sat on the mat\"","why":"Two strings in a batch. Nothing is a tensor yet."},
+{"name":"Tokenize","shape":"(B=2, T=6)","op":"tokenizer(text)","why":"Each string becomes 6 integer token ids. dtype is int64. This is the only integer tensor in the whole forward pass — everything after it is float."},
+{"name":"Token embedding","shape":"(2, 6, 512)","op":"nn.Embedding(32000, 512)","params":"16.4 M","why":"Each of the 12 integers is replaced by a 512-dim vector. Rank goes 2 → 3. The residual stream is born, and it keeps this shape until the very end."},
+{"name":"RoPE cache","shape":"2 × (6, 64)","op":"precomputed cos/sin","params":"0","why":"cos and sin tables of shape (T, d_head). Computed once, reused by every layer and every head. No parameters — RoPE is pure arithmetic."},
+{"name":"── Block 1: norm","shape":"(2, 6, 512)","op":"RMSNorm(512)","params":"512","why":"Normalises each token's 512-vector to unit RMS. Shape unchanged. Note this feeds the BRANCH — the residual stream itself is untouched."},
+{"name":"Fused QKV projection","shape":"(2, 6, 1536)","op":"Linear(512, 1536, bias=False)","params":"786 K","why":"One matmul produces Q, K and V stacked. 1536 = 3 × 512. Only the last axis changed — batch and time ride along."},
+{"name":"Split into q, k, v","shape":"3 × (2, 6, 512)","op":".split(512, dim=-1)","why":"Slicing the feature axis into three equal parts. Free — no data movement."},
+{"name":"Reshape to heads","shape":"3 × (2, 8, 6, 64)","op":".view(2,6,8,64).transpose(1,2)","why":"THE RESHAPE DANCE. 512 features = 8 heads × 64 dims. After transpose, axes are (B, n_head, T, d_head), so the last two axes form a (6, 64) matrix per (batch, head) — 16 independent attention problems."},
+{"name":"Apply RoPE","shape":"3 × (2, 8, 6, 64)","op":"q,k = apply_rope(q,k,cos,sin)","why":"Rotates q and k by an angle proportional to position. v is NOT rotated. Shape unchanged — rotation is a same-shape linear map."},
+{"name":"Attention scores","shape":"(2, 8, 6, 6)","op":"q @ k.transpose(-2,-1) / 8.0","why":"(...,6,64) @ (...,64,6): d_head=64 is consumed. Result is T×T — one score per (query, key) pair, per head. THIS is the quadratic tensor. Divided by √64 = 8."},
+{"name":"Causal mask + softmax","shape":"(2, 8, 6, 6)","op":"masked_fill(-inf).softmax(-1)","why":"Upper triangle set to -inf BEFORE softmax, so those weights become exactly 0. Each row now sums to 1. Row 0 has one nonzero entry; row 5 has six."},
+{"name":"Weighted values","shape":"(2, 8, 6, 64)","op":"attn @ v","why":"(...,6,6) @ (...,6,64): the KEY axis is consumed this time. Each output row is a convex combination of the 6 value vectors. Back to the per-head shape."},
+{"name":"Merge heads","shape":"(2, 6, 512)","op":".transpose(1,2).reshape(2,6,512)","why":"Undo the dance. transpose FIRST, then reshape — swapping the order silently scrambles the features (Ch 6). reshape (not view) because the tensor is non-contiguous after transpose."},
+{"name":"Output projection","shape":"(2, 6, 512)","op":"Linear(512, 512, bias=False)","params":"262 K","why":"W_o. Lets the 8 heads' outputs mix with each other before being written back. Without it, heads would write to disjoint slices forever."},
+{"name":"Residual add","shape":"(2, 6, 512)","op":"x = x + attn_out","why":"Written back into the stream. The stream was NEVER overwritten — this is a running total."},
+{"name":"MLP sublayer","shape":"(2,6,512) → (2,6,1376) → (2,6,512)","op":"SwiGLU: 3 × Linear","params":"2.11 M","why":"norm → expand to d_ff=1376 through gate and up → SiLU(gate) * up → project back down. Every token processed independently; no cross-token interaction here at all. Then residual add."},
+{"name":"× 6 layers","shape":"(2, 6, 512)","op":"repeat blocks 2..6","params":"~19 M total","why":"Identical shape at every layer. Depth is a LOOP over the same shape, not an axis of the tensor. Layer 6 reads everything layers 1–5 wrote."},
+{"name":"Final norm + LM head","shape":"(2, 6, 32000)","op":"RMSNorm → Linear(512, 32000)","params":"16.4 M","why":"Pre-LN means the stream was never normalised, so a final norm is REQUIRED. Then project to vocabulary: one score per possible next token, at every position. Note the tensor just got 62× bigger than the residual stream."},
+{"name":"Cross-entropy loss","shape":"() scalar","op":"F.cross_entropy(logits[:,:-1].reshape(-1,32000), targets[:,1:].reshape(-1))","why":"Flatten (B,T) into one big batch of 10 predictions (we drop the last position, which has no target). The result is one number — and every one of the ~53 M parameters gets a gradient from it."}
+]</script>
+</div>
+
+<div class="box gotcha">
+<span class="t">The off-by-one that everyone writes at least once</span>
+<pre style="margin:.6em 0"><code>logits  = model(ids)               # (B, T, V)
+loss = F.cross_entropy(logits.reshape(-1, V), ids.reshape(-1))   # ← WRONG</code></pre>
+<p>This asks the model to predict <i>the token it was just given</i> — a task it solves perfectly by copying,
+and the loss goes to ~0 while the model learns nothing. You must shift:</p>
+<pre style="margin:.6em 0 0"><code>loss = F.cross_entropy(
+    logits[:, :-1, :].reshape(-1, V),      # predictions for positions 0..T-2
+    ids[:, 1:].reshape(-1))                # targets are positions 1..T-1</code></pre>
+<p style="margin-bottom:0"><b>Diagnostic:</b> if your training loss drops below <code>ln(1)≈0</code>-ish
+absurdly fast, or below the entropy of your data, you have this bug. Some HF models shift internally when
+you pass <code>labels=</code>; check before doing it yourself, or you'll shift twice.</p>
+</div>
+
+<h2>9.3 · The complete model, in one file</h2>
+
+<pre><code>import torch, torch.nn as nn, torch.nn.functional as F
+from dataclasses import dataclass
+
+@dataclass
+class Config:
+    vocab_size: int = 32000
+    d_model:    int = 512
+    n_layer:    int = 6
+    n_head:     int = 8
+    d_ff:       int = 1376
+    max_T:      int = 1024
+    rope_base:  float = 10000.0
+
+class GPT(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.cfg   = cfg
+        self.embed = nn.Embedding(cfg.vocab_size, cfg.d_model)
+        self.blocks = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layer)])
+        self.norm  = RMSNorm(cfg.d_model)
+        self.head  = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
+
+        cos, sin = build_rope_cache(cfg.max_T, cfg.d_model // cfg.n_head, cfg.rope_base)
+        self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
+
+        self.apply(self._init)
+
+    def _init(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.normal_(m.weight, std=0.02)
+            if m.bias is not None: nn.init.zeros_(m.bias)
+        elif isinstance(m, nn.Embedding):
+            nn.init.normal_(m.weight, std=0.02)
+
+    def forward(self, ids, targets=None):
+        B, T = ids.shape                                    # (B, T)
+        x = self.embed(ids)                                 # (B, T, C)
+        cos, sin = self.cos[:T], self.sin[:T]
+
+        for blk in self.blocks:
+            x = blk(x, cos, sin)                            # (B, T, C)
+
+        x = self.norm(x)                                    # (B, T, C)
+        logits = self.head(x)                               # (B, T, V)
+
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(
+                logits[:, :-1].reshape(-1, logits.size(-1)),
+                targets[:, 1:].reshape(-1),
+                ignore_index=-100)
+        return logits, loss
+</code></pre>
+
+<div class="box math-note">
+<span class="t">Why <code>std=0.02</code>?</span>
+<p style="margin-bottom:0">It's GPT-2's choice and it stuck. The principle is that activations should have
+roughly unit variance after each layer, which needs <code>std ≈ 1/√d_model</code> (0.044 at
+<code>d_model=512</code>). GPT-2 used a flat 0.02, plus an extra <code>1/√(2·n_layer)</code> scaling on the
+<i>residual output</i> projections (W_o and MLP-down) to stop the residual stream's variance growing linearly
+with depth. That second detail is genuinely important and often omitted — see Exercise 9.3.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 1 — the whole pipeline">
+<div class="qitem" data-answer="1">
+  <div class="qq">At which single point in the forward pass do different token positions exchange information?</div>
+  <div class="opts">
+    <div class="opt">The MLP</div>
+    <div class="opt">The <code>attn @ v</code> matmul (and the scores that produced it)</div>
+    <div class="opt">The final LM head</div>
+    <div class="opt">RMSNorm</div>
+  </div>
+  <div class="expl"><b>Only in attention.</b> The MLP, both norms, RoPE and the LM head all operate on each
+  position independently — you could run them on a single token in isolation and get the same answer.
+  Attention is the <i>only</i> cross-position operation in a transformer. That's worth holding onto: it
+  means every claim about "how information flows through the model" is a claim about attention.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">Which tensor in the trace is the largest, and why does that matter?</div>
+  <div class="opts">
+    <div class="opt">The residual stream, because it appears at every layer</div>
+    <div class="opt">The attention scores, always</div>
+    <div class="opt">It depends on T: logits (B·T·V) dominate at short T, attention scores (B·H·T²) dominate at long T</div>
+    <div class="opt">The QKV projection</div>
+  </div>
+  <div class="expl"><b>It depends on sequence length.</b> Here with T=6, V=32000: logits are
+  2×6×32000 = 384k elements vs scores at 2×8×36 = 576. But scores grow as T² while logits grow as T.
+  Crossover for these numbers is around T = V/H = 4000. At T=32k the scores dominate overwhelmingly —
+  which is exactly the regime FlashAttention was built for.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Your loss starts at 10.4 for a 32000-token vocabulary. Is that expected?</div>
+  <div class="opts">
+    <div class="opt">Yes — ln(32000) ≈ 10.37, which is the loss of a uniform random guess</div>
+    <div class="opt">No, it should start near 0</div>
+    <div class="opt">No, it should start near 1</div>
+    <div class="opt">Only if the model is broken</div>
+  </div>
+  <div class="expl"><b>ln(V) is the expected initial loss.</b> An untrained model outputs near-uniform
+  logits, so cross-entropy = −ln(1/V) = ln(V) = ln(32000) ≈ 10.37. <b>Always check this on step 0.</b>
+  If it starts much lower, your initialisation is too large or you have the label-shift bug. If much
+  higher, your initialisation is broken. It's the cheapest sanity check in deep learning.</div>
+</div>
+</div>
+
+<h2>9.4 · Parameter counting, exactly</h2>
+
+<p>You should be able to derive a model's parameter count from its config. Here's the recipe:</p>
+
+<pre><code>def count_params(cfg, tied=False, swiglu=True):
+    C, F_, L, V = cfg.d_model, cfg.d_ff, cfg.n_layer, cfg.vocab_size
+
+    embed  = V * C
+    attn   = 4 * C * C                       # W_q, W_k, W_v, W_o (MHA, no bias)
+    mlp    = (3 if swiglu else 2) * C * F_
+    norms  = 2 * C                           # two RMSNorms per block
+    per_layer = attn + mlp + norms
+
+    total = embed + L * per_layer + C        # + final norm
+    if not tied:
+        total += V * C                       # separate LM head
+    return total
+
+# GPT-2 small: C=768, F=3072, L=12, V=50257, GELU MLP, tied
+count_params(Config(768, 3072, 12, 50257), tied=True, swiglu=False)
+# 124,439,808  ≈ the famous "124M"  ✓
+</code></pre>
+
+<div class="box intuition">
+<span class="t">The shortcut worth memorising</span>
+<p style="margin-bottom:0">For a dense transformer with <code>d_ff = 4·d_model</code>:
+<b><code>N ≈ 12 · n_layer · d_model²</code></b> (non-embedding). Attention is <code>4C²</code>, MLP is
+<code>8C²</code>. Check it: Llama-2-7B has L=32, C=4096 → 12 × 32 × 4096² ≈ 6.4B, and the true
+non-embedding count is ~6.5B. Close enough to do in your head.</p>
+</div>
+
+<h2>9.5 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">9.1</span><span class="ti">Build the whole model and assert every shape</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Implement <code>GPT</code> end to end. Add a <code>trace=True</code> mode that prints the shape after
+every operation. Run it and check every line against the trace widget above.</p>
+<pre><code>model = GPT(Config())
+ids = torch.randint(0, 32000, (2, 6))
+logits, loss = model(ids, targets=ids)
+
+assert logits.shape == (2, 6, 32000)
+assert loss.ndim == 0
+assert abs(loss.item() - math.log(32000)) < 0.5, "check your init"
+print(f"{sum(p.numel() for p in model.parameters()):,} parameters")
+</code></pre>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">9.2</span><span class="ti">Verify causality empirically</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Don't trust your mask — test it. Change token <code>t</code> and confirm that outputs at positions
+<code>&lt; t</code> are bit-identical:</p>
+<pre><code>ids = torch.randint(0, 32000, (1, 10))
+out1, _ = model(ids)
+
+ids2 = ids.clone()
+ids2[0, 7] = (ids2[0, 7] + 1) % 32000       # perturb position 7 only
+out2, _ = model(ids2)
+
+assert torch.allclose(out1[0, :7], out2[0, :7], atol=1e-6), "CAUSALITY VIOLATED"
+assert not torch.allclose(out1[0, 7], out2[0, 7]),           "position 7 should change"
+print("causal ✓")
+</code></pre>
+<p class="tiny" style="margin-bottom:0">Run this on every model you ever write. A subtly broken mask leaks
+the future, which makes training loss look fantastic and generation look insane — a failure mode that has
+cost people weeks.</p>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">9.3</span><span class="ti">The residual-scaling initialisation</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>GPT-2 scales the residual-output projections at init by <code>1/√(2·n_layer)</code>. Implement it, then
+measure why:</p>
+<pre><code>for name, p in model.named_parameters():
+    if name.endswith('proj.weight') or name.endswith('down.weight'):
+        nn.init.normal_(p, std=0.02 / math.sqrt(2 * cfg.n_layer))
+</code></pre>
+<p>With and without it, run one forward pass and print <code>x.std()</code> after each block.</p>
+<details class="reveal"><summary>What you'll see</summary><div>
+<p style="margin-bottom:0">Without the scaling, the residual stream's standard deviation grows roughly as
+<code>√n_layer</code> — each block adds an independent contribution and variances sum. At 48 layers that's
+a ~7× growth, which pushes the final norm and the logits into a bad range and makes early training
+unstable. With the scaling, std stays roughly flat with depth. Two lines of code, and it's the difference
+between a training run that spikes and one that doesn't.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">9.4</span><span class="ti">Reverse-engineer a real config</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>Download <code>config.json</code> for any open model (Llama-3-8B, Qwen3-8B, Mistral-7B). From the config
+alone, without loading weights, compute: total parameters, non-embedding parameters, KV cache size per token
+per layer, and FLOPs for one forward pass at T=2048. Then check your parameter count against the model card.</p>
+<details class="reveal"><summary>Llama-3-8B worked example</summary><div>
+<pre><code class="nohl">hidden_size            4096
+num_hidden_layers        32
+num_attention_heads      32
+num_key_value_heads       8      ← GQA
+intermediate_size     14336
+vocab_size           128256
+tie_word_embeddings   false
+
+embeddings   2 × 128256 × 4096                    = 1,050,673,152
+attn/layer   Wq 4096×4096  = 16,777,216
+             Wk 4096×1024  =  4,194,304   (8 heads × 128)
+             Wv 4096×1024  =  4,194,304
+             Wo 4096×4096  = 16,777,216
+                            = 41,943,040
+mlp/layer    3 × 4096 × 14336              = 176,160,768
+norms/layer  2 × 4096                      =       8,192
+per layer                                  = 218,112,000
+× 32 layers                                = 6,979,584,000
++ final norm 4096
+TOTAL                                      ≈ 8,030,261,248  ≈ 8.03 B   ✓</code></pre>
+<p style="margin-bottom:0">KV cache: <code>2 × 8 heads × 128 dim × 2 bytes = 4096 bytes per token per
+layer</code>, × 32 layers = <b>128 KB per token</b>. At 128k context that's <b>16 GB</b> for a single
+sequence — more than the 8B model's own weights.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://github.com/karpathy/nanoGPT">karpathy/nanoGPT</a> — the reference. ~300 lines for a full GPT.</li>
+<li><a href="https://github.com/meta-llama/llama3/blob/main/llama/model.py">Meta's llama3 model.py</a> — a real production architecture, still readable.</li>
+<li><a href="https://arxiv.org/abs/1810.04805">Devlin et al. 2018 — BERT</a> · <a href="https://arxiv.org/abs/1910.10683">Raffel et al. 2019 — T5</a></li>
+<li><a href="https://bbycroft.net/llm">bbycroft.net/llm</a> — a 3-D animated walkthrough of a GPT forward pass. Pairs extremely well with this chapter.</li>
+<li>Companion notebook: <code>notebooks/09_full_model.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("09");</script>
+</body>
+</html>

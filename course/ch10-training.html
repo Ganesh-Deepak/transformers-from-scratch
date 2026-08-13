@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 10 — Training a Transformer</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>10 · Training a Transformer</h1>
+<p class="lead">
+You have a model that maps tokens to logits. Now make it good. This chapter covers the loss, the optimizer,
+the schedule, and the dozen practical details that separate a run that works from one that spikes at step
+4000 and never recovers.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; you need a model before you can train one</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch19-sft-rlhf.html">Ch&nbsp;19</a> &mdash; fine-tuning is this loop with different data<br><a href="ch22-capstone.html">Ch&nbsp;22</a> &mdash; the capstone trains for real</div>
+<div class="mn orient"><span class="k">Why this chapter</span>The loss, the optimizer, the schedule, and the bugs a good loss curve hides.</div>
+
+<h2>10.1 · The objective: predict the next token</h2>
+
+<p>That's the whole thing. There is no clever auxiliary loss in standard pretraining.</p>
+
+<div class="mathblock">
+ℒ = − <span class="frac"><span class="n">1</span><span class="d">T</span></span> <span class="op">Σ</span><sub>t=1</sub><sup>T</sup> log P<sub>θ</sub>(x<sub>t</sub> | x<sub>&lt;t</sub>)
+<span class="lbl">average negative log-likelihood of the true next token</span>
+</div>
+
+<pre><code>loss = F.cross_entropy(logits[:, :-1].reshape(-1, V),   # (B*(T-1), V)
+                       ids[:, 1:].reshape(-1))          # (B*(T-1),)
+</code></pre>
+
+<p><code>F.cross_entropy</code> fuses log-softmax and negative-log-likelihood into one numerically stable op.
+Never write <code>log(softmax(x))</code> yourself — it overflows.</p>
+
+<h3>Reading the number</h3>
+
+<div class="tw">
+<table>
+<thead><tr><th>Loss (nats)</th><th>Perplexity</th><th>Interpretation</th></tr></thead>
+<tbody>
+<tr><td>10.37</td><td>32,000</td><td>uniform random guessing over a 32k vocab (= ln V)</td></tr>
+<tr><td>~6.0</td><td>403</td><td>learned unigram frequencies</td></tr>
+<tr><td>~4.0</td><td>55</td><td>basic syntax; a small model on a small corpus</td></tr>
+<tr><td>~3.0</td><td>20</td><td>GPT-2-ish on general web text</td></tr>
+<tr><td>~2.0</td><td>7.4</td><td>a good modern model</td></tr>
+<tr><td>~1.5</td><td>4.5</td><td>frontier models on clean text</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><b>Perplexity = exp(loss)</b>, and it means "the model is as uncertain as if it were choosing uniformly
+among this many options." Perplexity 20 ≈ "it has narrowed the next token down to about 20 candidates."</p>
+
+<div class="box gotcha">
+<span class="t">Loss is NOT comparable across tokenizers</span>
+<p>The table above assumes a ~32k BPE vocabulary. Change the tokenizer and every number moves, because
+loss is measured <b>per token</b> and tokens carry different amounts of text. A character-level model on
+Shakespeare reaching loss 1.5 and a BPE-2048 model reaching 5.8 can be <i>the same quality</i> — the BPE
+token is worth ~3.3 characters.</p>
+<p style="margin-bottom:0">The comparable metric is <b>bits per byte</b>:</p>
+<div class="mathblock" style="margin:.8em 0 .6em">
+bpb = <span class="frac"><span class="n">loss<sub>nats/token</sub></span><span class="d">ln(2) · bytes_per_token</span></span>
+</div>
+<pre style="margin:.4em 0 .6em"><code class="nohl">char-level Shakespeare, good small model   ~2.1 bits/byte
+GPT-2 on web text                          ~1.0 bits/byte
+strong modern LLMs                         ~0.6-0.8 bits/byte</code></pre>
+<p style="margin-bottom:0">Always report bits-per-byte when comparing runs with different vocabularies.
+<code>tfs/train.py</code> prints it as <code>bpb</code> on every eval line for exactly this reason.</p>
+</div>
+
+<div class="box math-note">
+<span class="t">Teacher forcing, and its consequence</span>
+<p style="margin-bottom:0">During training we always condition on the <b>true</b> prefix, never on the
+model's own predictions. That's what makes the causal mask trick work — all T predictions computed in one
+pass. But it creates <b>exposure bias</b>: at generation time the model conditions on its own (possibly
+flawed) output, a distribution it never trained on. This is one reason long generations drift, and part of
+why RL-based post-training (Part VI) helps — it trains on the model's own rollouts.</p>
+</div>
+
+<h2>10.2 · The optimizer: AdamW</h2>
+
+<p>Plain SGD does not train transformers well. Adam does, and AdamW is the correction that made it right.</p>
+
+<pre><code># Adam: per-parameter adaptive step sizes from first and second gradient moments
+m = β₁·m + (1-β₁)·g                 # momentum      (β₁ = 0.9)
+v = β₂·v + (1-β₂)·g²                # second moment (β₂ = 0.95 for LLMs, 0.999 default)
+m̂ = m / (1 - β₁ᵗ);  v̂ = v / (1 - β₂ᵗ)          # bias correction
+θ = θ - lr · m̂ / (√v̂ + ε)
+</code></pre>
+
+<p>The key behaviour: dividing by <code>√v̂</code> means <b>parameters with consistently small gradients get
+large steps and vice versa</b>. Transformers have wildly different gradient scales across embeddings, norms
+and attention, so this per-parameter normalisation matters a lot.</p>
+
+<div class="box intuition">
+<span class="t">What the W in AdamW fixes</span>
+<p>L2 regularisation adds <code>λ‖θ‖²</code> to the loss, so the gradient gains a <code>λθ</code> term —
+which then gets divided by <code>√v̂</code> along with everything else. Parameters with large gradients get
+<i>less</i> regularisation. That is not what anyone wanted.</p>
+<p style="margin-bottom:0"><b>AdamW decouples it:</b> apply weight decay directly to the parameters, outside
+the adaptive machinery.</p>
+<pre style="margin:.7em 0 0"><code>θ = θ - lr · m̂/(√v̂ + ε) - lr · λ · θ      # ← decoupled decay term</code></pre>
+</div>
+
+<pre><code># The standard LLM setup, with the parameter grouping people usually forget
+decay, no_decay = [], []
+for n, p in model.named_parameters():
+    if not p.requires_grad: continue
+    # Don't decay biases, norm gains, or (usually) embeddings —
+    # they're not "weights" in the sense weight decay assumes.
+    (no_decay if p.ndim < 2 else decay).append(p)
+
+opt = torch.optim.AdamW(
+    [{"params": decay,    "weight_decay": 0.1},
+     {"params": no_decay, "weight_decay": 0.0}],
+    lr=3e-4, betas=(0.9, 0.95), eps=1e-8, fused=True)
+</code></pre>
+
+<div class="tw">
+<table>
+<thead><tr><th>Hyperparameter</th><th>Typical LLM value</th><th>Note</th></tr></thead>
+<tbody>
+<tr><td><code>lr</code></td><td>1e-4 … 6e-4</td><td>scales down as models get bigger; ~6e-4 at 125M, ~1.5e-4 at 175B</td></tr>
+<tr><td><code>β₁</code></td><td>0.9</td><td>rarely changed</td></tr>
+<tr><td><code>β₂</code></td><td><b>0.95</b></td><td>lower than PyTorch's 0.999 default — LLM gradients are noisy and 0.999 adapts too slowly</td></tr>
+<tr><td><code>weight_decay</code></td><td>0.1</td><td>on 2-D weights only</td></tr>
+<tr><td><code>grad_clip</code></td><td>1.0</td><td>global norm clipping — near-universal</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box warn">
+<span class="t">The memory cost of Adam</span>
+<p style="margin-bottom:0">Adam stores <code>m</code> and <code>v</code> per parameter, in fp32.
+That is <b>8 bytes per parameter</b> on top of the weights — for a 7B model, 56 GB of optimizer state alone.
+Add fp32 master weights (28 GB) and gradients (28 GB) and you understand why training needs ZeRO / FSDP
+sharding while inference fits on one GPU.</p>
+</div>
+
+<div class="box sota">
+<span class="t">2026 note: Muon</span>
+<p style="margin-bottom:0">Adam's ~9-year reign is finally seeing real competition. <b>Muon</b>
+(Jordan et al., 2024) orthogonalises the momentum matrix via a Newton–Schulz iteration before stepping,
+which empirically improves the loss-per-FLOP for the 2-D weight matrices. It's used for hidden layers with
+AdamW retained for embeddings and the LM head. <b>Kimi K2</b> (1T params) was trained with a Muon variant at
+scale, which is the strongest evidence so far that it isn't just a small-model effect. Still not the default,
+but worth knowing about.</p>
+</div>
+
+<h2>10.3 · The learning-rate schedule</h2>
+
+<p>A constant learning rate is leaving a lot on the table. The standard is <b>linear warmup → cosine
+decay</b>:</p>
+
+<pre><code>def lr_at(step, base_lr, warmup=2000, total=100_000, min_ratio=0.1):
+    if step < warmup:                                   # 1. linear warmup
+        return base_lr * (step + 1) / warmup
+    if step > total:
+        return base_lr * min_ratio
+    p = (step - warmup) / (total - warmup)              # 2. cosine decay
+    return base_lr * (min_ratio + (1 - min_ratio) * 0.5 * (1 + math.cos(math.pi * p)))
+</code></pre>
+
+<figure>
+<svg viewBox="0 0 620 190" xmlns="http://www.w3.org/2000/svg">
+  <g font-family="monospace" font-size="10" fill="var(--ink-3,#6E7885)">
+    <line x1="50" y1="150" x2="590" y2="150" stroke="var(--line,#DFE0DD)"/>
+    <line x1="50" y1="20"  x2="50"  y2="150" stroke="var(--line,#DFE0DD)"/>
+    <text x="30" y="28">lr</text><text x="560" y="168">step</text>
+    <path d="M50 150 L110 30" stroke="var(--dim-4,#5A7A2E)" stroke-width="2.2" fill="none"/>
+    <path d="M110 30 C 250 30, 330 130, 590 137" stroke="var(--accent,#0B6E62)" stroke-width="2.2" fill="none"/>
+    <line x1="110" y1="30" x2="110" y2="150" stroke="var(--line,#DFE0DD)" stroke-dasharray="3 3"/>
+    <text x="60" y="100" fill="var(--dim-4,#5A7A2E)">warmup</text>
+    <text x="300" y="60" fill="var(--accent,#0B6E62)">cosine decay</text>
+    <text x="500" y="130" fill="var(--ink-3,#6E7885)">min_lr = 0.1 × base</text>
+    <text x="118" y="164">~2k steps</text>
+  </g>
+</svg>
+<figcaption>Warmup prevents early divergence; decay lets the model settle into a sharper minimum.</figcaption>
+</figure>
+
+<div class="box math-note">
+<span class="t">Why warmup is not optional</span>
+<p style="margin-bottom:0">At step 0, Adam's second-moment estimate <code>v</code> is near zero, so
+<code>m̂/√v̂</code> can be enormous — the very first updates are effectively unbounded. Combine that with a
+randomly-initialised model whose gradients are large and uninformative, and a full-size first step can push
+the weights somewhere unrecoverable. Warmup ramps in gently while <code>v</code> stabilises. Post-LN models
+need it desperately; pre-LN models need it less, but everyone still uses it.</p>
+</div>
+
+<div class="box sota">
+<span class="t">The WSD alternative</span>
+<p style="margin-bottom:0">Cosine has an annoying property: you must fix <code>total_steps</code> in advance,
+and the intermediate checkpoints are all mid-decay and therefore not usable as final models. <b>WSD</b>
+(Warmup–Stable–Decay, popularised by MiniCPM and now used by several labs) holds the LR constant for most of
+training and only decays over the last ~10%. You can stop at any point, decay briefly, and get a good model —
+which makes continued pretraining and mid-run data changes far more practical.</p>
+</div>
+
+<h2>10.4 · The training loop, complete</h2>
+
+<pre><code>model = GPT(cfg).to(device)
+model = torch.compile(model)                    # 1.3-2× speedup, one line
+
+opt = torch.optim.AdamW([...], lr=6e-4, betas=(0.9, 0.95), fused=True)
+ACC_STEPS = 8                                    # gradient accumulation
+
+for step in range(total_steps):
+    # ── learning rate ──────────────────────────────────
+    lr = lr_at(step, base_lr=6e-4)
+    for g in opt.param_groups:
+        g["lr"] = lr
+
+    # ── forward / backward with accumulation ──────────
+    opt.zero_grad(set_to_none=True)
+    total_loss = 0.0
+    for micro in range(ACC_STEPS):
+        ids, targets = next(train_iter)          # (B, T) each
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            _, loss = model(ids, targets)
+            loss = loss / ACC_STEPS              # ← average, don't sum
+        loss.backward()
+        total_loss += loss.item()
+
+    # ── clip, step ─────────────────────────────────────
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    opt.step()
+
+    if step % 100 == 0:
+        print(f"step {step:6d}  loss {total_loss:.4f}  lr {lr:.2e}  gnorm {norm:.2f}")
+</code></pre>
+
+<h3>The four practical techniques in that loop</h3>
+
+<div class="tw">
+<table>
+<thead><tr><th>Technique</th><th>What it buys</th><th>What it costs</th></tr></thead>
+<tbody>
+<tr><td><b>Mixed precision (bf16)</b></td><td>~2× speed, ~half activation memory</td><td>nothing — bf16's fp32-range exponent means no loss scaling needed</td></tr>
+<tr><td><b>Gradient accumulation</b></td><td>large effective batch on small memory</td><td>proportionally more wall-clock per optimizer step</td></tr>
+<tr><td><b>Gradient clipping</b></td><td>survives loss spikes from bad batches</td><td>one extra pass over gradients</td></tr>
+<tr><td><b><code>torch.compile</code></b></td><td>1.3–2× via kernel fusion</td><td>30–90 s compile time; recompiles on shape changes</td></tr>
+<tr><td><b>Gradient checkpointing</b></td><td>~√L activation memory instead of L</td><td>~30% more compute (recomputes activations in backward)</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box gotcha">
+<span class="t">Two accumulation bugs</span>
+<ol style="margin-bottom:0">
+<li><b>Forgetting to divide by <code>ACC_STEPS</code>.</b> Your effective learning rate becomes 8× larger than
+you think, and it diverges.</li>
+<li><b>Calling <code>opt.zero_grad()</code> inside the micro-batch loop.</b> Then you're not accumulating at
+all — you just did 8× the work for one micro-batch's gradient.</li>
+</ol>
+</div>
+
+<h2>10.5 · Data: packing</h2>
+
+<p>Documents have different lengths. Padding each to <code>T</code> wastes compute on <code>&lt;pad&gt;</code>
+tokens — sometimes 50% of it. The standard fix is to <b>concatenate everything and slice</b>:</p>
+
+<pre><code># Tokenize the whole corpus once, write to a flat uint16/uint32 memmap.
+data = np.memmap("train.bin", dtype=np.uint16, mode="r")     # (N_total,)
+
+def get_batch(B, T):
+    ix = torch.randint(len(data) - T - 1, (B,))
+    x = torch.stack([torch.from_numpy(data[i     : i+T  ].astype(np.int64)) for i in ix])
+    y = torch.stack([torch.from_numpy(data[i + 1 : i+1+T].astype(np.int64)) for i in ix])
+    return x, y                                              # (B,T), (B,T)
+</code></pre>
+
+<p>Zero padding, 100% of the compute does useful work. The trade-off is that sequences can span document
+boundaries — the model sometimes attends across an unrelated document break. Most pretraining just accepts
+this; if you care, you can pass a document-id mask to block cross-document attention (supported by
+FlashAttention's varlen API and PyTorch FlexAttention).</p>
+
+<div class="quiz" data-title="Checkpoint 1 — training mechanics">
+<div class="qitem" data-answer="1">
+  <div class="qq">Your loss starts at 10.4 (V=32000), drops to 6.2 in 200 steps, then plateaus for
+  2000 steps. Most likely cause?</div>
+  <div class="opts">
+    <div class="opt">The model is broken</div>
+    <div class="opt">Nothing is wrong — it learned unigram frequencies fast, and syntax takes much longer</div>
+    <div class="opt">Learning rate is too low</div>
+    <div class="opt">You have the label-shift bug</div>
+  </div>
+  <div class="expl"><b>Normal.</b> The fastest available win is matching the marginal token distribution
+  ("the" is common, "aardvark" isn't), which gets you to roughly the unigram entropy — around 6 for English.
+  Everything after that requires actual modelling and comes much more slowly. Loss curves are
+  characteristically <i>step-like</i> for this reason.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Why <code>β₂ = 0.95</code> for LLMs instead of PyTorch's default 0.999?</div>
+  <div class="opts">
+    <div class="opt">0.999 averages over ~1000 steps, adapting too slowly to LLM gradient statistics and reacting badly to outlier batches</div>
+    <div class="opt">0.95 uses less memory</div>
+    <div class="opt">0.999 causes NaN in bf16</div>
+    <div class="opt">It's arbitrary</div>
+  </div>
+  <div class="expl"><b>Adaptation speed.</b> The effective averaging window is ~1/(1−β₂): 20 steps at 0.95
+  vs 1000 at 0.999. LLM gradients are noisy and non-stationary, and a long window means a single bad batch's
+  huge gradient inflates <code>v</code> for a thousand steps afterwards, suppressing learning. GPT-3, Llama,
+  Chinchilla and most others use 0.95.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">You want an effective batch of 512 sequences but only 8 fit in memory. What do you do,
+  and what must you not forget?</div>
+  <div class="opts">
+    <div class="opt">Reduce sequence length instead</div>
+    <div class="opt">Use gradient checkpointing; nothing else changes</div>
+    <div class="opt">Accumulate over 64 micro-batches; call <code>opt.step()</code> each time</div>
+    <div class="opt">Accumulate over 64 micro-batches; divide each loss by 64 and step once</div>
+  </div>
+  <div class="expl"><b>Divide by the accumulation count, step once.</b> <code>loss.backward()</code>
+  <i>adds</i> into <code>.grad</code>, so without the division you get the sum of 64 losses — a 64× larger
+  effective learning rate. Option C defeats the purpose entirely (that's just 64 small steps).</div>
+</div>
+</div>
+
+<h2>10.6 · Debugging a training run</h2>
+
+<div class="box gotcha">
+<span class="t">Case study: a real bug this course shipped, and what caught it</span>
+<p>While building the training script for this course, <code>get_batch</code> returned a
+<b>pre-shifted</b> <code>y = data[i+1 : i+1+T]</code>, and it was passed to a
+<code>forward()</code> that <b>also</b> shifts internally (<code>logits[:, :-1]</code> vs
+<code>targets[:, 1:]</code>). The labels were shifted <b>twice</b>: the model was trained to
+predict <b>two tokens ahead</b>.</p>
+<p>Here is what that looked like, on a model trained to memorise a short text:</p>
+<div class="tw" style="margin:.7em 0">
+<table style="margin:0">
+<thead><tr><th></th><th class="num">train loss</th><th class="num">chars correct</th><th>greedy output</th></tr></thead>
+<tbody>
+<tr><td><b>correct</b></td><td class="num">0.0482</td><td class="num"><b>100%</b></td><td><code>'e we proceed any further, hear me speak.'</code></td></tr>
+<tr><td><b>double-shifted</b></td><td class="num"><b>0.0457</b></td><td class="num">11%</td><td><code>' ew rr rcedayfr e,haieode,ha er e,ha er'</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><b>The buggy version had the LOWER training loss.</b> Predicting two tokens ahead is a
+perfectly learnable task — it just isn't language modelling. No exception, no NaN, no
+suspicious curve. Every unit test on <code>forward()</code> still passed, because
+<code>forward()</code> was never wrong; the <i>caller</i> was.</p>
+<p style="margin-bottom:0"><b>What caught it:</b> closing the loop. Train a model to memorise a
+short text, then check that <b>greedy generation reproduces it</b>. A memorised model that cannot
+echo its own training data has a train/inference mismatch. The tell for this particular bug is
+that teacher-forced output is off by <b>exactly one token</b>. That check is
+<code>test_generation_reproduces_memorised_text</code> in <code>tests/test_tfs.py</code>.</p>
+</div>
+
+<div class="box intuition">
+<span class="t">The overfit-one-batch test — do this first, always</span>
+<pre style="margin:.6em 0"><code>ids, targets = next(train_iter)
+for step in range(500):
+    opt.zero_grad()
+    _, loss = model(ids, targets)      # SAME batch every time
+    loss.backward(); opt.step()
+    if step % 50 == 0: print(step, loss.item())</code></pre>
+<p style="margin-bottom:0">Loss must go to <b>near zero</b>. If it can't memorise 8 sequences, no amount of
+data will help — you have a bug, not a capacity problem. This test takes 30 seconds and catches label-shift
+errors, broken masks, frozen parameters, and detached graphs.</p>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th>Symptom</th><th>Likely cause</th></tr></thead>
+<tbody>
+<tr><td>Loss starts far below ln(V)</td><td>label-shift bug (predicting the input), or leaked future via a broken mask</td></tr>
+<tr><td>Loss curve looks great, generation is incoherent</td><td><b>labels shifted twice</b> (predicting 2 ahead). Check: can a memorised model reproduce its own training text? Teacher-forced output off by exactly one token confirms it</td></tr>
+<tr><td>Loss = NaN after a few steps</td><td>LR too high; missing warmup; fp16 overflow (use bf16); division by zero in a norm</td></tr>
+<tr><td>Loss spikes then recovers</td><td>a bad batch — usually fine, that's what grad clipping is for</td></tr>
+<tr><td>Loss spikes and never recovers</td><td>optimizer state corrupted. Roll back to a checkpoint, skip that data, lower LR</td></tr>
+<tr><td>Loss flat at exactly ln(V)</td><td>gradients aren't flowing: frozen params, <code>torch.no_grad</code>, or a <code>.detach()</code></td></tr>
+<tr><td>Train loss ↓, val loss ↑</td><td>overfitting — more data, or you're in the fine-tuning regime and need dropout</td></tr>
+<tr><td>Grad norm growing steadily</td><td>instability building. Check for missing residual init scaling (Ch 9), or add QK-norm</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>10.7 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">10.1</span><span class="ti">Train a real language model</span><span class="lvl">the main event</span></div>
+<div class="eb">
+<p>Train the GPT from Chapter 9 on the Tiny Shakespeare dataset (~1 MB, downloaded automatically).</p>
+<pre><code class="nohl">python -m tfs.train --char --steps 2500 --d_model 192 --n_layer 6 --batch 32 --lr 1e-3</code></pre>
+
+<div class="box math-note" style="margin:1em 0">
+<span class="t">Measured targets — real numbers from this exact command</span>
+<div class="tw" style="margin:.6em 0">
+<table style="margin:0">
+<thead><tr><th class="num">step</th><th class="num">train</th><th class="num">val</th><th class="num">bits/byte</th><th>note</th></tr></thead>
+<tbody>
+<tr><td class="num">0</td><td class="num">4.242</td><td class="num">4.227</td><td class="num">6.10</td><td>= ln(65) = 4.174 ✓</td></tr>
+<tr><td class="num">250</td><td class="num">1.734</td><td class="num">1.885</td><td class="num">2.72</td><td></td></tr>
+<tr><td class="num">500</td><td class="num">1.459</td><td class="num">1.679</td><td class="num">2.42</td><td></td></tr>
+<tr><td class="num">1000</td><td class="num">1.321</td><td class="num">1.553</td><td class="num">2.24</td><td></td></tr>
+<tr><td class="num">1250</td><td class="num">1.275</td><td class="num"><b>1.512</b></td><td class="num"><b>2.18</b></td><td><b>best</b> — ~14 min on CPU</td></tr>
+<tr><td class="num">1500</td><td class="num">1.221</td><td class="num">1.513</td><td class="num">2.18</td><td>val flat, train falling → overfitting</td></tr>
+<tr><td class="num">2000</td><td class="num">1.089</td><td class="num">1.529</td><td class="num">2.21</td><td>val rising; best checkpoint restored</td></tr>
+</tbody>
+</table>
+</div>
+<p style="margin-bottom:0"><b>Target: val ≈ 1.51 (≈2.18 bits/byte), reached around step 1250.</b> Past
+that the model overfits — Tiny Shakespeare has ~1 M characters against 2.4 M parameters, i.e.
+<b>0.42 tokens per parameter</b> where Chapter 17 says you want ~20. Note the val curve goes
+<i>flat</i> while train keeps falling; that divergence is the signal, not any single number.</p>
+</div>
+
+<div class="box warn" style="margin:1em 0">
+<span class="t">Context for that number</span>
+<p style="margin-bottom:0"><b>nanoGPT's famous 1.47</b> on this dataset uses a <b>4.5× larger</b> model
+(10.6 M params, <code>d_model=384</code>, <code>block_size=256</code>) trained 5000 iterations.
+Reaching <b>1.51 with 2.4 M parameters in 14 CPU-minutes</b> is a good result, not a near-miss.</p>
+</div>
+
+<div class="box math-note" style="margin:1em 0">
+<span class="t">Now the payoff: the same model, two tokenizers</span>
+<p>Both of these are real runs of the same architecture on the same data, differing only in
+tokenizer:</p>
+<div class="tw" style="margin:.6em 0">
+<table style="margin:0">
+<thead><tr><th>tokenizer</th><th class="num">best val loss</th><th class="num">bytes/token</th><th class="num">bits/byte</th><th class="num">best step</th></tr></thead>
+<tbody>
+<tr><td>character (V=65)</td><td class="num">1.512</td><td class="num">1.00</td><td class="num">2.18</td><td class="num">1250</td></tr>
+<tr><td>BPE (V=2048)</td><td class="num">4.362</td><td class="num">3.29</td><td class="num"><b>1.91</b></td><td class="num">500</td></tr>
+</tbody>
+</table>
+</div>
+<p>The BPE run's loss is <b>2.9× larger</b>. Judged on raw loss you would call it far worse.
+In bits per byte it is <b>12% better</b> — it is the stronger model. Its samples are visibly better
+too, because a subword vocabulary makes non-words hard to emit:</p>
+<pre style="margin:.6em 0"><code class="nohl">Richard of the second partime, that you do, I say.
+
+FLORIZEL:
+What, now, good sir; I pray you?
+
+ANGELO:
+I thank you, sir; what you can I would be contleure.</code></pre>
+<p style="margin-bottom:0"><b>Second lesson from the same table:</b> the BPE run peaks at step
+<b>500</b> and the character run at <b>1250</b>. A 2048-entry embedding table trained on only
+~324 k tokens sees each rare token a handful of times, so it overfits far sooner. Larger vocabulary
+is not free — it buys shorter sequences and costs data efficiency.</p>
+</div>
+<p>Deliverables: a loss curve (train + val), 500 characters of generated text, and one paragraph on what
+the model clearly learned versus clearly didn't.</p>
+<details class="reveal"><summary>What output at this scale actually looks like</summary><div>
+<p>This is the <b>real, uncurated</b> first sample from the run in the table above
+(val 1.51, temperature 0.8, top-p 0.95) — not a cherry-picked one:</p>
+<pre style="margin:.6em 0"><code class="nohl">BUCKINGHAM:
+Not to possess of you, and set to repose
+My misery with a thing, speaking as effect
+My other dear to speak in my side.
+
+RIVERS:
+He calls to your brother to his accest.
+
+DUKE VINCENTIO:
+Some, and he inearnothinorantail ourobey.</code></pre>
+<p>Read it carefully, because both halves are informative:</p>
+<ul>
+<li><b>What it learned:</b> real speaker names it was never explicitly taught, the
+<code>NAME:</code>-newline convention, blank lines between speeches, roughly iambic line lengths,
+mostly-real words, locally grammatical clauses.</li>
+<li><b>What it did not:</b> meaning. "Not to possess of you, and set to repose" is syntactically
+plausible and semantically empty. And it still degrades —
+<code>"inearnothinorantail ourobey"</code> is what a 2.4 M-parameter model does when it loses the thread.</li>
+</ul>
+<p style="margin-bottom:0">That gap between <b>form</b> and <b>meaning</b> at small scale is the genuinely
+instructive thing here. Also note: if your output looks like the <i>character soup</i> in the case-study
+box in §10.6 rather than this, you have a bug, not an under-trained model.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">10.2</span><span class="ti">Ablate the schedule</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Train the same model 4 ways for the same number of steps: (a) constant LR, (b) cosine without warmup,
+(c) warmup + cosine, (d) warmup + cosine at 10× the LR. Plot all four loss curves on one chart.</p>
+<details class="reveal"><summary>What you'll see</summary><div>
+<p style="margin-bottom:0">(c) wins, usually by a clear margin. (b) often shows a spike in the first ~100
+steps. (d) either diverges to NaN or plateaus high. The gap between (a) and (c) is typically 0.05–0.15 nats
+— small-looking, but that's the difference between a model and a better model at zero extra compute, which
+is why nobody skips it.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">10.3</span><span class="ti">Plant a bug, then find it</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Introduce each bug below one at a time, run 200 steps, and record the loss-curve signature. Build
+yourself a lookup table so you can diagnose these by sight later.</p>
+<ol>
+<li>Remove the label shift (predict input instead of next token)</li>
+<li>Remove the causal mask</li>
+<li>Forget <code>opt.zero_grad()</code></li>
+<li>Use <code>lr=1.0</code></li>
+<li>Forget to divide by <code>ACC_STEPS</code></li>
+</ol>
+<details class="reveal"><summary>Signatures</summary><div>
+<ol>
+<li>Loss crashes to ~0 within a few dozen steps. Generation is gibberish. <b>Diagnostic: loss below the
+data's entropy is impossible.</b></li>
+<li>Loss drops much faster than normal and reaches an implausibly low value; generation is incoherent.
+Same tell as (1) — the model is cheating.</li>
+<li>Gradients accumulate forever, so effective LR grows without bound. Loss falls then explodes to NaN.</li>
+<li>NaN within ~10 steps.</li>
+<li>Behaves like an 8× LR: either divergence or a noisy plateau well above where it should be.</li>
+</ol>
+<p style="margin-bottom:0"><b>The meta-lesson:</b> (1) and (2) both produce a <i>beautiful</i> loss curve.
+Never trust a loss curve alone — always generate samples and always check loss against
+<code>ln(V)</code> at step 0.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/1711.05101">Loshchilov &amp; Hutter 2017 — Decoupled Weight Decay (AdamW)</a></li>
+<li><a href="https://github.com/karpathy/nanoGPT/blob/master/train.py">nanoGPT train.py</a> — a real, complete, readable training script.</li>
+<li><a href="https://github.com/google-research/tuning_playbook">Google — Deep Learning Tuning Playbook</a> — the best practical guide to hyperparameters that exists.</li>
+<li><a href="https://kellerjordan.github.io/posts/muon/">Keller Jordan — Muon optimizer</a></li>
+<li><a href="https://arxiv.org/abs/2404.06395">Hu et al. 2024 — MiniCPM</a> (the WSD schedule)</li>
+<li>Companion notebook: <code>notebooks/10_training.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("10");</script>
+</body>
+</html>

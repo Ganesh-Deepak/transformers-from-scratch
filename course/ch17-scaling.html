@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 17 — Scaling Laws and Long Context</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>17 · Scaling Laws and Long Context</h1>
+<p class="lead">
+Two questions that determine how models get built: <em>given a compute budget, how big should the model
+be?</em> and <em>how do you make a model trained at 4k tokens work at 128k?</em> Both have surprisingly
+clean quantitative answers.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; the 6ND rule<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE frequencies</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; long context is why sparse attention exists</div>
+<div class="mn orient"><span class="k">Why this chapter</span>How big, trained on how much — and why 'supports 1M tokens' is a claim about a config file.</div>
+
+<h2>17.1 · Scaling laws</h2>
+
+<p>Kaplan et al. (2020) found something remarkable: test loss follows a smooth <b>power law</b> in model
+size, dataset size, and compute — over seven orders of magnitude, with no visible discontinuity.</p>
+
+<div class="mathblock">
+L(N, D) = E + <span class="frac"><span class="n">A</span><span class="d">N<sup>α</sup></span></span> + <span class="frac"><span class="n">B</span><span class="d">D<sup>β</sup></span></span>
+<span class="lbl">Hoffmann et al. 2022 fit: E = 1.69, A = 406.4, B = 410.7, α = 0.34, β = 0.28</span>
+</div>
+
+<p>Read the three terms:</p>
+<ul>
+<li><b>E</b> — the irreducible entropy of language. You cannot beat this no matter what.</li>
+<li><b>A/N<sup>α</sup></b> — the penalty for having too few parameters.</li>
+<li><b>B/D<sup>β</sup></b> — the penalty for having seen too little data.</li>
+</ul>
+
+<h3>The Chinchilla correction</h3>
+
+<p>Kaplan's original analysis concluded you should scale model size much faster than data. GPT-3 followed
+that advice: 175B parameters on 300B tokens — about 1.7 tokens per parameter.</p>
+
+<p>Hoffmann et al. (2022) redid the experiments with proper learning-rate schedules for each budget and found
+the opposite: <b>N and D should scale roughly equally</b>, at about <b>20 tokens per parameter</b>. They
+proved it by training <b>Chinchilla (70B on 1.4T tokens)</b>, which beat <b>Gopher (280B on 300B tokens)</b>
+across the board at <i>the same training compute</i> — a 4× smaller model, decisively better.</p>
+
+<div data-viz="chinchilla"></div>
+
+<div class="box math-note">
+<span class="t">The three-line derivation</span>
+<p style="margin-bottom:0">With <code>C ≈ 6ND</code> fixed, substitute <code>D = C/(6N)</code> into the loss
+and minimise over <code>N</code>. Because α ≈ β, the optimum has <code>N* ∝ C^0.5</code> and
+<code>D* ∝ C^0.5</code> — both scale as the square root of compute, which is why the ratio D/N stays
+roughly constant at ~20. <b>Every 4× of compute should buy you 2× the parameters and 2× the data.</b></p>
+</div>
+
+<h3>Why nobody actually trains Chinchilla-optimal any more</h3>
+
+<p>Chinchilla optimises <b>training</b> compute. But a deployed model's compute is dominated by
+<b>inference</b>, paid on every request forever. A smaller model that's slightly worse but 3× cheaper to
+serve is often the better product.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Model</th><th class="num">Params</th><th class="num">Tokens</th><th class="num">Tok/param</th><th>Regime</th></tr></thead>
+<tbody>
+<tr><td>GPT-3</td><td class="num">175 B</td><td class="num">300 B</td><td class="num">1.7</td><td>severely under-trained</td></tr>
+<tr><td>Chinchilla</td><td class="num">70 B</td><td class="num">1.4 T</td><td class="num">20</td><td>compute-optimal</td></tr>
+<tr><td>Llama-2-7B</td><td class="num">7 B</td><td class="num">2 T</td><td class="num">286</td><td>over-trained</td></tr>
+<tr><td>Llama-3-8B</td><td class="num">8 B</td><td class="num">15 T</td><td class="num">1875</td><td>massively over-trained</td></tr>
+<tr><td>Qwen3-4B</td><td class="num">4 B</td><td class="num">36 T</td><td class="num">9000</td><td>extreme</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Meta's own comment on Llama 3 was that 8B models continued improving log-linearly well past 15T tokens —
+far beyond where Chinchilla says to stop. The loss surface near the optimum is <b>flat</b>, so you can move a
+long way along the "smaller model, more data" direction for very little loss penalty, and buy a large
+inference saving. Drag the widget's parameter slider away from optimal and watch how little the loss moves.</p>
+
+<div class="box warn">
+<span class="t">Scaling laws describe loss, not capability</span>
+<p style="margin-bottom:0">Loss is smooth. Benchmark scores sometimes are not — they can look like they jump
+at a threshold. Wei et al. (2022) called these "emergent abilities"; Schaeffer et al. (2023) argued
+persuasively that the jumps are largely an artifact of <b>discontinuous metrics</b> (exact-match scoring
+turns smooth improvement into a step). Use smooth metrics before claiming emergence. The underlying loss
+almost never jumps.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 1 — scaling">
+<div class="qitem" data-answer="2">
+  <div class="qq">You have 10²³ FLOPs. Roughly what compute-optimal model and dataset?</div>
+  <div class="opts">
+    <div class="opt">100B params, 170B tokens</div>
+    <div class="opt">10B params, 1.7T tokens</div>
+    <div class="opt">~29B params, ~580B tokens</div>
+    <div class="opt">1B params, 17T tokens</div>
+  </div>
+  <div class="expl"><b>~29B / ~580B.</b> From C = 6ND and D = 20N: 10²³ = 120N² → N = √(8.3×10²⁰) ≈
+  2.9×10¹⁰. Then D = 20N ≈ 5.8×10¹¹. Note options B and D aren't <i>wrong</i> as engineering choices —
+  they're deliberately over-trained, which is what you'd actually ship. They're just not compute-optimal.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">Why did Llama-3-8B train on 1875 tokens per parameter instead of the optimal 20?</div>
+  <div class="opts">
+    <div class="opt">Chinchilla's scaling law was found to be wrong</div>
+    <div class="opt">Chinchilla optimises training compute, but inference cost dominates over a model's lifetime — and the loss curve is flat near the optimum</div>
+    <div class="opt">They had more data than compute</div>
+    <div class="opt">Smaller models are easier to train</div>
+  </div>
+  <div class="expl"><b>Total cost of ownership.</b> Chinchilla answers "best loss for a fixed training
+  budget". Meta's question was "best model I can serve cheaply forever". Since the loss surface is flat near
+  the optimum, moving far down the over-training direction costs little loss and saves enormously at
+  inference. Chinchilla isn't wrong — it answers a different question.</div>
+</div>
+</div>
+
+<h2>17.2 · Long context</h2>
+
+<p>A model trained at 4k tokens degrades badly at 32k (Chapter 7). RoPE's rotation angles go far outside the
+range it saw. Three families of fix:</p>
+
+<h3>Position Interpolation (PI)</h3>
+<pre><code># Squash positions into the trained range instead of extrapolating past it.
+scale = trained_len / target_len          # e.g. 4096/32768 = 1/8
+positions = torch.arange(T) * scale       # position 32767 → "4095.9"
+</code></pre>
+<p>Chen et al. (2023). Simple, works, needs a little fine-tuning. The cost: it compresses <i>all</i>
+frequencies equally, which crushes the high-frequency dimensions that encode fine local ordering — the model
+gets worse at distinguishing adjacent tokens.</p>
+
+<h3>NTK-aware scaling</h3>
+<pre><code># Instead of scaling positions, scale the RoPE BASE.
+base_new = base * scale ** (d / (d - 2))     # e.g. 10000 → ~much larger
+</code></pre>
+<p>Interpolate the low-frequency (long-range) dimensions while leaving high-frequency ones nearly untouched.
+Better than PI, and often works with <b>no fine-tuning at all</b>. Llama 3's jump from base 10,000 to
+<b>500,000</b> is a training-time application of the same insight.</p>
+
+<h3>YaRN</h3>
+<p>Peng et al. (2023) — the current best of the three. It applies a <b>per-dimension</b> strategy based on
+each dimension's wavelength relative to the context:</p>
+<ul>
+<li>Wavelength ≪ context → the dimension has seen full rotations; <b>don't touch it</b> (extrapolate).</li>
+<li>Wavelength ≫ context → never completed a rotation; <b>interpolate</b>.</li>
+<li>In between → blend smoothly.</li>
+</ul>
+<p>Plus a temperature adjustment on the attention logits to compensate for the entropy change from longer
+sequences. YaRN reaches long contexts with roughly <b>10× less fine-tuning data</b> than PI, and is what most
+context-extension work uses today.</p>
+
+<h3>Sliding-window attention</h3>
+<pre><code># Each token attends only to the previous W tokens.
+mask = (i - j < W) & (j <= i)          # W = 4096 typically
+</code></pre>
+<p>Turns O(T²) into O(T·W). Information still propagates further than W because stacking layers extends the
+receptive field — <code>n_layer × W</code> in total, much like a CNN. Mistral 7B popularised this; Gemma 2/3
+interleave local and global layers (e.g. 5 local : 1 global) so most layers are cheap while a few retain
+full-range attention.</p>
+
+<div class="box intuition">
+<span class="t">Attention sinks — why naive window eviction breaks models</span>
+<p style="margin-bottom:0">Chapter 5's exercise found that many heads dump attention on token 0 regardless of
+content. Softmax forces every row to sum to 1, so a head with nothing relevant to attend to needs somewhere
+to put its mass — the first token becomes a "null" option. <b>Evict token 0 from the cache and quality
+collapses.</b> StreamingLLM's fix (Xiao et al. 2023) is trivial and effective: always keep the first ~4
+tokens plus the sliding window. That one change enables stable generation over millions of tokens.</p>
+</div>
+
+<h2>17.3 · Measuring long context honestly</h2>
+
+<div class="box warn">
+<span class="t">"Supports 1M tokens" is a claim about the config file</span>
+<p style="margin-bottom:0">A model's advertised context length says what it will <i>accept</i> without
+erroring — not what it can <i>use</i>. Effective context is routinely a fraction of advertised context.</p>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th>Benchmark</th><th>What it measures</th><th>Difficulty</th></tr></thead>
+<tbody>
+<tr><td><b>Needle in a Haystack</b></td><td>retrieve one planted fact from a long document</td><td>easy — most models pass; near-saturated</td></tr>
+<tr><td><b>RULER</b></td><td>multi-needle, aggregation, variable tracking, multi-hop QA</td><td>hard — effective lengths often far below advertised</td></tr>
+<tr><td><b>LongBench / ∞Bench</b></td><td>realistic long-document tasks</td><td>realistic</td></tr>
+<tr><td><b>"Lost in the middle"</b></td><td>accuracy vs. position of the relevant fact</td><td>reveals a U-shaped curve: strong at the ends, weak in the middle</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The last one is the most practically useful finding: information at the <b>beginning and end</b> of a long
+context is used far more reliably than information in the middle. If you're building a RAG system, put the
+most important retrieved chunks at the edges — it measurably improves answers.</p>
+
+<div class="quiz" data-title="Checkpoint 2 — long context">
+<div class="qitem" data-answer="0">
+  <div class="qq">Why does YaRN outperform uniform position interpolation?</div>
+  <div class="opts">
+    <div class="opt">It treats each RoPE dimension differently based on whether its wavelength is shorter or longer than the context</div>
+    <div class="opt">It uses a larger model</div>
+    <div class="opt">It doesn't need any fine-tuning</div>
+    <div class="opt">It removes RoPE entirely</div>
+  </div>
+  <div class="expl"><b>Per-dimension treatment.</b> Uniform PI compresses high-frequency dimensions that were
+  already working fine, damaging local resolution. YaRN leaves those alone and only interpolates the
+  low-frequency dimensions that genuinely never completed a rotation in training. (It still benefits from
+  some fine-tuning — just far less.)</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">You implement sliding-window attention and evict old KV entries. Quality collapses after
+  the window fills. Most likely cause?</div>
+  <div class="opts">
+    <div class="opt">The window is too small</div>
+    <div class="opt">RoPE needs rescaling</div>
+    <div class="opt">You evicted the attention-sink tokens at the start of the sequence</div>
+    <div class="opt">The KV cache is corrupted</div>
+  </div>
+  <div class="expl"><b>Attention sinks.</b> This is the exact failure StreamingLLM diagnosed. Many heads
+  route surplus attention mass to the first few tokens; remove them and every softmax row is forced to
+  redistribute that mass onto tokens it didn't want, wrecking the output. Keep the first ~4 tokens
+  permanently and the problem disappears.</div>
+</div>
+</div>
+
+<h2>17.4 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">17.1</span><span class="ti">Fit your own scaling law</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Train tiny models at 5 sizes (roughly 0.1M, 0.3M, 1M, 3M, 10M non-embedding params) on Tiny Shakespeare
+for a fixed number of tokens each. Plot final loss vs N on log-log axes and fit a power law.</p>
+<ol>
+<li>What exponent do you get? Is it near 0.34?</li>
+<li>Extrapolate to 100M. Then train a 100M model and check.</li>
+</ol>
+<details class="reveal"><summary>What to expect</summary><div>
+<p style="margin-bottom:0">You'll get a clean power law over the small range, but the exponent will likely
+differ from 0.34 — Chinchilla's constants are fitted on a specific data distribution at much larger scale.
+The <b>form</b> generalises; the <b>constants</b> don't. Your extrapolation will also break down as you
+approach the dataset's irreducible entropy, since 1 MB of Shakespeare is exhausted long before 100M
+parameters are.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">17.2</span><span class="ti">Extend a model's context</span><span class="lvl">hard</span></div>
+<div class="eb">
+<p>Take your Chapter 10 model trained at <code>max_T=128</code>. Evaluate perplexity at sequence lengths
+128, 256, 512, 1024 with: (a) no change, (b) position interpolation, (c) NTK-aware base scaling, (d) YaRN.
+Plot perplexity vs length for all four.</p>
+<details class="reveal"><summary>Expected shape</summary><div>
+<p style="margin-bottom:0">(a) explodes immediately past 128. (b) degrades gracefully but is worse than (a)
+<i>at</i> 128 — the price of compressing frequencies you didn't need to compress. (c) and (d) stay flat
+furthest, with YaRN best at the longest lengths. That "PI is worse at the original length" crossover is the
+key observation and the reason the field moved past PI.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">17.3</span><span class="ti">Run your own needle test</span><span class="lvl">applied</span></div>
+<div class="eb">
+<p>Build a needle-in-a-haystack harness: insert <code>"The secret code is 7391."</code> at depth
+<code>d ∈ {0%, 10%, …, 100%}</code> into filler text of length <code>L ∈ {1k, 2k, 4k, 8k, 16k}</code>, then
+ask the model for the code. Build a heatmap of accuracy over (L, d) for any local model.</p>
+<details class="reveal"><summary>What you'll find</summary><div>
+<p style="margin-bottom:0">A characteristic pattern: strong at depth 0% and 100%, weakest around 30–70% —
+the "lost in the middle" effect — with the weak band widening as L grows. Then try the harder version:
+<b>two</b> needles that must be combined. Accuracy usually falls off a cliff. Single-needle retrieval is a
+much easier task than reasoning over long context, which is why RULER exists and why NIAH scores are a poor
+basis for choosing a model.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/2001.08361">Kaplan et al. 2020 — Scaling Laws for Neural Language Models</a></li>
+<li><a href="https://arxiv.org/abs/2203.15556">Hoffmann et al. 2022 — Training Compute-Optimal LLMs (Chinchilla)</a></li>
+<li><a href="https://arxiv.org/abs/2306.15595">Chen et al. 2023 — Position Interpolation</a> · <a href="https://arxiv.org/abs/2309.00071">Peng et al. 2023 — YaRN</a></li>
+<li><a href="https://arxiv.org/abs/2309.17453">Xiao et al. 2023 — StreamingLLM / attention sinks</a></li>
+<li><a href="https://arxiv.org/abs/2404.06654">Hsieh et al. 2024 — RULER</a> · <a href="https://arxiv.org/abs/2307.03172">Liu et al. 2023 — Lost in the Middle</a></li>
+<li><a href="https://arxiv.org/abs/2304.15004">Schaeffer et al. 2023 — Are Emergent Abilities a Mirage?</a></li>
+<li>Companion notebook: <code>notebooks/17_scaling.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("17");</script>
+</body>
+</html>

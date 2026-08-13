@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 19 — SFT, RLHF, and PPO</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>19 · SFT, RLHF, and PPO</h1>
+<p class="lead">
+A pretrained model is a text predictor, not an assistant. Ask it a question and it may well produce five more
+questions — because that's what documents containing questions look like. This part of the course is about
+closing the gap between "models the internet" and "does what you asked."
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch10-training.html">Ch&nbsp;10</a> &mdash; SFT is the training loop with different data</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch20-dpo.html">Ch&nbsp;20</a> &mdash; DPO removes most of this machinery<br><a href="ch21-grpo.html">Ch&nbsp;21</a> &mdash; and RLVR removes the reward model too</div>
+<div class="mn orient"><span class="k">Why this chapter</span>A pretrained model predicts text. It does not answer questions. This is the gap.</div>
+
+<h2>19.1 · The pipeline</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Stage</th><th>Data</th><th>Objective</th><th>Scale</th></tr></thead>
+<tbody>
+<tr><td><b>1. Pretraining</b></td><td>10–20 T tokens of web text</td><td>next-token prediction</td><td>months, thousands of GPUs</td></tr>
+<tr><td><b>2. SFT</b></td><td>10k–1M curated (prompt, response) pairs</td><td>next-token prediction on responses only</td><td>hours to days</td></tr>
+<tr><td><b>3. Preference optimisation</b></td><td>10k–1M (prompt, chosen, rejected) triples</td><td>RLHF / DPO / GRPO</td><td>days</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>19.2 · Supervised fine-tuning</h2>
+
+<p>Mechanically, SFT is <b>identical to pretraining</b> — same loss, same optimizer. Two differences:</p>
+
+<pre><code># 1. The data is formatted with a chat template (Chapter 3)
+text = tokenizer.apply_chat_template([
+    {"role": "user",      "content": "What is attention?"},
+    {"role": "assistant", "content": "Attention lets each token..."}
+], tokenize=False)
+
+# 2. Loss is computed on the ASSISTANT tokens only.
+labels = input_ids.clone()
+labels[:len(prompt_ids)] = -100     # -100 = ignore_index in F.cross_entropy
+</code></pre>
+
+<div class="box gotcha">
+<span class="t">Masking the prompt matters more than people expect</span>
+<p style="margin-bottom:0">If you train on prompt tokens too, the model spends capacity learning to
+<i>generate user questions</i> — a task you never want it to perform. It also dilutes the gradient signal on
+what you actually care about. Always mask, and always print a decoded example with the masked positions
+marked before launching a run.</p>
+</div>
+
+<h3>Why SFT isn't enough</h3>
+
+<ul>
+<li><b>It can only imitate, never exceed.</b> SFT's ceiling is the quality of your demonstrations. If your
+annotators write mediocre answers, you get a mediocre model.</li>
+<li><b>"Good" is easier to judge than to produce.</b> Writing an excellent response is expensive; comparing
+two responses is cheap. Preference data is far more scalable than demonstration data.</li>
+<li><b>There is no signal about what to avoid.</b> SFT only ever says "do this". It never says "not that",
+so there's no gradient pushing away from unhelpful or unsafe outputs.</li>
+</ul>
+
+<div class="box intuition">
+<span class="t">The core argument for preference learning</span>
+<p style="margin-bottom:0">For most of what we want from an assistant — helpfulness, tone, honesty about
+uncertainty — we cannot write down a loss function, and we cannot reliably produce optimal demonstrations.
+But we <b>can</b> reliably say which of two responses is better. Preference optimisation is the machinery
+for turning that comparison signal into a gradient.</p>
+</div>
+
+<h2>19.3 · The reward model</h2>
+
+<p>Take a pretrained LM, replace the LM head with a scalar head, and train it to score responses.</p>
+
+<pre><code>class RewardModel(nn.Module):
+    def __init__(self, base):
+        super().__init__()
+        self.base = base                                   # a pretrained transformer
+        self.head = nn.Linear(base.cfg.d_model, 1, bias=False)
+
+    def forward(self, ids, attn_mask):
+        h = self.base.hidden_states(ids)                   # (B, T, C)
+        last = attn_mask.sum(1) - 1                        # index of final real token
+        return self.head(h[torch.arange(len(h)), last]).squeeze(-1)   # (B,)
+</code></pre>
+
+<h3>The Bradley–Terry model</h3>
+
+<p>Humans give <i>rankings</i>, not scores. Bradley–Terry (1952) converts one into the other. It assumes each
+response has a latent quality <span class="math">r</span>, and the probability of preferring
+<span class="math">y<sub>w</sub></span> over <span class="math">y<sub>l</sub></span> is a logistic function
+of their difference:</p>
+
+<div class="mathblock">
+P(y<sub>w</sub> ≻ y<sub>l</sub> | x) = <span class="frac"><span class="n">e<sup>r(x,y<sub>w</sub>)</sup></span><span class="d">e<sup>r(x,y<sub>w</sub>)</sup> + e<sup>r(x,y<sub>l</sub>)</sup></span></span>
+= σ<big>(</big>r(x,y<sub>w</sub>) − r(x,y<sub>l</sub>)<big>)</big>
+</div>
+
+<p>Maximum likelihood on that gives the reward-model loss:</p>
+
+<div class="mathblock">
+ℒ<sub>RM</sub> = − E<sub>(x,y<sub>w</sub>,y<sub>l</sub>)</sub> <big>[</big> log σ<big>(</big>r<sub>φ</sub>(x,y<sub>w</sub>) − r<sub>φ</sub>(x,y<sub>l</sub>)<big>)</big> <big>]</big>
+</div>
+
+<pre><code>r_w = reward_model(chosen_ids,   chosen_mask)      # (B,)
+r_l = reward_model(rejected_ids, rejected_mask)    # (B,)
+loss = -F.logsigmoid(r_w - r_l).mean()
+</code></pre>
+
+<div class="box math-note">
+<span class="t">Only differences are identified</span>
+<p style="margin-bottom:0">The loss depends solely on <code>r_w − r_l</code>, so adding a constant to every
+reward changes nothing. The absolute scale is meaningless — a reward of 3.7 tells you nothing on its own.
+This is why reward models are evaluated by <b>ranking accuracy</b> on held-out pairs, never by their raw
+outputs. <b>Remember this fact; it is what makes DPO work in Chapter 20.</b></p>
+</div>
+
+<h2>19.4 · PPO</h2>
+
+<p>Now optimise the policy against that reward. The objective:</p>
+
+<div class="mathblock">
+max<sub>π<sub>θ</sub></sub> &nbsp; E<sub>x∼D, y∼π<sub>θ</sub></sub> <big>[</big> r<sub>φ</sub>(x, y) <big>]</big>
+&nbsp;−&nbsp; β · KL<big>(</big>π<sub>θ</sub>(y|x) ‖ π<sub>ref</sub>(y|x)<big>)</big>
+<span class="lbl">maximise reward, but stay close to the SFT model</span>
+</div>
+
+<div class="box warn">
+<span class="t">Why the KL term is non-negotiable</span>
+<p style="margin-bottom:0">The reward model is an <i>approximation</i> of human preference, trained on a
+finite dataset. Optimise against it hard enough and the policy will find inputs where the approximation is
+badly wrong — outputs that score 10/10 and are nonsense. This is <b>reward hacking</b>, and without a KL
+constraint it happens essentially every time. Classic observed failure modes: responses that are absurdly
+long (length bias in the reward model), excessively hedged, or that repeat flattering phrases the reward
+model liked.</p>
+</div>
+
+<h3>The clipped surrogate</h3>
+
+<p>PPO's contribution is a way to take large policy steps without destroying the policy:</p>
+
+<div class="mathblock">
+ℒ<sup>CLIP</sup> = E <big>[</big> min<big>(</big> ρ<sub>t</sub>Â<sub>t</sub>, &nbsp; clip(ρ<sub>t</sub>, 1−ε, 1+ε)Â<sub>t</sub> <big>)</big> <big>]</big>
+<span class="lbl">ρ<sub>t</sub> = π<sub>θ</sub>(a<sub>t</sub>|s<sub>t</sub>) / π<sub>θ<sub>old</sub></sub>(a<sub>t</sub>|s<sub>t</sub>) &nbsp;·&nbsp; Â = advantage &nbsp;·&nbsp; ε ≈ 0.2</span>
+</div>
+
+<p>If the probability ratio moves more than ε away from 1, the objective is clipped and the gradient
+vanishes — so the update can't push the policy far from where the data was collected. That's what makes PPO
+stable enough to use.</p>
+
+<h3>What running PPO for RLHF actually requires</h3>
+
+<div class="tw">
+<table>
+<thead><tr><th>Model</th><th>Role</th><th>Trained?</th></tr></thead>
+<tbody>
+<tr><td><b>Policy</b> π<sub>θ</sub></td><td>the model you're improving</td><td>yes</td></tr>
+<tr><td><b>Reference</b> π<sub>ref</sub></td><td>frozen SFT model, for the KL term</td><td>no</td></tr>
+<tr><td><b>Reward model</b> r<sub>φ</sub></td><td>scores completions</td><td>no (trained earlier)</td></tr>
+<tr><td><b>Value model</b> V<sub>ψ</sub></td><td>estimates expected return for the advantage</td><td>yes</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><b>Four models in memory</b>, two of them receiving gradients. Plus a generation loop inside the training
+loop, plus advantage estimation (GAE), plus a dozen hyperparameters that interact badly. RLHF via PPO is
+genuinely difficult to get working, and that difficulty is the entire reason DPO exists.</p>
+
+<div class="quiz" data-title="Checkpoint 1 — RLHF">
+<div class="qitem" data-answer="2">
+  <div class="qq">Why can't reward-model scores be compared across different reward models?</div>
+  <div class="opts">
+    <div class="opt">They use different architectures</div>
+    <div class="opt">They're trained on different data</div>
+    <div class="opt">The Bradley-Terry loss only constrains reward <i>differences</i>, so the absolute scale and offset are arbitrary</div>
+    <div class="opt">Scores are normalised differently</div>
+  </div>
+  <div class="expl"><b>Only differences are identified.</b> Add any constant to every reward and the loss is
+  unchanged; scale is similarly under-determined up to the logistic's slope. A score of 5.2 from one model
+  and 5.2 from another mean nothing in common. Evaluate reward models by pairwise ranking accuracy.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">You remove the KL penalty from PPO. Reward climbs to record levels. What has happened?</div>
+  <div class="opts">
+    <div class="opt">Reward hacking — the policy found out-of-distribution outputs the reward model scores highly but humans would rate poorly</div>
+    <div class="opt">The model genuinely got much better</div>
+    <div class="opt">The reward model is broken</div>
+    <div class="opt">Nothing; the KL term is only for stability</div>
+  </div>
+  <div class="expl"><b>Reward hacking, essentially guaranteed.</b> The reward model is a finite-sample
+  approximation to human preference. Unconstrained optimisation against any approximation finds its
+  failure modes — Goodhart's law, mechanised. The KL term keeps the policy in the region where the reward
+  model was actually trained and is therefore trustworthy.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">How many models are in memory during PPO-based RLHF, and which are trained?</div>
+  <div class="opts">
+    <div class="opt">2 — policy and reward model, both trained</div>
+    <div class="opt">4 — policy, reference, reward, value; policy and value are trained</div>
+    <div class="opt">3 — policy, reward, value; all trained</div>
+    <div class="opt">1 — only the policy</div>
+  </div>
+  <div class="expl"><b>Four models, two trained.</b> This is the practical burden that motivated DPO: memory,
+  orchestration, and a large hyperparameter surface. For a 7B policy in bf16 you're holding roughly 4×14 GB
+  of weights before optimizer state or activations.</div>
+</div>
+</div>
+
+<h2>19.5 · The data</h2>
+
+<pre><code>{
+  "prompt":   "Explain why the sky is blue to a 6-year-old.",
+  "chosen":   "Sunlight looks white but is really made of all the colours...",
+  "rejected": "Rayleigh scattering causes shorter wavelengths to scatter more..."
+}
+</code></pre>
+
+<p>Note the rejected response isn't <i>wrong</i> — it's less appropriate for the request. Most preference
+data is about calibration and fit, not correctness.</p>
+
+<ul>
+<li><b>Human preference</b> — highest quality, expensive, slow, and annotator agreement is typically only
+60–75%. That noise ceiling limits everything downstream.</li>
+<li><b>AI feedback (RLAIF / Constitutional AI)</b> — a strong model judges. Far cheaper and now dominant in
+practice; the risk is inheriting the judge's biases.</li>
+<li><b>Verifiable signals</b> — for maths and code, check the answer. No preference model needed at all.
+That's Chapter 21.</li>
+</ul>
+
+<div class="box math-note">
+<span class="t">Known biases in preference data</span>
+<p style="margin-bottom:0">Both human and AI annotators show measurable preference for <b>longer</b>
+responses, <b>more confident</b> phrasing, and <b>formatted</b> output (headers, bullet lists) — largely
+independent of actual quality. Models trained on it inherit all three. If your aligned model became verbose
+and started bulleting everything, that's not a bug in your training code; it's in your data. Length-debiasing
+the reward model, or using length-controlled evaluation, is now standard practice.</p>
+</div>
+
+<h2>19.6 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">19.1</span><span class="ti">SFT with correct masking</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Fine-tune a small model on 500 instruction pairs. Implement prompt masking, then <b>verify</b> it by
+decoding one example and printing which tokens have <code>label == -100</code>. Train once with masking and
+once without; compare generations from the same prompt.</p>
+<details class="reveal"><summary>What you'll observe</summary><div>
+<p style="margin-bottom:0">The unmasked model tends to continue by generating <i>another user turn</i> —
+it learned the whole conversation distribution, not the response distribution. It also converges more
+slowly on the part you care about. This is a five-minute experiment that permanently fixes the concept.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">19.2</span><span class="ti">Train a reward model and find its biases</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Train a Bradley-Terry reward model on a public preference dataset. Then probe it:</p>
+<ol>
+<li>Ranking accuracy on a held-out split. (Above 70% is respectable; humans agree ~65–75% with each other.)</li>
+<li><b>Length bias:</b> plot reward against response length. Fit a line. How much of the variance is length?</li>
+<li><b>Format bias:</b> take 50 responses, reformat them with bullet points without changing content, and
+measure the reward change.</li>
+</ol>
+<details class="reveal"><summary>What you'll find</summary><div>
+<p style="margin-bottom:0">Length correlation is usually strong — often r &gt; 0.3, sometimes much higher.
+Bulleting typically raises reward measurably. Now you can see, concretely, why RLHF'd models became verbose
+and list-happy around 2023–24. Once you can measure a bias you can correct it: subtract a length-fitted
+baseline from the reward and re-evaluate.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">19.3</span><span class="ti">Induce reward hacking on purpose</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>Using your reward model, run best-of-N sampling with N ∈ {1, 4, 16, 64, 256} and plot (a) mean reward
+and (b) your own quality rating of a sample of outputs, against N.</p>
+<details class="reveal"><summary>The expected divergence</summary><div>
+<p style="margin-bottom:0">Reward rises monotonically with N. Human-judged quality rises, peaks around
+N=16–64, then <b>falls</b>. Best-of-N is a KL-free optimiser against the reward model, so large N is exactly
+the regime where hacking appears. This is the cleanest demonstration of why the KL term exists — and it
+takes no RL machinery at all to reproduce.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/2203.02155">Ouyang et al. 2022 — InstructGPT</a> — the paper that defined the modern pipeline.</li>
+<li><a href="https://arxiv.org/abs/1707.06347">Schulman et al. 2017 — PPO</a></li>
+<li><a href="https://arxiv.org/abs/2212.08073">Bai et al. 2022 — Constitutional AI</a> (RLAIF)</li>
+<li><a href="https://huggingface.co/docs/trl">HuggingFace TRL</a> — production implementations of SFT, RM, PPO, DPO, GRPO.</li>
+<li><a href="https://rlhfbook.com/">Nathan Lambert — RLHF Book</a> — free, current, and the best single reference on this material.</li>
+<li>Companion notebook: <code>notebooks/19_sft_rlhf.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("19");</script>
+</body>
+</html>

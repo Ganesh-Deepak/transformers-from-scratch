@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 2 — Matrix Multiplication as a Machine</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>2 · Matrix Multiplication as a Machine</h1>
+<p class="lead">
+Every learnable operation in a transformer is a matmul. If you can predict the output shape of a matmul
+without thinking, and you know what broadcasting will do before you run it, the rest of this course is
+bookkeeping. This chapter makes that automatic.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; shapes, strides, reshape vs transpose</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; attention is two matmuls and a softmax<br><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; the FLOP counting returns as the memory wall</div>
+<div class="mn orient"><span class="k">Why this chapter</span>A matmul consumes one dimension. Find the vanishing axis and you can read any equation in any paper.</div>
+
+<div class="box intuition">
+<span class="t">The one idea in this chapter</span>
+<p style="margin-bottom:0">A matmul <b>consumes</b> one dimension. <code>(m, k) @ (k, n) → (m, n)</code>:
+the two <code>k</code>s meet, get multiplied-and-summed, and <b>vanish</b>. Everything else is carried along
+untouched. Finding the vanishing dimension is how you read any matmul in any paper.</p>
+</div>
+
+<h2>2.1 · The machine, one cell at a time</h2>
+
+<p>Drag both sliders. Watch which row and which column light up, and read the arithmetic underneath.</p>
+
+<div data-viz="matmul" data-m="4" data-k="3" data-n="5"></div>
+
+<p>Three facts that widget should make permanent:</p>
+
+<ol>
+<li><b>Output cell <code>(i, j)</code> depends on row <code>i</code> of A and column <code>j</code> of B.</b>
+Nothing else.</li>
+<li><b>The inner dimension <code>k</code> must match, and then disappears.</b> It is the axis being summed over.</li>
+<li><b>The output shape is "the outer two":</b> <code>(m, n)</code>. You can read it off the outside of the
+expression without any arithmetic.</li>
+</ol>
+
+<div class="mathblock">
+C<sub>ij</sub> = <span class="op">Σ</span><sub>k</sub> A<sub>ik</sub> B<sub>kj</sub>
+<span class="lbl">the repeated index k is the one being summed away</span>
+</div>
+
+<h3>What a matmul <i>means</i> in a neural network</h3>
+
+<p>There are two readings, and you need both.</p>
+
+<div class="grid2">
+<div class="box math-note" style="margin:0">
+<span class="t">Reading A — dot products</span>
+<p style="margin-bottom:0">Each output number is a <b>similarity score</b> between a row of A and a column of B.
+This is the right reading for <b>attention</b>, where <code>Q @ K.T</code> literally asks "how well does
+each query match each key?"</p>
+</div>
+<div class="box math-note" style="margin:0">
+<span class="t">Reading B — a learned projection</span>
+<p style="margin-bottom:0">Each row of A (a token's feature vector) gets <b>re-expressed in a new basis</b>
+by the weight matrix. This is the right reading for <code>nn.Linear</code>: "take this 4096-dim description
+and produce an 11008-dim description of the same thing."</p>
+</div>
+</div>
+
+<h2>2.2 · Batched matmul: the leading axes come along for the ride</h2>
+
+<p>Real tensors are rank 3 or 4, not rank 2. PyTorch's rule is beautifully simple:</p>
+
+<div class="box intuition">
+<span class="t">The batched matmul rule</span>
+<p style="margin-bottom:0"><code>@</code> operates on the <b>last two axes only</b>. Every axis before that is
+treated as a batch index — broadcast if needed, and passed through untouched.</p>
+</div>
+
+<pre><code>A = torch.randn(8, 4, 3)        # 8 independent (4,3) matrices
+B = torch.randn(8, 3, 5)        # 8 independent (3,5) matrices
+(A @ B).shape                   # (8, 4, 5)   ← 8 independent matmuls
+
+A = torch.randn(2, 8, 4, 3)     # (B=2, H=8) grid of (4,3) matrices
+B = torch.randn(2, 8, 3, 5)
+(A @ B).shape                   # (2, 8, 4, 5)  ← 16 independent matmuls
+</code></pre>
+
+<p>That second example <i>is</i> multi-head attention. <code>(B, n_head, T, d_head) @ (B, n_head, d_head, T)
+→ (B, n_head, T, T)</code>. Batch and head ride along; <code>d_head</code> is consumed; you get a
+<code>T×T</code> score matrix per head. That's the whole thing.</p>
+
+<h3>The four shapes of <code>@</code></h3>
+
+<div class="tw">
+<table>
+<thead><tr><th>A</th><th>B</th><th>Result</th><th>What happened</th></tr></thead>
+<tbody>
+<tr><td><code>(k,)</code></td><td><code>(k,)</code></td><td><code>()</code> scalar</td><td>plain dot product</td></tr>
+<tr><td><code>(m, k)</code></td><td><code>(k,)</code></td><td><code>(m,)</code></td><td>matrix–vector; B is promoted to <code>(k,1)</code> then the 1 is dropped</td></tr>
+<tr><td><code>(m, k)</code></td><td><code>(k, n)</code></td><td><code>(m, n)</code></td><td>the classic</td></tr>
+<tr><td><code>(…, m, k)</code></td><td><code>(…, k, n)</code></td><td><code>(…, m, n)</code></td><td>batched; leading axes broadcast</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box gotcha">
+<span class="t"><code>nn.Linear</code> does <i>not</i> do what its shape suggests</span>
+<p><code>nn.Linear(in_features, out_features)</code> stores its weight with shape
+<code>(out_features, in_features)</code> — <b>transposed</b> from what you'd expect — and computes
+<code>x @ W.T + b</code>.</p>
+<pre style="margin:.6em 0 0"><code>lin = nn.Linear(512, 2048)
+lin.weight.shape          # (2048, 512)   ← out first!
+x = torch.randn(8, 128, 512)
+lin(x).shape              # (8, 128, 2048)  ← only the LAST axis changes
+</code></pre>
+<p style="margin-bottom:0">The practical rule: <b><code>nn.Linear</code> rewrites the last axis and leaves every
+other axis alone.</b> That's why you can feed it <code>(B, T, C)</code> without reshaping — it happily treats
+<code>B×T</code> as "a big pile of vectors".</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 1 — matmul shapes">
+<div class="qitem" data-answer="2">
+  <div class="qq"><code>q</code> is <code>(4, 12, 128, 64)</code> and <code>k</code> is <code>(4, 12, 128, 64)</code>.
+  What is the shape of <code>q @ k.transpose(-2, -1)</code>?</div>
+  <div class="opts">
+    <div class="opt">(4, 12, 64, 64)</div>
+    <div class="opt">(4, 12, 128, 64)</div>
+    <div class="opt">(4, 12, 128, 128)</div>
+    <div class="opt">(4, 12, 64, 128)</div>
+  </div>
+  <div class="expl"><b>(4, 12, 128, 128).</b> <code>k.transpose(-2,-1)</code> is <code>(4,12,64,128)</code>.
+  Then <code>(…,128,64) @ (…,64,128)</code>: the 64s meet and vanish, leaving <code>(…,128,128)</code>.
+  This is the attention score matrix — <b>T×T</b>, one row per query. Notice it is quadratic in T:
+  that single fact drives all of Part IV.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">An MLP layer is <code>nn.Linear(4096, 11008)</code>. Input is <code>(2, 1024, 4096)</code>.
+  Output shape, and how many parameters in the weight?</div>
+  <div class="opts">
+    <div class="opt">(2, 1024, 11008); 45,088,768 weights</div>
+    <div class="opt">(2, 11008, 4096); 45,088,768 weights</div>
+    <div class="opt">(2, 1024, 4096); 11008 weights</div>
+    <div class="opt">(2, 1024, 11008); 11008 weights</div>
+  </div>
+  <div class="expl"><b>(2, 1024, 11008)</b>, and 4096 × 11008 = <b>45,088,768</b> ≈ 45M weights (plus 11008
+  biases, though most modern LLMs set <code>bias=False</code>). Note the parameter count does not depend on
+  batch or sequence length at all — only on the feature dimensions.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">Which of these will raise a shape error?</div>
+  <div class="opts">
+    <div class="opt"><code>torch.randn(8,4,3) @ torch.randn(3,5)</code></div>
+    <div class="opt"><code>torch.randn(8,4,3) @ torch.randn(8,3,5)</code></div>
+    <div class="opt"><code>torch.randn(1,4,3) @ torch.randn(8,3,5)</code></div>
+    <div class="opt"><code>torch.randn(8,4,3) @ torch.randn(5,3)</code></div>
+  </div>
+  <div class="expl"><b>The last one.</b> The inner dimensions must match: <code>3</code> vs <code>5</code> — no.
+  The first works because <code>(3,5)</code> broadcasts across the batch; the third works because a batch
+  dimension of 1 broadcasts up to 8.</div>
+</div>
+</div>
+
+<h2>2.3 · Broadcasting — the rule that causes silent bugs</h2>
+
+<p>Broadcasting lets you combine tensors of different shapes without writing loops. It's wonderful, and it is
+the number one source of bugs that don't crash.</p>
+
+<div class="box math-note">
+<span class="t">The complete rule</span>
+<p>Align the two shapes <b>from the right</b>. Pad the shorter one with 1s on the <i>left</i>. Then, for each
+position, the dimensions are compatible if:</p>
+<ul style="margin-bottom:0">
+<li>they are equal, <b>or</b></li>
+<li>one of them is <b>1</b> — in which case it is stretched to match the other</li>
+</ul>
+</div>
+
+<div data-viz="broadcast"></div>
+
+<h3>The bug that will bite you</h3>
+
+<pre><code>scores = torch.randn(4, 8, 16, 16)   # (B, H, T, T)
+mask   = torch.randn(16)             # (T,)   ← you meant a per-key mask
+
+scores + mask     # (4, 8, 16, 16)   ← NO ERROR. Broadcast along the last axis.
+                  #                     If you meant per-QUERY, you are now silently wrong.
+</code></pre>
+
+<p>Both interpretations produce a valid tensor of the right shape. Only one is what you wanted. The fix is to
+be explicit about which axis you mean:</p>
+
+<pre><code>mask[None, None, :, None]    # (1,1,T,1) → broadcasts across KEYS   (per-query mask)
+mask[None, None, None, :]    # (1,1,1,T) → broadcasts across QUERIES (per-key mask)
+</code></pre>
+
+<div class="box gotcha">
+<span class="t">The classic un-crashing catastrophe</span>
+<pre style="margin:.6em 0"><code>pred   = torch.randn(32, 1)     # (32, 1)
+target = torch.randn(32)        # (32,)
+loss = ((pred - target) ** 2).mean()</code></pre>
+<p style="margin-bottom:0">You expected 32 squared errors. Broadcasting gave you a <b>(32, 32)</b> matrix of
+all-pairs differences, and the mean over 1024 numbers. The loss is wrong, training is garbage, nothing
+crashes. Always <code>assert pred.shape == target.shape</code> before a loss.</p>
+</div>
+
+<h2>2.4 · einsum: say what you mean</h2>
+
+<p><code>einsum</code> lets you write the index equation directly instead of choreographing transposes.
+Once it clicks, you'll prefer it for anything non-trivial.</p>
+
+<div class="box intuition">
+<span class="t">How to read an einsum string</span>
+<p style="margin-bottom:0">Label every axis of every input with a letter. Write the output labels after
+<code>-&gt;</code>. Then: <b>any letter that appears in the inputs but not the output is summed over.</b>
+Any letter repeated across inputs is multiplied elementwise before that sum.</p>
+</div>
+
+<pre><code>import torch
+
+A = torch.randn(4, 3)
+B = torch.randn(3, 5)
+
+torch.einsum('ik,kj->ij', A, B)     # matmul: k appears twice, not in output → summed
+torch.einsum('ij->ji', A)           # transpose: no sum, just relabel
+torch.einsum('ij->', A)             # sum everything: no output labels at all
+torch.einsum('ij->i', A)            # row sums: j is dropped → summed over
+torch.einsum('i,i->', v, w)         # dot product
+torch.einsum('i,j->ij', v, w)       # outer product: nothing is summed
+</code></pre>
+
+<h3>Attention in one line</h3>
+
+<pre><code>q = torch.randn(2, 8, 100, 64)     # (B, H, T, D)
+k = torch.randn(2, 8, 100, 64)
+v = torch.randn(2, 8, 100, 64)
+
+# scores: for each (batch, head), every query against every key
+scores = torch.einsum('bhqd,bhkd->bhqk', q, k) / 64**0.5    # (2, 8, 100, 100)
+#                          ^^^^ d is summed away — it's the dot product
+
+attn = scores.softmax(dim=-1)                                # (2, 8, 100, 100)
+
+out = torch.einsum('bhqk,bhkd->bhqd', attn, v)               # (2, 8, 100, 64)
+#                        ^^^^ now k is summed away — the weighted average
+</code></pre>
+
+<p>Compare that to the transpose version. Same computation:</p>
+
+<pre><code>scores = (q @ k.transpose(-2, -1)) / 64**0.5
+out    = attn @ v
+</code></pre>
+
+<p>The <code>@</code> version is faster to type and typically dispatches to a slightly better-optimised path;
+the <code>einsum</code> version is self-documenting and impossible to get backwards. Real codebases use
+<code>@</code> in the hot path and <code>einsum</code> everywhere else. <b>Learn to read both.</b></p>
+
+<h3>einops: the same idea for reshaping</h3>
+
+<pre><code>from einops import rearrange, repeat, reduce
+
+x = torch.randn(2, 100, 512)                          # (B, T, C)
+
+# The multi-head reshape — one readable line instead of view+transpose:
+q = rearrange(x, 'b t (h d) -> b h t d', h=8)         # (2, 8, 100, 64)
+
+# ...and back again after attention:
+out = rearrange(q, 'b h t d -> b t (h d)')            # (2, 100, 512)
+
+# Mean-pool over time:
+pooled = reduce(x, 'b t c -> b c', 'mean')            # (2, 512)
+</code></pre>
+
+<div class="box intuition">
+<span class="t">Why <code>(h d)</code> and not <code>(d h)</code> matters</span>
+<p style="margin-bottom:0"><code>'b t (h d) -&gt; b h t d'</code> says the 512 features are laid out as
+8 blocks of 64 — head 0 owns features 0–63, head 1 owns 64–127, and so on. Writing <code>(d h)</code>
+would mean features are <i>interleaved</i> across heads. Both are valid reshapes with the same output shape,
+but they scramble the weights differently. <b>This is the single most common bug in from-scratch attention,
+and einops makes it visible instead of hidden inside a <code>.view()</code>.</b></p>
+</div>
+
+<h2>2.5 · Counting FLOPs — the skill that makes you sound senior</h2>
+
+<p>A matmul <code>(m, k) @ (k, n)</code> costs <b>2·m·k·n</b> floating-point operations (one multiply and
+one add per term). That factor of 2 is the convention everyone uses.</p>
+
+<p>For a transformer, the famous approximation is:</p>
+
+<div class="mathblock">
+FLOPs per token ≈ 2 N &nbsp;&nbsp;(forward) &nbsp;&nbsp;·&nbsp;&nbsp; ≈ 6 N &nbsp;&nbsp;(forward + backward)
+<span class="lbl">N = number of parameters. Backward costs roughly 2× forward.</span>
+</div>
+
+<p>So training on <code>D</code> tokens costs about <b>6ND</b> FLOPs. That single formula is the basis of
+every scaling-law calculation in Chapter 17, and it's worth being able to derive:</p>
+
+<ul>
+<li>Forward: each weight is used in exactly one multiply-accumulate per token → <b>2N</b>.</li>
+<li>Backward: you compute gradients w.r.t. both inputs and weights → about <b>2× the forward cost</b> → <b>4N</b>.</li>
+<li>Total: <b>6N</b> per token.</li>
+</ul>
+
+<div class="box warn">
+<span class="t">What 6ND leaves out</span>
+<p style="margin-bottom:0">Attention's <code>T×T</code> score matrix costs FLOPs that don't scale with
+parameter count — roughly <code>12 · n_layer · d_model · T²</code> per sequence. For short contexts this is a
+few percent and everyone ignores it. At <code>T = 128k</code> it can dominate. That crossover is exactly why
+sparse attention (Chapter 18) exists.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 2 — einsum &amp; FLOPs">
+<div class="qitem" data-answer="1">
+  <div class="qq">What does <code>torch.einsum('bhqd,bhkd->bhqk', q, k)</code> sum over?</div>
+  <div class="opts">
+    <div class="opt">The key axis <code>k</code></div>
+    <div class="opt">The head-dimension axis <code>d</code></div>
+    <div class="opt">The head axis <code>h</code></div>
+    <div class="opt">Nothing — it's an outer product</div>
+  </div>
+  <div class="expl"><b><code>d</code></b>. It appears in both inputs but not the output, so it is contracted.
+  <code>q</code> and <code>k</code> both survive to the output as separate axes, producing the T×T score
+  matrix. Rule: <i>missing from the output ⇒ summed away</i>.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">Roughly how many FLOPs to train a 7B model on 2 trillion tokens?</div>
+  <div class="opts">
+    <div class="opt">≈ 8.4 × 10<sup>18</sup></div>
+    <div class="opt">≈ 1.4 × 10<sup>21</sup></div>
+    <div class="opt">≈ 8.4 × 10<sup>22</sup></div>
+    <div class="opt">≈ 4.2 × 10<sup>25</sup></div>
+  </div>
+  <div class="expl"><b>6ND = 6 × 7×10⁹ × 2×10¹² = 8.4 × 10²².</b> For scale: an H100 does roughly
+  10¹⁵ bf16 FLOP/s at realistic utilisation, so this is ~8.4×10⁷ GPU-seconds ≈ 2.7 GPU-years ≈
+  <b>10 days on 100 H100s</b>. Being able to do this estimate in your head is genuinely useful.</div>
+</div>
+</div>
+
+<h2>2.6 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">2.1</span><span class="ti">Predict, then verify</span><span class="lvl">warm-up</span></div>
+<div class="eb">
+<p>Write the output shape, or "ERROR", for each. Then check.</p>
+<pre><code>a = torch.randn(8, 4, 3) @ torch.randn(3, 7)
+b = torch.randn(5, 3) @ torch.randn(5, 3)
+c = torch.randn(2, 1, 4, 3) @ torch.randn(1, 6, 3, 9)
+d = torch.randn(10, 4) + torch.randn(4)
+e = torch.randn(10, 4) + torch.randn(10)
+f = torch.randn(10, 1) + torch.randn(1, 7)
+g = torch.einsum('bij,bjk->bik', torch.randn(4,2,3), torch.randn(4,3,5))
+h = torch.einsum('bhtd,bhsd->bhts', torch.randn(2,4,10,8), torch.randn(2,4,10,8))
+</code></pre>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">a (8, 4, 7)
+b ERROR   — inner dims 3 vs 5
+c (2, 6, 4, 9)   — batch axes broadcast: (2,1) & (1,6) -> (2,6)
+d (10, 4)  — (4,) aligns with the last axis
+e ERROR   — (10,) aligns with the LAST axis (size 4), 10 != 4 and neither is 1
+f (10, 7)  — outer-product-style broadcast
+g (4, 2, 5)
+h (2, 4, 10, 10)</code></pre>
+<p style="margin-bottom:0"><b><code>e</code> is the important one.</b> Intuitively "add one number per row"
+feels like it should work — but broadcasting aligns from the <i>right</i>. You need
+<code>torch.randn(10)[:, None]</code> to make it <code>(10,1)</code>.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">2.2</span><span class="ti">Implement matmul three ways</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Write <code>matmul_loops</code>, <code>matmul_broadcast</code> (no explicit loop over k — use broadcasting
+and a <code>sum</code>), and <code>matmul_einsum</code>. Verify all three agree with <code>A @ B</code>
+using <code>torch.allclose</code>. Then time them on 256×256 matrices.</p>
+<details class="reveal"><summary>Solution</summary><div>
+<pre><code>def matmul_loops(A, B):
+    m, k = A.shape; k2, n = B.shape
+    assert k == k2
+    C = torch.zeros(m, n)
+    for i in range(m):
+        for j in range(n):
+            C[i, j] = (A[i, :] * B[:, j]).sum()
+    return C
+
+def matmul_broadcast(A, B):
+    # A: (m,k) -> (m,k,1);  B: (k,n) -> (1,k,n)
+    return (A[:, :, None] * B[None, :, :]).sum(dim=1)      # sum over k
+
+def matmul_einsum(A, B):
+    return torch.einsum('ik,kj->ij', A, B)
+
+A, B = torch.randn(256, 256), torch.randn(256, 256)
+ref = A @ B
+for f in (matmul_loops, matmul_broadcast, matmul_einsum):
+    assert torch.allclose(f(A, B), ref, atol=1e-4), f.__name__
+</code></pre>
+<p style="margin-bottom:0">Expect roughly: loops ≈ 4 s, broadcast ≈ 20 ms, einsum ≈ 1 ms, <code>@</code> ≈ 0.5 ms.
+The broadcast version is instructive but note it <i>materialises</i> an <code>(m,k,n)</code> intermediate —
+256³ = 16.7M floats = 67 MB. That "materialising a big intermediate" problem is exactly what FlashAttention
+solves in Chapter 14, at a much larger scale.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">2.3</span><span class="ti">Find the broadcasting bug</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>This causal-mask code runs without error and trains badly. Find the bug.</p>
+<pre><code>T = 8
+scores = torch.randn(2, 4, T, T)              # (B, H, T, T)
+mask = torch.tril(torch.ones(T, T))           # (T, T) lower triangular
+scores = scores.masked_fill(mask == 0, -1e9)  # looks fine?
+
+# ...later, with a padding mask:
+pad = torch.tensor([1,1,1,1,1,0,0,0])         # (T,) 1 = real token
+scores = scores.masked_fill(pad == 0, -1e9)
+</code></pre>
+<details class="reveal"><summary>Answer</summary><div>
+<p>The causal mask is <b>fine</b> — <code>(T,T)</code> broadcasts correctly against <code>(B,H,T,T)</code>.</p>
+<p>The <b>padding</b> mask is the bug. <code>pad</code> has shape <code>(T,)</code>, which right-aligns to the
+<i>last</i> axis — the key axis. That happens to be what you usually want for padding, so this specific case
+is <i>accidentally</i> right. But it is unreadable and one refactor away from disaster: if someone later
+makes <code>pad</code> shape <code>(B, T)</code>, it will broadcast against <code>(B,H,T,T)</code> as
+<code>(1,1,B,T)</code> and silently mask the wrong thing whenever <code>B == T</code>, or crash otherwise.</p>
+<p style="margin-bottom:0">Always write the mask at full rank:</p>
+<pre style="margin-bottom:0"><code>pad = pad.view(1, 1, 1, T)      # (1,1,1,T) — explicitly "per key"
+scores = scores.masked_fill(pad == 0, float('-inf'))</code></pre>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">2.4</span><span class="ti">FLOP budget for a real model</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>GPT-3 175B was trained on ~300B tokens.</p>
+<ol>
+<li>Estimate total training FLOPs.</li>
+<li>At 312 TFLOP/s peak bf16 per A100 and 40% achieved utilisation, how many A100-days?</li>
+<li>The paper reports 3.14×10²³ FLOPs. How close were you, and what does the gap tell you?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<ol>
+<li>6 × 1.75×10¹¹ × 3×10¹¹ = <b>3.15 × 10²³ FLOPs</b>.</li>
+<li>Effective rate = 312e12 × 0.4 = 1.25×10¹⁴ FLOP/s. 3.15e23 / 1.25e14 ≈ 2.52×10⁹ s ≈
+<b>29,000 A100-days</b> ≈ 1000 A100s for a month.</li>
+<li>Essentially exact (3.15 vs 3.14 ×10²³). The <code>6ND</code> rule is remarkably good for dense
+transformers at moderate context length. It starts to break down for MoE models (where you use
+<i>active</i> parameters, not total) and for very long contexts (where attention FLOPs matter).</li>
+</ol>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://rockt.ai/2018/04/30/einsum">Tim Rocktäschel — Einsum is All You Need</a> — the best einsum tutorial written.</li>
+<li><a href="https://einops.rocks/">einops documentation</a> — worth 30 minutes; it will change how you write tensor code.</li>
+<li><a href="https://arxiv.org/abs/2001.08361">Kaplan et al. 2020, Appendix B</a> — where the 6ND estimate is worked out carefully.</li>
+<li>Companion notebook: <code>notebooks/02_matmul_and_einsum.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("02");</script>
+</body>
+</html>

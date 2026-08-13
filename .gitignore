@@ -1,0 +1,22 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Node (only used by tests/check_ui.js)
+node_modules/
+package-lock.json
+
+# Generated at runtime — all of it is reproducible
+#   corpus:     downloaded by tfs/train.py
+#   tokenizers: retrained in seconds
+#   trainlogs:  output of your own runs
+data/
+*.pt
+*.bin
+
+# Local editor / tool state
+.claude/settings.local.json
+.DS_Store
+Thumbs.db

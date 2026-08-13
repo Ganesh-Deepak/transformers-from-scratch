@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 13 — MQA, GQA, and Multi-Head Latent Attention</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>13 · MQA, GQA, and Multi-Head Latent Attention</h1>
+<p class="lead">
+Chapter 12 established the problem: the KV cache limits how many users fit on a GPU. This chapter is the
+sequence of answers — from a blunt 2019 hack, through the 2023 compromise that everyone adopted, to
+DeepSeek's 2024 low-rank scheme that is <em>both</em> smaller and better than what it replaced.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; heads<br><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; why cache size is the binding constraint<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE, for the MLA section</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; sparse attention is the next move<br><a href="ch22-capstone.html">Ch&nbsp;22</a> &mdash; the capstone uses GQA</div>
+<div class="mn orient"><span class="k">Why this chapter</span>From a blunt 2019 hack to a 2024 scheme that is both smaller and better.</div>
+
+<h2>13.1 · The idea: share the K/V heads</h2>
+
+<p>Standard MHA gives every query head its own key head and value head. But the cache is proportional to
+<code>n_kv_head</code>, and there's no law saying it must equal <code>n_head</code>.</p>
+
+<div data-viz="gqa" data-nh="8" data-groups="4"></div>
+
+<div class="tw">
+<table>
+<thead><tr><th>Scheme</th><th class="num">n_kv_head</th><th>Cache vs MHA</th><th>Quality</th><th>Introduced</th></tr></thead>
+<tbody>
+<tr><td><b>MHA</b></td><td class="num">n_head</td><td>1×</td><td>baseline</td><td>2017</td></tr>
+<tr><td><b>MQA</b></td><td class="num">1</td><td>1/n_head</td><td>measurable degradation, training instability</td><td>Shazeer 2019</td></tr>
+<tr><td><b>GQA</b></td><td class="num">n_head / g</td><td>1/g</td><td>≈ MHA at g = 8</td><td>Ainslie et al. 2023</td></tr>
+<tr><td><b>MLA</b></td><td class="num">— (low-rank)</td><td>see §13.4</td><td><b>better than MHA</b></td><td>DeepSeek-V2, 2024</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>13.2 · MQA — one KV head for everybody</h2>
+
+<pre><code>self.q_proj  = nn.Linear(d_model, n_head * d_head, bias=False)   # (C, 4096)
+self.k_proj  = nn.Linear(d_model,      1 * d_head, bias=False)   # (C,  128)  ← tiny
+self.v_proj  = nn.Linear(d_model,      1 * d_head, bias=False)   # (C,  128)
+</code></pre>
+
+<p>All 32 query heads attend against the <i>same</i> keys and values. A 32× cache reduction, for free.</p>
+
+<p>It works, but not without cost: Shazeer reported quality degradation, and later work found MQA models can
+be unstable to train. The problem is intuitive — heads specialise partly by having their <i>own</i> notion of
+what to match against, and MQA removes that.</p>
+
+<h2>13.3 · GQA — the compromise that won</h2>
+
+<p>Group the query heads. Each group shares one K/V head.</p>
+
+<pre><code>class GroupedQueryAttention(nn.Module):
+    def __init__(self, d_model, n_head, n_kv_head, d_head):
+        super().__init__()
+        assert n_head % n_kv_head == 0
+        self.nh, self.nkv, self.hd = n_head, n_kv_head, d_head
+        self.rep = n_head // n_kv_head                 # queries per KV head
+        self.q_proj = nn.Linear(d_model, n_head    * d_head, bias=False)
+        self.k_proj = nn.Linear(d_model, n_kv_head * d_head, bias=False)
+        self.v_proj = nn.Linear(d_model, n_kv_head * d_head, bias=False)
+        self.o_proj = nn.Linear(n_head * d_head, d_model,    bias=False)
+
+    def forward(self, x, cos, sin, cache=None):
+        B, T, _ = x.shape
+        q = self.q_proj(x).view(B, T, self.nh,  self.hd).transpose(1, 2)  # (B, nh,  T, hd)
+        k = self.k_proj(x).view(B, T, self.nkv, self.hd).transpose(1, 2)  # (B, nkv, T, hd)
+        v = self.v_proj(x).view(B, T, self.nkv, self.hd).transpose(1, 2)  # (B, nkv, T, hd)
+
+        q, k = apply_rope(q, k, cos, sin)
+
+        if cache is not None:
+            k = torch.cat([cache[0], k], dim=2)        # cache holds only nkv heads!
+            v = torch.cat([cache[1], v], dim=2)
+        new_cache = (k, v)
+
+        # Expand KV heads to match query heads for the matmul.
+        k = k.repeat_interleave(self.rep, dim=1)       # (B, nh, T, hd)
+        v = v.repeat_interleave(self.rep, dim=1)       # (B, nh, T, hd)
+
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=(T > 1))
+        y = y.transpose(1, 2).reshape(B, T, self.nh * self.hd)
+        return self.o_proj(y), new_cache
+</code></pre>
+
+<div class="box gotcha">
+<span class="t"><code>repeat_interleave</code> vs <code>repeat</code> — this ordering bug is real</span>
+<p style="margin-bottom:0">With <code>nkv=2, rep=2</code>: <code>repeat_interleave</code> gives head order
+<code>[k0, k0, k1, k1]</code>, which matches query heads <code>[q0,q1 | q2,q3]</code> grouped
+<i>contiguously</i>. <code>repeat</code> gives <code>[k0, k1, k0, k1]</code> — an <i>interleaved</i>
+grouping. Both run. Both produce plausible losses. Only one matches how the weights were trained. If you
+ever load Llama weights into your own GQA implementation and quality is mysteriously mediocre, check this
+line first.</p>
+</div>
+
+<div class="box math-note">
+<span class="t">The expansion is a memory trick, not a FLOP saving</span>
+<p style="margin-bottom:0">After <code>repeat_interleave</code> you're doing exactly the same attention
+FLOPs as MHA. The win is entirely in what you <b>store and read</b>: the cache holds
+<code>n_kv_head</code> heads, not <code>n_head</code>. Since decode is memory-bound (Ch 12), reducing bytes
+read <i>is</i> reducing time. Fused kernels skip the materialisation entirely and just re-read the same K
+head for each query in the group.</p>
+</div>
+
+<h3>Why <code>g = 8</code> keeps appearing</h3>
+
+<p>Ainslie et al. found the quality/cache curve is <b>strongly non-linear</b>: going from MHA to 8 groups
+costs almost nothing, while going from 8 groups to 1 (MQA) costs a lot. There's also a practical reason —
+8 KV heads divides evenly across 8-GPU tensor-parallel setups, one KV head per GPU. Llama-2-70B,
+Llama-3 (all sizes), Mistral, Qwen2.5 and Gemma all landed on 8 or fewer.</p>
+
+<div class="quiz" data-title="Checkpoint 1 — GQA">
+<div class="qitem" data-answer="1">
+  <div class="qq">Llama-3-8B: <code>n_head=32</code>, <code>n_kv_head=8</code>, <code>d_head=128</code>,
+  32 layers, bf16. KV cache per token?</div>
+  <div class="opts">
+    <div class="opt">512 KB</div>
+    <div class="opt">128 KB</div>
+    <div class="opt">32 KB</div>
+    <div class="opt">1 MB</div>
+  </div>
+  <div class="expl"><b>128 KB.</b> 2 (K,V) × 8 heads × 128 dim × 2 bytes = 4096 bytes per layer,
+  × 32 layers = 131,072 bytes = 128 KB. With full MHA it would be 512 KB — the 4× difference between
+  serving 4 users and 16.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">Does GQA reduce attention FLOPs relative to MHA?</div>
+  <div class="opts">
+    <div class="opt">Yes, by a factor of g</div>
+    <div class="opt">Yes, by a factor of √g</div>
+    <div class="opt">No — the same number of query–key dot products happen; only stored/read bytes shrink</div>
+    <div class="opt">No — it actually increases FLOPs</div>
+  </div>
+  <div class="expl"><b>No FLOP change.</b> All 32 query heads still attend over the full sequence. GQA does
+  cut <i>parameters</i> in W_k and W_v (Ch 6 Ex 6.4), but the reason it matters is bandwidth. In a
+  memory-bound regime, bytes are the currency.</div>
+</div>
+</div>
+
+<h2>13.4 · MLA — Multi-head Latent Attention</h2>
+
+<p>DeepSeek-V2 (2024) asked a different question. GQA reduces the cache by <i>deleting</i> heads. What if
+instead you <b>compress</b> the KV information into a low-rank latent, and decompress it on the fly?</p>
+
+<div class="box intuition">
+<span class="t">The core idea</span>
+<p style="margin-bottom:0">Don't cache K and V. Cache a single small <b>latent vector</b>
+<span class="math">c<sup>KV</sup></span> per token, from which every head's K and V can be
+<i>reconstructed</i> by a learned up-projection. You store the compressed form; the heads still get full,
+distinct keys and values.</p>
+</div>
+
+<div class="mathblock">
+c<sup>KV</sup><sub>t</sub> = W<sup>DKV</sup> h<sub>t</sub> &nbsp;&nbsp;&nbsp;&nbsp;
+k<sup>C</sup><sub>t</sub> = W<sup>UK</sup> c<sup>KV</sup><sub>t</sub> &nbsp;&nbsp;&nbsp;&nbsp;
+v<sup>C</sup><sub>t</sub> = W<sup>UV</sup> c<sup>KV</sup><sub>t</sub>
+<span class="lbl">D = down-projection (compress), U = up-projection (decompress). Only c<sup>KV</sup> is cached.</span>
+</div>
+
+<h3>DeepSeek-V3's actual numbers</h3>
+
+<div class="tw">
+<table>
+<thead><tr><th>Config field</th><th class="num">Value</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>hidden_size</code></td><td class="num">7168</td><td>d_model</td></tr>
+<tr><td><code>num_attention_heads</code></td><td class="num">128</td><td>query heads</td></tr>
+<tr><td><code>kv_lora_rank</code></td><td class="num"><b>512</b></td><td>the cached latent width</td></tr>
+<tr><td><code>q_lora_rank</code></td><td class="num">1536</td><td>queries are low-rank too (saves params, not cache)</td></tr>
+<tr><td><code>qk_nope_head_dim</code></td><td class="num">128</td><td>the part of q/k that carries <b>no</b> RoPE</td></tr>
+<tr><td><code>qk_rope_head_dim</code></td><td class="num"><b>64</b></td><td>the part that <b>does</b> carry RoPE</td></tr>
+<tr><td><code>v_head_dim</code></td><td class="num">128</td><td>value dimension per head</td></tr>
+<tr><td colspan="3" style="border-top:1px solid var(--border-hi)"><b>Per-head q/k dim = 128 + 64 = 192.</b> Cached per token per layer = <b>512 + 64 = 576</b> elements.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>The problem RoPE creates, and the "decoupled" fix</h3>
+
+<p>Here is the subtle part, and the reason MLA looks more complicated than it "should".</p>
+
+<p>The whole point of caching a latent is that you never have to materialise per-head keys. That works
+because of an <b>absorption</b> identity — the up-projection can be folded into the query side:</p>
+
+<div class="mathblock">
+(q<sup>C</sup>)<sup>T</sup> k<sup>C</sup>
+= (W<sup>UQ</sup>c<sup>Q</sup>)<sup>T</sup> (W<sup>UK</sup>c<sup>KV</sup>)
+= (c<sup>Q</sup>)<sup>T</sup> <span style="color:#ffd166">(W<sup>UQ</sup>)<sup>T</sup>W<sup>UK</sup></span> c<sup>KV</sup>
+<span class="lbl">the highlighted product is a fixed matrix — precompute it once, attend directly in latent space</span>
+</div>
+
+<p>Now insert RoPE. RoPE applies a <b>position-dependent</b> rotation
+<span class="math">R<sub>m</sub></span> between the query and key:</p>
+
+<div class="mathblock" style="border-left-color:var(--danger)">
+(R<sub>m</sub>W<sup>UQ</sup>c<sup>Q</sup>)<sup>T</sup>(R<sub>n</sub>W<sup>UK</sup>c<sup>KV</sup>)
+= (c<sup>Q</sup>)<sup>T</sup>(W<sup>UQ</sup>)<sup>T</sup> <span style="color:#ff6b6b">R<sub>n−m</sub></span> W<sup>UK</sup> c<sup>KV</sup>
+<span class="lbl">R<sub>n−m</sub> sits <b>between</b> the two matrices and depends on the token pair — the product can no longer be precomputed</span>
+</div>
+
+<p>DeepSeek's fix is to <b>split the head dimension in two</b>:</p>
+
+<ul>
+<li><b>128 dims with no RoPE</b> — these go through the latent and enjoy absorption.</li>
+<li><b>64 dims with RoPE</b> — computed directly from the hidden state, bypassing the latent. Crucially the
+RoPE <i>key</i> is <b>shared across all 128 heads</b>, so it costs only 64 extra cached values per token,
+not 64×128.</li>
+</ul>
+
+<pre><code># Sketch of the MLA forward pass (shapes for DeepSeek-V3, one layer)
+#   h: (B, T, 7168)
+
+# ---- keys/values: compress to a latent, plus a shared RoPE key ----
+c_kv  = self.W_dkv(h)                       # (B, T, 512)   ← CACHE THIS
+k_rope = self.W_kr(h)                       # (B, T, 64)    ← AND THIS (shared by all heads)
+k_rope = apply_rope_1head(k_rope, cos, sin)
+
+#   total cached per token per layer: 512 + 64 = 576 values
+
+# ---- at attention time, decompress ----
+k_nope = self.W_uk(c_kv).view(B, T, 128, 128)     # (B, T, n_head, 128)
+v      = self.W_uv(c_kv).view(B, T, 128, 128)     # (B, T, n_head, 128)
+
+# ---- queries: also low-rank, also split ----
+c_q    = self.W_dq(h)                             # (B, T, 1536)
+q_nope = self.W_uq(c_q).view(B, T, 128, 128)      # (B, T, n_head, 128)
+q_rope = self.W_qr(c_q).view(B, T, 128, 64)       # (B, T, n_head, 64)
+q_rope = apply_rope(q_rope, cos, sin)
+
+# ---- concatenate the two halves; RoPE key is broadcast across heads ----
+q = torch.cat([q_nope, q_rope], dim=-1)                          # (B, T, 128, 192)
+k = torch.cat([k_nope, k_rope[:, :, None].expand(-1,-1,128,-1)],
+              dim=-1)                                            # (B, T, 128, 192)
+
+attn_out = attention(q, k, v)                                    # (B, T, 128, 128)
+out = self.W_o(attn_out.flatten(2))                              # (B, T, 7168)
+</code></pre>
+
+<h3>The size comparison, done honestly</h3>
+
+<pre><code>DeepSeek-V3: 128 heads, d_head 128, 61 layers, bf16
+
+MHA equivalent : 2 × 128 heads × 128 dim  = 32,768 values/token/layer
+GQA (8 groups) : 2 ×   8 heads × 128 dim  =  2,048 values/token/layer
+MLA (actual)   :        512 + 64          =    576 values/token/layer
+
+MLA vs MHA-equivalent : 32768 / 576 ≈ 56.9×  smaller
+MLA vs GQA-8          :  2048 / 576 ≈  3.6×  smaller
+
+Per token, all 61 layers, bf16:  576 × 61 × 2 bytes ≈ 70 KB
+At 128k context, one sequence:   70 KB × 131072     ≈ 9.2 GB
+</code></pre>
+
+<div class="box warn">
+<span class="t">A number you'll see quoted, with the caveat</span>
+<p style="margin-bottom:0">The DeepSeek-V2 paper reports a <b>93.3% KV cache reduction</b>. That figure
+compares MLA against <i>DeepSeek 67B's</i> attention, not against a same-config MHA — so it isn't the same
+ratio as the 57× above. Both numbers are correct about different comparisons. When you see cache-reduction
+claims, always check what the baseline was.</p>
+</div>
+
+<div class="box intuition">
+<span class="t">The genuinely surprising result</span>
+<p style="margin-bottom:0">MLA caches <b>less than GQA with ~2.25 KV heads</b>, yet DeepSeek's ablations show
+it <b>outperforms full MHA</b> on quality. Compression usually costs accuracy. The likely explanation is that
+the low-rank bottleneck acts as a useful inductive bias — full-rank per-head K/V has more capacity than the
+task needs, and forcing shared structure regularises it. That is a much better trade than GQA's, which is
+purely "give something up to save memory."</p>
+</div>
+
+<h3>What MLA costs</h3>
+
+<ul>
+<li><b>More FLOPs.</b> You do down- and up-projections that MHA doesn't. During compute-bound prefill this
+is a real cost.</li>
+<li><b>Much more implementation complexity.</b> The absorption trick, two attention code paths (prefill vs
+decode), and the RoPE split make MLA substantially harder to write than GQA. This is a large part of why
+adoption outside DeepSeek has been slower than the quality numbers alone would suggest.</li>
+<li><b>Kernel support.</b> It needs bespoke kernels (DeepSeek released FlashMLA) rather than reusing stock
+FlashAttention.</li>
+</ul>
+
+<div class="quiz" data-title="Checkpoint 2 — MLA">
+<div class="qitem" data-answer="1">
+  <div class="qq">Why does MLA need a separate "decoupled" RoPE dimension instead of just applying RoPE
+  to the decompressed keys?</div>
+  <div class="opts">
+    <div class="opt">RoPE only works on 64-dimensional vectors</div>
+    <div class="opt">A position-dependent rotation sits between W<sup>UQ</sup> and W<sup>UK</sup>, breaking the absorption that lets you attend in latent space</div>
+    <div class="opt">RoPE would make the latent too large</div>
+    <div class="opt">It's purely a numerical-stability measure</div>
+  </div>
+  <div class="expl"><b>It breaks matrix absorption.</b> Without RoPE,
+  <code>(W_UQ)ᵀW_UK</code> is a constant you precompute once, so you never decompress the keys at all.
+  With RoPE, <code>R_{n−m}</code> depends on the specific query–key pair and sits between them, so the
+  product can't be folded. Splitting off a small RoPE-carrying slice preserves absorption for the other 128
+  dims.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Why is the RoPE <i>key</i> shared across all 128 heads while the RoPE <i>query</i> is per-head?</div>
+  <div class="opts">
+    <div class="opt">The key is cached, so per-head RoPE keys would cost 128× more cache; queries aren't cached, so per-head is free</div>
+    <div class="opt">Queries need more positional resolution than keys</div>
+    <div class="opt">It's an arbitrary choice</div>
+    <div class="opt">Sharing keys improves quality</div>
+  </div>
+  <div class="expl"><b>Cache economics.</b> A per-head RoPE key would add 128 × 64 = 8192 values per token
+  per layer — 14× more than the entire 576-value MLA cache, destroying the whole point. Queries are
+  recomputed fresh each step and never stored, so per-head costs nothing in cache. Every asymmetry in MLA
+  traces back to "is this thing cached?"</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">A team wants to cut KV cache 4× on an existing Llama-style model with minimal risk.
+  Best choice?</div>
+  <div class="opts">
+    <div class="opt">Switch to MQA</div>
+    <div class="opt">Convert to MLA from scratch</div>
+    <div class="opt">Reduce the number of layers</div>
+    <div class="opt">GQA with n_kv_head = n_head/4, or fp8 KV quantization — both are low-risk and composable</div>
+  </div>
+  <div class="expl"><b>GQA or KV quantization.</b> GQA at g=4 is well-trodden and needs only light continued
+  pretraining (uptraining) to recover quality. fp8 quantization needs no retraining at all. MQA costs more
+  quality than necessary, and converting a trained model to MLA is a research project — though note that's
+  now an active area (e.g. <i>TransMLA</i> and related 2025 work on converting GQA checkpoints to MLA).</div>
+</div>
+</div>
+
+<h2>13.5 · What everyone actually ships</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Model</th><th>Attention</th><th>Note</th></tr></thead>
+<tbody>
+<tr><td>Llama-3 / 3.1 / 3.3</td><td>GQA, 8 KV heads</td><td>the industry default</td></tr>
+<tr><td>Mistral / Mixtral</td><td>GQA, 8 KV heads</td><td>+ sliding window in some versions</td></tr>
+<tr><td>Qwen 2.5 / 3</td><td>GQA</td><td>4–8 KV heads by size</td></tr>
+<tr><td>Gemma 2 / 3</td><td>GQA</td><td>+ alternating local/global layers</td></tr>
+<tr><td>DeepSeek-V2 / V3 / R1</td><td><b>MLA</b></td><td>rank 512 + 64 decoupled RoPE</td></tr>
+<tr><td>Kimi K2 / K2.5</td><td>MLA</td><td>DeepSeek-lineage architecture</td></tr>
+<tr><td>DeepSeek-V3.2</td><td>MLA + <b>DSA sparse attention</b></td><td>Chapter 18</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box sota">
+<span class="t">Where this sits in 2026</span>
+<p style="margin-bottom:0">GQA remains the safe default and is in the overwhelming majority of open models.
+MLA has proven itself at trillion-parameter scale in the DeepSeek and Kimi lineages, and published ablations
+consistently rank <b>MLA &gt; GQA &gt; MHA</b> on quality-per-cached-byte. The barrier to wider adoption is
+engineering, not evidence. Meanwhile the newest frontier isn't compressing the cache further — it's
+<b>not attending to most of it</b>, which is sparse attention (Chapter 18).</p>
+</div>
+
+<h2>13.6 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">13.1</span><span class="ti">Implement GQA and prove it degrades to MHA and MQA</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Write a single <code>GroupedQueryAttention</code> class. Then assert:</p>
+<ol>
+<li>With <code>n_kv_head == n_head</code>, output matches your MHA implementation exactly.</li>
+<li>With <code>n_kv_head == 1</code>, it is MQA.</li>
+<li>Cache memory scales exactly as <code>n_kv_head</code>.</li>
+<li><b>The ordering test:</b> swap <code>repeat_interleave</code> for <code>repeat</code> and confirm the
+output changes. Then explain which query heads got the wrong keys.</li>
+</ol>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">13.2</span><span class="ti">Implement MLA</span><span class="lvl">hard</span></div>
+<div class="eb">
+<p>Implement MLA with <code>d_model=512, n_head=8, kv_lora_rank=64, qk_nope=32, qk_rope=16, v_head=32</code>.
+Verify:</p>
+<ol>
+<li>Output shape is <code>(B, T, 512)</code>.</li>
+<li>The cache holds exactly <code>kv_lora_rank + qk_rope = 80</code> values per token per layer.</li>
+<li>Causality holds (use the Chapter 9 perturbation test).</li>
+<li><b>Absorption:</b> precompute <code>(W_uq)ᵀ @ W_uk</code> and confirm attending in latent space gives
+the same no-RoPE score contribution as decompressing first.</li>
+</ol>
+<details class="reveal"><summary>Hint on the absorption check</summary><div>
+<pre><code># Direct: decompress, then dot
+k_nope = (W_uk @ c_kv.T).T.view(T, H, 128)
+q_nope = (W_uq @ c_q.T ).T.view(T, H, 128)
+s1 = torch.einsum('qhd,khd->hqk', q_nope, k_nope)
+
+# Absorbed: fold W_uk into the query side, attend in latent space
+A  = torch.einsum('hdr,hds->hrs', W_uq.view(H,128,-1), W_uk.view(H,128,-1))
+s2 = torch.einsum('qr,hrs,ks->hqk', c_q, A, c_kv)
+
+assert torch.allclose(s1, s2, atol=1e-4)
+</code></pre>
+<p style="margin-bottom:0">When this passes, you've understood the actual engine of MLA — and why the RoPE
+split has to exist.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">13.3</span><span class="ti">Cache economics across a real fleet</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>You serve a 70B-class model at 32k context on 8×H100 (640 GB). Weights are 140 GB in bf16.
+For MHA (64 KV heads), GQA-8, and an MLA-style 576-value cache, compute the max concurrent users.
+Then: what does fp8 KV do to each?</p>
+<details class="reveal"><summary>Worked answer</summary><div>
+<pre><code class="nohl">Available for cache: 640 - 140 - ~40 (activations/overhead) ≈ 460 GB
+Per-token-per-layer values × 80 layers × 2 bytes × 32768 tokens:
+
+MHA (2×64×128 = 16384) : 16384×80×2×32768 =  85.9 GB/user →   5 users
+GQA-8 (2×8×128 = 2048) :  2048×80×2×32768 =  10.7 GB/user →  42 users
+MLA  (576)             :   576×80×2×32768 =   3.0 GB/user → 152 users
+
+With fp8 KV (1 byte): roughly double each →  10 / 85 / 305 users</code></pre>
+<p style="margin-bottom:0">That's a <b>30× difference in revenue per GPU</b> between MHA and MLA at identical
+model quality. When you read that DeepSeek's API pricing undercut competitors substantially, this table is a
+large part of the explanation — architecture choices show up directly on the invoice.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/2305.13245">Ainslie et al. 2023 — GQA</a> (includes the "uptraining" recipe for converting MHA checkpoints)</li>
+<li><a href="https://arxiv.org/abs/1911.02150">Shazeer 2019 — Fast Transformer Decoding (MQA)</a></li>
+<li><a href="https://arxiv.org/abs/2405.04434">DeepSeek-V2</a> — where MLA was introduced (§2.1 is the one to read)</li>
+<li><a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 Technical Report</a></li>
+<li><a href="https://mccormickml.com/2025/04/26/inner-workings-of-mla/">Chris McCormick — The Inner Workings of MLA</a> — the clearest walkthrough of absorption.</li>
+<li><a href="https://github.com/deepseek-ai/FlashMLA">deepseek-ai/FlashMLA</a> — the production kernel.</li>
+<li>Companion notebook: <code>notebooks/13_gqa_mla.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("13");</script>
+</body>
+</html>

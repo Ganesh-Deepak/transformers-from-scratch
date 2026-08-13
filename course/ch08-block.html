@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 8 — The Transformer Block</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>8 · The Transformer Block</h1>
+<p class="lead">
+Attention lets tokens talk to each other. That's half a transformer. The other half — the part with about
+two-thirds of the parameters — is a per-token MLP. This chapter assembles both into the block that gets
+stacked 32, 80, or 120 times, and explains every design choice that has changed since 2017.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; residual stream<br><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; the attention sublayer</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; stack this and you have a model<br><a href="ch16-moe.html">Ch&nbsp;16</a> &mdash; MoE replaces exactly this chapter's MLP</div>
+<div class="mn orient"><span class="k">Why this chapter</span>Communicate, then compute. Repeat 32 times.</div>
+
+<h2>8.1 · The block, in four lines</h2>
+
+<pre><code>def block(x):
+    x = x + attn(norm1(x))       # tokens exchange information
+    x = x + mlp (norm2(x))       # each token thinks on its own
+    return x
+</code></pre>
+
+<p>That's it. Two sub-layers, each wrapped in <b>norm → sublayer → add</b>. Shape is
+<code>(B, T, C)</code> at every step.</p>
+
+<div class="box intuition">
+<span class="t">The division of labour</span>
+<p style="margin-bottom:0"><b>Attention moves information between positions.</b> It's the only part of the
+model where token <code>i</code> can see token <code>j</code>. <b>The MLP transforms information within a
+position.</b> It processes every token identically and independently — it literally cannot see other tokens.
+Communicate, then compute. Repeat.</p>
+</div>
+
+<figure>
+<svg viewBox="0 0 560 330" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="a8" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <path d="M0,0 L6,3 L0,6 z" fill="var(--ink-3,#6E7885)"/></marker></defs>
+  <g font-family="monospace" font-size="11">
+    <line x1="90" y1="310" x2="90" y2="20" stroke="var(--accent,#0B6E62)" stroke-width="6" opacity=".25"/>
+
+    <text x="90" y="325" fill="var(--accent,#0B6E62)" text-anchor="middle">x  (B, T, C)</text>
+
+    <!-- sublayer 1 -->
+    <path d="M90 300 V270 H190" stroke="var(--ink-3,#6E7885)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <rect x="195" y="252" width="120" height="34" rx="7" fill="var(--surface,#fff)" stroke="var(--dim-4,#5A7A2E)" stroke-width="1.3"/>
+    <text x="255" y="273" fill="var(--dim-4,#5A7A2E)" text-anchor="middle">RMSNorm</text>
+    <path d="M315 269 H345" stroke="var(--ink-3,#6E7885)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <rect x="350" y="252" width="150" height="34" rx="7" fill="var(--surface,#fff)" stroke="var(--dim-1,#A8761C)" stroke-width="1.3"/>
+    <text x="425" y="273" fill="var(--dim-1,#A8761C)" text-anchor="middle">Multi-Head Attn</text>
+    <path d="M425 252 V215 H98" stroke="var(--dim-1,#A8761C)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <circle cx="90" cy="215" r="9" fill="var(--paper,#FAFAF9)" stroke="var(--dim-1,#A8761C)" stroke-width="1.6"/>
+    <text x="90" y="219" fill="var(--dim-1,#A8761C)" text-anchor="middle" font-size="12">+</text>
+    <text x="270" y="208" fill="var(--ink-3,#6E7885)" font-size="10">residual add — the stream is never replaced</text>
+
+    <!-- sublayer 2 -->
+    <path d="M90 195 V165 H190" stroke="var(--ink-3,#6E7885)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <rect x="195" y="147" width="120" height="34" rx="7" fill="var(--surface,#fff)" stroke="var(--dim-4,#5A7A2E)" stroke-width="1.3"/>
+    <text x="255" y="168" fill="var(--dim-4,#5A7A2E)" text-anchor="middle">RMSNorm</text>
+    <path d="M315 164 H345" stroke="var(--ink-3,#6E7885)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <rect x="350" y="147" width="150" height="34" rx="7" fill="var(--surface,#fff)" stroke="var(--dim-3,#A8484F)" stroke-width="1.3"/>
+    <text x="425" y="168" fill="var(--dim-3,#A8484F)" text-anchor="middle">MLP / SwiGLU</text>
+    <path d="M425 147 V110 H98" stroke="var(--dim-3,#A8484F)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <circle cx="90" cy="110" r="9" fill="var(--paper,#FAFAF9)" stroke="var(--dim-1,#A8761C)" stroke-width="1.6"/>
+    <text x="90" y="114" fill="var(--dim-1,#A8761C)" text-anchor="middle" font-size="12">+</text>
+
+    <path d="M90 90 V45" stroke="var(--accent,#0B6E62)" stroke-width="1.6" fill="none" marker-end="url(#a8)"/>
+    <text x="90" y="35" fill="var(--accent,#0B6E62)" text-anchor="middle">to next block</text>
+
+    <text x="350" y="105" fill="var(--ink-3,#6E7885)" font-size="10">×  n_layer  (12 … 126)</text>
+  </g>
+</svg>
+<figcaption>One pre-LN transformer block. The shape is (B, T, C) on every wire.</figcaption>
+</figure>
+
+<h2>8.2 · Normalisation: LayerNorm vs RMSNorm</h2>
+
+<h3>LayerNorm (Ba et al. 2016)</h3>
+
+<div class="mathblock">
+LN(x) = <span class="frac"><span class="n">x − μ</span><span class="d">√(σ² + ε)</span></span> ⊙ γ + β
+&nbsp;&nbsp;&nbsp; μ, σ² computed over the <b>last axis only</b>
+</div>
+
+<pre><code>class LayerNorm(nn.Module):
+    def __init__(self, d, eps=1e-5):
+        super().__init__()
+        self.g = nn.Parameter(torch.ones(d))       # scale γ
+        self.b = nn.Parameter(torch.zeros(d))      # shift β
+        self.eps = eps
+
+    def forward(self, x):                          # x: (B, T, C)
+        mu  = x.mean(-1, keepdim=True)             # (B, T, 1)
+        var = x.var(-1, keepdim=True, unbiased=False)
+        return (x - mu) / torch.sqrt(var + self.eps) * self.g + self.b
+</code></pre>
+
+<div class="box gotcha">
+<span class="t">LayerNorm ≠ BatchNorm</span>
+<p style="margin-bottom:0">BatchNorm normalises <b>across the batch</b> for each feature; LayerNorm
+normalises <b>across features</b> for each token. LayerNorm's statistics therefore don't depend on other
+examples — which is why it works with batch size 1, works at inference without running averages, and works
+with variable sequence lengths. BatchNorm would be a disaster in an autoregressive model.</p>
+</div>
+
+<h3>RMSNorm (Zhang &amp; Sennrich 2019) — what modern models use</h3>
+
+<div class="mathblock">
+RMSNorm(x) = <span class="frac"><span class="n">x</span><span class="d">√(mean(x²) + ε)</span></span> ⊙ γ
+<span class="lbl">no mean subtraction, no bias term</span>
+</div>
+
+<pre><code>class RMSNorm(nn.Module):
+    def __init__(self, d, eps=1e-6):
+        super().__init__()
+        self.g = nn.Parameter(torch.ones(d))
+        self.eps = eps
+
+    def forward(self, x):
+        # cast to fp32 for the reduction — this matters in bf16 training
+        rms = x.float().pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
+        return (x.float() * rms).type_as(x) * self.g
+</code></pre>
+
+<p>RMSNorm drops the mean subtraction and the bias. The empirical finding was that <b>re-centering does
+almost nothing; only re-scaling matters.</b> You get fewer parameters, one less reduction pass over the data,
+and ~7–15% faster layers at equal quality. Llama, Mistral, Qwen, Gemma, DeepSeek, and essentially every
+model since 2023 use it.</p>
+
+<h3>Pre-LN vs Post-LN — a change that mattered a lot</h3>
+
+<div class="grid2">
+<div class="box warn" style="margin:0">
+<span class="t">Post-LN (original, 2017)</span>
+<pre style="margin:.5em 0 0"><code>x = norm(x + attn(x))
+x = norm(x + mlp(x))</code></pre>
+<p style="margin:.7em 0 0">The norm sits <b>on</b> the residual path. Gradients must pass through a
+normalisation on every layer, so they get rescaled repeatedly. Deep post-LN models <b>will not train</b>
+without a careful learning-rate warmup, and beyond ~20 layers they often diverge anyway.</p>
+</div>
+<div class="box intuition" style="margin:0">
+<span class="t">Pre-LN (modern default)</span>
+<pre style="margin:.5em 0 0"><code>x = x + attn(norm(x))
+x = x + mlp(norm(x))</code></pre>
+<p style="margin:.7em 0 0">The norm sits on the <b>branch</b>, leaving the residual highway completely
+clean — <code>∂x_out/∂x_in</code> still contains an exact identity term. Trains stably to 100+ layers,
+tolerates larger learning rates, and needs much less warmup.</p>
+</div>
+</div>
+
+<p>One consequence of pre-LN: the residual stream is never normalised, so its magnitude <b>grows with
+depth</b>. That's why pre-LN models need a <b>final norm</b> after the last block, before the LM head.
+Forgetting it is a classic bug.</p>
+
+<div class="box sota">
+<span class="t">Where normalisation placement is in 2026</span>
+<p style="margin-bottom:0">Pre-LN is the default, but several 2024–2025 models added extra norms for
+stability at scale: <b>Gemma 2/3</b> use a "sandwich" (norm before <i>and</i> after each sublayer),
+<b>OLMo 2</b> moved to a post-norm variant applied to the branch output, and <b>QK-norm</b> (normalising q
+and k before the dot product) has become common — it directly prevents the attention-logit explosions that
+cause loss spikes in large runs. The direction of travel is "more normalisation, placed off the residual
+path."</p>
+</div>
+
+<h2>8.3 · The MLP — where the parameters actually live</h2>
+
+<pre><code>class MLP(nn.Module):
+    def __init__(self, d_model, d_ff):
+        super().__init__()
+        self.up   = nn.Linear(d_model, d_ff)      # (B,T,C) → (B,T,d_ff)
+        self.down = nn.Linear(d_ff, d_model)      # (B,T,d_ff) → (B,T,C)
+    def forward(self, x):
+        return self.down(F.gelu(self.up(x)))
+</code></pre>
+
+<p>Expand to <code>d_ff = 4·d_model</code>, apply a non-linearity, project back. Every token goes through
+this independently — it is a per-position function, applied <code>B×T</code> times in parallel.</p>
+
+<div class="box math-note">
+<span class="t">Two-thirds of the model is here</span>
+<p>Per layer, with <code>d_ff = 4C</code> and no biases:</p>
+<ul style="margin-bottom:0">
+<li>Attention: <code>4C²</code> (W_q, W_k, W_v, W_o)</li>
+<li>MLP: <code>8C²</code> (up is <code>C×4C</code>, down is <code>4C×C</code>)</li>
+<li><b>Total <code>12C²</code> per layer — the MLP is 2× the attention.</b></li>
+</ul>
+<p style="margin-top:.7em;margin-bottom:0">A useful sanity check: a transformer's parameter count is roughly
+<code>12 · n_layer · d_model²</code> plus embeddings. For GPT-2 small: 12 × 12 × 768² ≈ 85M, plus 38.6M
+embedding ≈ 124M. That is exactly right.</p>
+</div>
+
+<h3>What does the MLP do?</h3>
+
+<p>The best current answer comes from interpretability: the MLP acts as a <b>key–value memory</b>. The first
+matrix's rows are "detectors" — each neuron fires on a particular pattern in the residual stream; the second
+matrix's columns are what gets written back when that neuron fires. Geva et al. (2021) showed you can read
+these off directly: specific neurons fire on "text about sports", "the token is a date", and so on.</p>
+
+<h3>Activation functions: ReLU → GELU → SwiGLU</h3>
+
+<div class="tw">
+<table>
+<thead><tr><th>Activation</th><th>Definition</th><th>Used by</th></tr></thead>
+<tbody>
+<tr><td><b>ReLU</b></td><td><code>max(0, x)</code></td><td>original Transformer, T5</td></tr>
+<tr><td><b>GELU</b></td><td><code>x · Φ(x)</code>, Φ = Gaussian CDF</td><td>BERT, GPT-2, GPT-3</td></tr>
+<tr><td><b>SiLU/Swish</b></td><td><code>x · σ(x)</code></td><td>component of SwiGLU</td></tr>
+<tr><td><b>SwiGLU</b></td><td><code>(SiLU(xW_gate) ⊙ xW_up) W_down</code></td><td><b>Llama, Mistral, Qwen, Gemma, DeepSeek, PaLM</b></td></tr>
+</tbody>
+</table>
+</div>
+
+<pre><code>class SwiGLU(nn.Module):
+    def __init__(self, d_model, d_ff):
+        super().__init__()
+        self.gate = nn.Linear(d_model, d_ff, bias=False)
+        self.up   = nn.Linear(d_model, d_ff, bias=False)
+        self.down = nn.Linear(d_ff, d_model, bias=False)
+    def forward(self, x):
+        return self.down(F.silu(self.gate(x)) * self.up(x))
+        #                 ^^^^^^^^^^^^^^^^^^^^^ the GATE: a learned, per-neuron
+        #                 multiplicative filter on the up-projection
+</code></pre>
+
+<div class="box intuition">
+<span class="t">Why 8/3 keeps showing up</span>
+<p style="margin-bottom:0">SwiGLU uses <b>three</b> matrices instead of two, so at the same
+<code>d_ff</code> it would have 1.5× the parameters. To keep the comparison fair, implementations shrink
+<code>d_ff</code> by 2/3: <code>d_ff = (8/3)·d_model</code> instead of <code>4·d_model</code>. Llama-2-7B has
+<code>d_model=4096</code> and <code>d_ff=11008</code> — that's 2.6875×, i.e. 8/3 rounded to a multiple of
+256 for hardware alignment. When you see an odd number like 11008 or 14336, this is why.</p>
+</div>
+
+<p>Noam Shazeer's paper introducing GLU variants ends with the line "We offer no explanation as to why these
+architectures seem to work; we attribute their success, as all else, to divine benevolence." That is a real
+quote, and it's an honest summary of the state of activation-function research.</p>
+
+<div class="quiz" data-title="Checkpoint 1 — block design">
+<div class="qitem" data-answer="2">
+  <div class="qq">Why does RMSNorm work as well as LayerNorm despite dropping the mean subtraction?</div>
+  <div class="opts">
+    <div class="opt">The mean is always zero in practice</div>
+    <div class="opt">The residual connection already centers the data</div>
+    <div class="opt">Empirically, re-scaling provides the training stability; re-centering contributes little</div>
+    <div class="opt">RMSNorm actually performs worse, but is used because it's faster</div>
+  </div>
+  <div class="expl"><b>Re-scaling is the active ingredient.</b> Zhang &amp; Sennrich ablated this directly:
+  the invariance that matters for optimisation is to the <i>scale</i> of the input, not its offset.
+  Dropping the mean gives you one fewer reduction and 2 fewer parameters per feature at equal quality — a
+  free win, which is why adoption was near-universal.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">A 48-layer post-LN transformer diverges during training. Switching to pre-LN fixes it. Why?</div>
+  <div class="opts">
+    <div class="opt">Pre-LN keeps the residual path free of normalisation, so gradients have an unscaled identity route to every layer</div>
+    <div class="opt">Pre-LN has fewer parameters</div>
+    <div class="opt">Pre-LN uses a smaller learning rate automatically</div>
+    <div class="opt">Post-LN can't represent as many functions</div>
+  </div>
+  <div class="expl"><b>The gradient highway.</b> In post-LN, every backward step passes through a norm's
+  Jacobian, and those compound across 48 layers. In pre-LN, <code>∂(x + f(norm(x)))/∂x = I + …</code> — the
+  identity survives untouched. Both can represent the same functions; only one is optimisable at depth.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">Llama-2-7B: <code>d_model=4096</code>, <code>d_ff=11008</code>, SwiGLU, 32 layers.
+  How many parameters in all the MLPs?</div>
+  <div class="opts">
+    <div class="opt">≈ 1.4 B</div>
+    <div class="opt">≈ 4.3 B</div>
+    <div class="opt">≈ 2.9 B</div>
+    <div class="opt">≈ 0.7 B</div>
+  </div>
+  <div class="expl"><b>≈ 4.3B.</b> Three matrices of 4096×11008 = 45.09M each → 135.3M per layer ×
+  32 layers = <b>4.33B</b>. Out of 6.7B total, that's <b>65%</b> of the model in the MLPs — confirming the
+  "two-thirds" rule of thumb. This is also why MoE (Chapter 16) targets the MLP and not attention.</div>
+</div>
+</div>
+
+<h2>8.4 · Dropout — mostly gone</h2>
+
+<p>The original transformer used dropout 0.1 everywhere. Modern LLM pretraining usually sets it to
+<b>zero</b>. The reason is simple: dropout is a regulariser for the small-data regime, and when you train on
+15 trillion tokens with 8 billion parameters you are nowhere near overfitting — you're
+<i>under</i>-fitting. Dropout would just slow you down.</p>
+
+<p>It reappears during <b>fine-tuning</b> on small datasets, where overfitting is real again.</p>
+
+<h2>8.5 · The complete block</h2>
+
+<pre><code>class Block(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.n1   = RMSNorm(cfg.d_model)
+        self.attn = MultiHeadAttention(cfg)
+        self.n2   = RMSNorm(cfg.d_model)
+        self.mlp  = SwiGLU(cfg.d_model, cfg.d_ff)
+
+    def forward(self, x, freqs=None, kv_cache=None):
+        x = x + self.attn(self.n1(x), freqs, kv_cache)     # (B, T, C)
+        x = x + self.mlp (self.n2(x))                      # (B, T, C)
+        return x
+</code></pre>
+
+<p>That is a 2026-current transformer block. Compare it to 2017:</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Component</th><th>2017 original</th><th>2026 typical</th></tr></thead>
+<tbody>
+<tr><td>Norm type</td><td>LayerNorm</td><td>RMSNorm</td></tr>
+<tr><td>Norm position</td><td>post (on residual)</td><td>pre (on branch), sometimes sandwiched</td></tr>
+<tr><td>Activation</td><td>ReLU</td><td>SwiGLU</td></tr>
+<tr><td>d_ff</td><td>4·d_model</td><td>(8/3)·d_model, rounded to a multiple of 256</td></tr>
+<tr><td>Position</td><td>sinusoidal, added at input</td><td>RoPE, applied to q/k each layer</td></tr>
+<tr><td>Attention</td><td>MHA</td><td>GQA or MLA</td></tr>
+<tr><td>Biases</td><td>yes</td><td>no (removed — they cost memory and add nothing)</td></tr>
+<tr><td>Dropout</td><td>0.1</td><td>0.0 during pretraining</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Every one of these is a small, well-motivated change. None of them altered the fundamental architecture.
+That stability — nine years of tuning a fixed skeleton — is the real story of transformers.</p>
+
+<h2>8.6 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">8.1</span><span class="ti">Implement and verify both norms</span><span class="lvl">warm-up</span></div>
+<div class="eb">
+<p>Write <code>LayerNorm</code> and <code>RMSNorm</code> from scratch. Verify your LayerNorm against
+<code>nn.LayerNorm</code>. Then, on a random <code>(4, 128, 512)</code> input, measure:</p>
+<ol>
+<li>The mean and std of each output along the last axis.</li>
+<li>Wall-clock time for 1000 forward passes of each.</li>
+<li>Cosine similarity between the two outputs.</li>
+</ol>
+<details class="reveal"><summary>Expected</summary><div>
+<p style="margin-bottom:0">LayerNorm output has mean ≈ 0, std ≈ 1 exactly. RMSNorm output has std ≈ 1 but
+mean ≈ whatever the input's mean was (scaled). The cosine similarity between them is typically &gt; 0.98
+for random input — they are doing nearly the same thing, which is the empirical point. RMSNorm is usually
+20–40% faster in a pure-Python benchmark, less in a fused kernel.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">8.2</span><span class="ti">Pre-LN vs post-LN, measured</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Build a 24-layer transformer both ways. Without training, do <b>one</b> forward+backward on random data
+and plot <code>block[i].attn.qkv.weight.grad.norm()</code> against layer index <code>i</code> for both,
+on a log scale.</p>
+<details class="reveal"><summary>What you'll see</summary><div>
+<p style="margin-bottom:0">Post-LN gradients decay roughly geometrically with depth — often 2–4 orders of
+magnitude smaller at layer 0 than at layer 23. Pre-LN gradients are approximately flat across depth. Then
+try actually training both with the same LR: post-LN will spike or diverge, pre-LN won't. This single plot
+explains a design decision that took the field about two years to settle.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">8.3</span><span class="ti">Match SwiGLU parameters to GELU</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Write <code>swiglu_ff_dim(d_model, multiple_of=256)</code> that returns the <code>d_ff</code> making a
+SwiGLU MLP have the same parameter count as a GELU MLP with <code>d_ff = 4·d_model</code>, rounded up to a
+multiple of <code>multiple_of</code>. Verify it gives 11008 for <code>d_model=4096</code>.</p>
+<details class="reveal"><summary>Solution</summary><div>
+<pre><code>def swiglu_ff_dim(d_model, multiple_of=256):
+    hidden = 4 * d_model
+    hidden = int(2 * hidden / 3)                       # 3 matrices instead of 2
+    return multiple_of * ((hidden + multiple_of - 1) // multiple_of)
+
+swiglu_ff_dim(4096)     # 11008  ✓  (matches Llama-2-7B)
+swiglu_ff_dim(8192)     # 22016  ✓  (matches Llama-2-70B... almost — see below)
+</code></pre>
+<p style="margin-bottom:0">This is essentially Meta's own function. Note Llama-2-70B actually uses
+<code>d_ff=28672</code>, because it applies an extra <code>ffn_dim_multiplier=1.3</code>. Real configs
+deviate from clean formulas — always read the config file rather than assuming.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">8.4</span><span class="ti">Find what MLP neurons detect</span><span class="lvl">exploration</span></div>
+<div class="eb">
+<p>Load GPT-2. Pick layer 6. Run a few hundred sentences through it and record the post-activation value of
+neuron <code>k</code> in the MLP hidden layer for every token. Find the 20 tokens (with context) that
+maximally activate it. Repeat for 10 random neurons.</p>
+<details class="reveal"><summary>What you'll find</summary><div>
+<p style="margin-bottom:0">Some neurons are strikingly interpretable — one fires on tokens inside quoted
+speech, another on the second half of hyphenated words, another on numerals in dates. Many others look like
+noise: they're <b>polysemantic</b>, firing on several unrelated concepts because the model is packing more
+features into <code>d_ff</code> neurons than it has neurons. That phenomenon — <i>superposition</i> — is
+what sparse autoencoders were invented to untangle, and it's the frontier of interpretability research.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/1910.07467">Zhang &amp; Sennrich 2019 — Root Mean Square Layer Normalization</a></li>
+<li><a href="https://arxiv.org/abs/2002.05202">Shazeer 2020 — GLU Variants Improve Transformer</a> (the "divine benevolence" paper)</li>
+<li><a href="https://arxiv.org/abs/2002.04745">Xiong et al. 2020 — On Layer Normalization in the Transformer Architecture</a> — the pre-LN vs post-LN analysis</li>
+<li><a href="https://arxiv.org/abs/2012.14913">Geva et al. 2021 — Transformer Feed-Forward Layers Are Key-Value Memories</a></li>
+<li><a href="https://magazine.sebastianraschka.com/p/the-big-llm-architecture-comparison">Raschka — The Big LLM Architecture Comparison</a> — every modern variant, side by side</li>
+<li>Companion notebook: <code>notebooks/08_the_block.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("08");</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Transformers From Scratch — Python dependencies
+#
+#   python -m venv .venv
+#   .venv\Scripts\Activate.ps1        (PowerShell)
+#   pip install -r requirements.txt
+#
+# Everything here runs on CPU. No GPU required for any chapter.
+
+torch>=2.4
+numpy>=1.26
+matplotlib>=3.8
+jupyterlab>=4.0
+ipywidgets>=8.1
+tqdm>=4.66
+
+# Optional but recommended (used in a few exercises):
+einops>=0.8            # Chapter 2, 6 — readable tensor reshaping
+regex>=2024.0          # Chapter 3 — GPT-2 style pre-tokenization patterns
+
+# Optional — only needed for the "load a real model" exercises:
+# transformers>=4.44
+# datasets>=2.20

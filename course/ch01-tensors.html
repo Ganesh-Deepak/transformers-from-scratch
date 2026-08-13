@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 1 — Tensors, Shapes, and How to Actually See Them</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>1 · Tensors, Shapes, and How to Actually See Them</h1>
+<p class="lead">
+If you find transformers confusing, there is roughly a 70% chance the real problem is that you cannot
+look at <code>(4, 8, 12, 64)</code> and instantly see an object. This chapter fixes that, permanently.
+By the end you will read shapes the way you read words.
+</p>
+
+<div class="mn orient"><span class="k">Leads to</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; matmul builds directly on shapes<br><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; the reshape dance is this chapter, applied</div>
+<div class="mn orient"><span class="k">Why this chapter</span>Everything downstream is shapes. This is the chapter the rest of the course leans on.</div>
+
+<div class="box intuition">
+<span class="t">The one idea in this chapter</span>
+<p style="margin-bottom:0">A tensor is a <b>box of numbers with labelled axes</b>. The <b>last axis is always
+"the thing itself"</b>; every axis before it is just <b>"how many of them"</b>. Once you internalise that
+asymmetry, shapes stop being arbitrary tuples and become sentences.</p>
+</div>
+
+<h2>1.0 · The maths you actually need</h2>
+
+<p>Three pieces of notation appear throughout this course. If any of them are fuzzy, fix that now —
+they cost five minutes here and cause weeks of confusion later. If all three are obvious to you,
+skip to §1.1.</p>
+
+<div class="mn">
+  <span class="k">Not needed</span>
+  Calculus, linear algebra as a course, and prior neural-network experience. Where a later chapter
+  needs a derivative it shows the one line and explains it.
+</div>
+
+<div class="example">
+<span class="t">Refresher 1 — Σ is just a for-loop</span>
+<p>The summation sign says "add these up". It is <code>for</code> written in one symbol.</p>
+<div class="mathblock" style="margin:.7rem 0">
+<span class="op">Σ</span><sub>i=1</sub><sup>4</sup> x<sub>i</sub> &nbsp;=&nbsp; x<sub>1</sub> + x<sub>2</sub> + x<sub>3</sub> + x<sub>4</sub>
+</div>
+<pre><code># the same thing
+total = 0
+for i in range(1, 5):
+    total += x[i]
+
+# and the same thing again
+total = sum(x[i] for i in range(1, 5))</code></pre>
+<p style="margin-bottom:0">Read the bottom of the Σ as "start here", the top as "stop here", and the
+body as "what to add". That's all. When you meet
+<span class="math"><span class="op">Σ</span><sub>k</sub> A<sub>ik</sub>B<sub>kj</sub></span> in Chapter 2,
+it means <i>loop over k, multiply the pair, keep a running total</i>.</p>
+</div>
+
+<div class="example">
+<span class="t">Refresher 2 — the dot product</span>
+<p>Multiply two lists elementwise, then add up the results. One number comes out.</p>
+<div class="example" style="margin:.7rem 0;border-left-color:var(--ink-4)">
+<div class="step"><div class="i">1</div><div><b>Line them up.</b>
+  <code>a = [2, −1, 3]</code> and <code>b = [4, 5, −2]</code></div></div>
+<div class="step"><div class="i">2</div><div><b>Multiply pairwise.</b>
+  <code>2×4 = 8</code>, &nbsp;<code>−1×5 = −5</code>, &nbsp;<code>3×−2 = −6</code></div></div>
+<div class="step"><div class="i">3</div><div><b>Add.</b>
+  <code>8 + (−5) + (−6) = −3</code> &nbsp;← the dot product</div></div>
+</div>
+<p style="margin-bottom:0"><b>What it means:</b> it measures <i>agreement</i>. Big positive when the two
+lists point the same way, near zero when unrelated, negative when opposed. Attention (Chapter 5) is
+built entirely on this one idea: a query dotted with a key asks <i>"how much do these agree?"</i></p>
+</div>
+
+<div class="example">
+<span class="t">Refresher 3 — logarithms, and why loss is measured in them</span>
+<p><span class="math">log(x)</span> answers: <i>what power do I raise the base to, to get x?</i>
+<code>ln</code> means base <span class="math">e ≈ 2.718</span>; <code>log2</code> means base 2.</p>
+<pre><code>import math
+math.log(1)        # 0.0     -> log of 1 is always 0
+math.log(math.e)   # 1.0
+math.log(1000)     # 6.907   -> grows very slowly
+math.log(0.001)    # -6.907  -> negative below 1</code></pre>
+<p>Two properties are used constantly:</p>
+<ul>
+<li><b>It turns multiplication into addition:</b> <code>log(a·b) = log(a) + log(b)</code>. This is why
+the probability of a 500-token sequence — a product of 500 tiny numbers that would underflow to zero —
+is always computed as a <i>sum of logs</i>.</li>
+<li><b>It compresses huge ranges.</b> Probabilities span 1 to 10<sup>−9</sup>; their logs span 0 to −21.</li>
+</ul>
+<p style="margin-bottom:0">You will meet <code>ln(V)</code> constantly: it is the loss of a model that
+is guessing uniformly among <code>V</code> options. For a 32,000-token vocabulary that's
+<code>ln(32000) ≈ 10.4</code> — <b>the single cheapest sanity check in deep learning</b> (Chapter 9).</p>
+</div>
+
+<div class="quiz" data-title="Warm-up — is your notation solid?">
+<div class="qitem" data-answer="1">
+  <div class="qq">What is <span class="math"><span class="op">Σ</span><sub>i=0</sub><sup>3</sup> 2i</span>?</div>
+  <div class="opts">
+    <div class="opt">6</div>
+    <div class="opt">12</div>
+    <div class="opt">8</div>
+    <div class="opt">2</div>
+  </div>
+  <div class="expl"><b>12.</b> i runs 0,1,2,3 so it's 0+2+4+6. Note the bottom index is <b>0</b> here,
+  not 1 — always read it, papers switch between the two freely and an off-by-one in a summation index
+  is a real source of confusion.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">The dot product of <code>[1, 0, −2]</code> and <code>[3, 7, 1]</code> is:</div>
+  <div class="opts">
+    <div class="opt">11</div>
+    <div class="opt">10</div>
+    <div class="opt">1</div>
+    <div class="opt">−2</div>
+  </div>
+  <div class="expl"><b>1.</b> (1×3) + (0×7) + (−2×1) = 3 + 0 − 2 = 1. Notice the middle term contributes
+  nothing: a zero in either vector deletes that dimension's opinion entirely.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">A model with a 50,000-token vocabulary starts training. Its first loss should be about:</div>
+  <div class="opts">
+    <div class="opt">10.8</div>
+    <div class="opt">0</div>
+    <div class="opt">50000</div>
+    <div class="opt">1</div>
+  </div>
+  <div class="expl"><b>ln(50000) ≈ 10.8.</b> An untrained model spreads probability roughly evenly over
+  all 50,000 tokens, and the loss of uniform guessing is exactly <code>ln(V)</code>. If your run starts
+  much lower, something is wrong — usually the label-shift bug from Chapter 9.</div>
+</div>
+</div>
+
+<h2>1.1 · What a tensor actually is</h2>
+
+<p>Forget the physics definition. In deep learning a <b>tensor is an n-dimensional array</b> — the same thing
+as a NumPy array, plus the ability to record gradients and live on a GPU. That's it.</p>
+
+<p>Every tensor has four properties you should be able to state immediately:</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Property</th><th>Example</th><th>What it means</th></tr></thead>
+<tbody>
+<tr><td><b>shape</b></td><td><code>(2, 4, 3)</code></td><td>the size of each axis, outermost first</td></tr>
+<tr><td><b>rank</b> (a.k.a. ndim)</td><td><code>3</code></td><td>how many axes — <code>len(shape)</code></td></tr>
+<tr><td><b>numel</b></td><td><code>24</code></td><td>total scalars — the product of the shape</td></tr>
+<tr><td><b>dtype</b></td><td><code>float32</code></td><td>bytes per scalar (fp32=4, fp16/bf16=2, fp8=1, int8=1)</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Here is <code>(2, 4, 3)</code>, drawn. Look at it until it stops being a tuple:</p>
+
+<div data-viz="tensor" data-dims="2,4,3" data-names="batch,time,channel"
+     data-title="A rank-3 tensor of shape (2, 4, 3)"
+     data-sub="2 slabs, each 4 rows tall, each row 3 numbers wide. 24 scalars total."></div>
+
+<div class="box math-note">
+<span class="t">Reading a shape out loud</span>
+<p style="margin-bottom:0">Read <code>(2, 4, 3)</code> as: <b>"2 groups of 4 things, and each thing is a
+vector of 3 numbers."</b> Read it right-to-left and it composes:
+<code>3</code> → a vector. <code>(4, 3)</code> → 4 of those vectors. <code>(2, 4, 3)</code> → 2 of <i>those</i>.</p>
+</div>
+
+<h3>The transformer version of that sentence</h3>
+
+<p>The single most common shape in this entire course is <code>(B, T, C)</code>:</p>
+
+<div class="dimkey">
+  <span class="chip"><b>B</b> = 2 <span>&nbsp;sequences in the batch</span></span>
+  <span class="chip"><b>T</b> = 4 <span>&nbsp;tokens in each sequence</span></span>
+  <span class="chip"><b>C</b> = 3 <span>&nbsp;numbers describing each token</span></span>
+</div>
+
+<p>So <code>(2, 4, 3)</code> means: <b>2 sentences, each 4 tokens long, each token represented by a
+3-dimensional vector.</b> In a real model <code>C</code> is 768 or 4096 instead of 3, but the picture
+is identical — the box is just deeper.</p>
+
+<p>And the key asymmetry, stated precisely:</p>
+
+<ul>
+  <li><code>B</code> and <code>T</code> are <b>batch-like</b> axes. Operations usually run <i>independently</i> across them.</li>
+  <li><code>C</code> is a <b>feature</b> axis. Operations <i>mix</i> along it — that's where the learning happens.</li>
+</ul>
+
+<div class="box gotcha">
+<span class="t">Notation warning — everyone uses different letters</span>
+<p style="margin-bottom:0">The same three numbers get called <code>(B, T, C)</code> in Karpathy's nanoGPT,
+<code>(batch, seq_len, hidden_size)</code> in HuggingFace, <code>(N, L, E)</code> in PyTorch's own
+<code>nn.MultiheadAttention</code> docs, and <code>(b, n, d)</code> in most papers. They are all the same
+object. This course uses <code>(B, T, C)</code> and tells you the aliases when they appear.</p>
+</div>
+
+<h2>1.2 · Axes are just nested lists</h2>
+
+<p>A tensor is stored as one flat run of numbers. The shape is an <i>interpretation</i> laid over that run.
+This is the fact that makes <code>reshape</code>, <code>view</code>, and <code>transpose</code> make sense,
+so let's be concrete.</p>
+
+<pre><code>import torch
+
+x = torch.arange(24)            # 0, 1, 2, ..., 23
+print(x.shape)                  # torch.Size([24])
+
+x = x.reshape(2, 4, 3)
+print(x)
+# tensor([[[ 0,  1,  2],
+#          [ 3,  4,  5],
+#          [ 6,  7,  8],
+#          [ 9, 10, 11]],
+#
+#         [[12, 13, 14],
+#          [15, 16, 17],
+#          [18, 19, 20],
+#          [21, 22, 23]]])
+</code></pre>
+
+<p>Notice how the numbers fill up. The <b>last axis varies fastest</b>: 0,1,2 then jump a row. This is called
+<b>row-major</b> or <b>C-contiguous</b> order, and it is why the last axis is "the contiguous one".</p>
+
+<p>The address of element <code>x[i, j, k]</code> in that flat run is:</p>
+
+<div class="mathblock">
+offset = i · (4·3) + j · (3) + k · (1)
+<span class="lbl">those multipliers — (12, 3, 1) — are the <b>strides</b></span>
+</div>
+
+<pre><code>x.stride()      # (12, 3, 1)  — how far to jump to advance each axis by 1
+x.is_contiguous()  # True
+</code></pre>
+
+<div class="box intuition">
+<span class="t">Why you should care about strides</span>
+<p style="margin-bottom:0">Because <b>transpose does not move any data</b>. It only rewrites the stride tuple.
+That is why <code>transpose</code> is free and <code>reshape</code> sometimes isn't — and why you occasionally
+have to type <code>.contiguous()</code> to make an error go away. We'll hit this in §1.5.</p>
+</div>
+
+<h2>1.3 · Indexing: what each operation does to the shape</h2>
+
+<p>The rule is simple and worth memorising: <b>an integer index removes an axis; a slice keeps it.</b></p>
+
+<pre><code>x = torch.randn(2, 4, 3)        # (B=2, T=4, C=3)
+
+x[0]            # (4, 3)     integer → axis 0 is GONE
+x[0:1]          # (1, 4, 3)  slice   → axis 0 survives, size 1
+x[:, 2]         # (2, 3)     the 3rd token of every sequence
+x[:, :, 0]      # (2, 4)     feature 0 of every token
+x[..., 0]       # (2, 4)     same thing, '...' = "all remaining leading axes"
+x[:, -1]        # (2, 3)     the LAST token of every sequence  ← you will type this a lot
+x[:, -1:]       # (2, 1, 3)  same values, axis kept
+</code></pre>
+
+<p><code>x[:, -1]</code> vs <code>x[:, -1:]</code> is a real bug source. During generation you want the last
+token's vector but usually need to keep the time axis so the next op still sees a rank-3 tensor. That is what
+<code>unsqueeze</code> and slice-with-colon are for.</p>
+
+<h3>Adding and removing size-1 axes</h3>
+
+<pre><code>v = torch.randn(5)              # (5,)
+v.unsqueeze(0)                  # (1, 5)   add axis at position 0
+v.unsqueeze(1)                  # (5, 1)   add axis at position 1
+v[None, :]                      # (1, 5)   same as unsqueeze(0), used constantly in papers' code
+v[:, None]                      # (5, 1)
+
+y = torch.randn(1, 5, 1)
+y.squeeze()                     # (5,)     removes ALL size-1 axes  ← dangerous
+y.squeeze(0)                    # (5, 1)   removes only axis 0      ← prefer this
+</code></pre>
+
+<div class="box gotcha">
+<span class="t">Never use bare <code>.squeeze()</code></span>
+<p style="margin-bottom:0">If your batch size happens to be 1 during a test run, <code>.squeeze()</code> will
+silently eat the batch axis and your code will "work" until you use <code>B &gt; 1</code>. Always pass the
+axis: <code>.squeeze(0)</code>.</p>
+</div>
+
+<h2>1.4 · Reductions: the axis you name is the axis that disappears</h2>
+
+<p>This is the second rule to burn in. For <code>sum</code>, <code>mean</code>, <code>max</code>,
+<code>softmax</code>-adjacent ops — <b>the <code>dim</code> you pass is the one being collapsed.</b></p>
+
+<pre><code>x = torch.randn(2, 4, 3)        # (B, T, C)
+
+x.sum(dim=0)                    # (4, 3)     collapsed batch
+x.sum(dim=1)                    # (2, 3)     collapsed time
+x.sum(dim=-1)                   # (2, 4)     collapsed features
+x.sum(dim=-1, keepdim=True)     # (2, 4, 1)  collapsed, but axis kept as size 1
+x.mean(dim=(0, 1))              # (3,)       collapsed batch AND time
+</code></pre>
+
+<p><code>keepdim=True</code> exists so the result still broadcasts against the original. This is exactly how
+LayerNorm is written:</p>
+
+<pre><code>mu  = x.mean(dim=-1, keepdim=True)   # (2, 4, 1)  ← keepdim so it lines up
+var = x.var(dim=-1, keepdim=True, unbiased=False)
+xhat = (x - mu) / torch.sqrt(var + 1e-5)   # (2,4,3) - (2,4,1) broadcasts fine
+</code></pre>
+
+<p>Without <code>keepdim</code>, <code>mu</code> would be <code>(2, 4)</code> and the subtraction would either
+error or — worse — broadcast wrongly. We'll cover the rules for that in Chapter 2.</p>
+
+<div class="box math-note">
+<span class="t">Softmax is a reduction that doesn't reduce</span>
+<p style="margin-bottom:0"><code>softmax(x, dim=-1)</code> keeps the shape identical, but it <i>normalises
+along</i> <code>dim</code>. Saying "softmax over dim=-1" means <b>the last axis is what sums to 1</b>. Getting
+this dim wrong is the single most common attention bug, and it doesn't crash — it just trains badly.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 1 — shape reading">
+
+<div class="qitem" data-answer="2">
+  <div class="qq"><code>x</code> has shape <code>(8, 128, 512)</code>. What is the shape of <code>x[:, -1, :]</code>?</div>
+  <div class="opts">
+    <div class="opt">(8, 1, 512)</div>
+    <div class="opt">(8, 128, 1)</div>
+    <div class="opt">(8, 512)</div>
+    <div class="opt">(128, 512)</div>
+  </div>
+  <div class="expl"><b>(8, 512).</b> The integer <code>-1</code> selects the last token and <i>removes</i> the
+  time axis. If you wanted to keep it, you'd write <code>x[:, -1:, :]</code> → <code>(8, 1, 512)</code>.
+  In a generation loop you almost always want the <code>-1:</code> version.</div>
+</div>
+
+<div class="qitem" data-answer="1">
+  <div class="qq"><code>logits</code> has shape <code>(B, T, V)</code> = <code>(4, 16, 50257)</code>.
+  You want, for each position, the probability distribution over the vocabulary. Which line is right?</div>
+  <div class="opts">
+    <div class="opt"><code>logits.softmax(dim=1)</code></div>
+    <div class="opt"><code>logits.softmax(dim=-1)</code></div>
+    <div class="opt"><code>logits.softmax(dim=0)</code></div>
+    <div class="opt"><code>logits.sum(dim=-1)</code></div>
+  </div>
+  <div class="expl"><b><code>dim=-1</code></b>, the vocab axis — that's the axis you want summing to 1.
+  <code>dim=1</code> would normalise across <i>time</i>, which is meaningless here but will happily run and
+  silently ruin your training. This is why people annotate shapes in comments.</div>
+</div>
+
+<div class="qitem" data-answer="3">
+  <div class="qq">What is <code>torch.randn(2,3,4).mean(dim=1).shape</code>?</div>
+  <div class="opts">
+    <div class="opt">(2, 3, 4)</div>
+    <div class="opt">(2, 1, 4)</div>
+    <div class="opt">(3, 4)</div>
+    <div class="opt">(2, 4)</div>
+  </div>
+  <div class="expl"><b>(2, 4).</b> Axis 1 (size 3) is collapsed and removed. With
+  <code>keepdim=True</code> you'd get <code>(2, 1, 4)</code>.</div>
+</div>
+
+</div>
+
+<h2>1.5 · reshape vs view vs transpose vs permute</h2>
+
+<p>These four are confused constantly, and the confusion causes real bugs. Here is the complete picture.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Op</th><th>Moves data?</th><th>Changes shape</th><th>Changes order of elements in memory</th></tr></thead>
+<tbody>
+<tr><td><code>view(...)</code></td><td>never</td><td>yes</td><td>no — errors if it can't be done as a re-label</td></tr>
+<tr><td><code>reshape(...)</code></td><td>only if forced</td><td>yes</td><td>no — silently copies when needed</td></tr>
+<tr><td><code>transpose(a,b)</code></td><td>never</td><td>swaps 2 axes</td><td>no — only strides change</td></tr>
+<tr><td><code>permute(...)</code></td><td>never</td><td>reorders all axes</td><td>no — only strides change</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>The critical distinction, in one example</h3>
+
+<pre><code>x = torch.arange(6).reshape(2, 3)
+# [[0, 1, 2],
+#  [3, 4, 5]]
+
+x.reshape(3, 2)     # [[0,1],[2,3],[4,5]]   ← re-cuts the SAME flat stream 0,1,2,3,4,5
+x.transpose(0, 1)   # [[0,3],[1,4],[2,5]]   ← genuinely rearranges which number sits where
+</code></pre>
+
+<p>Both produce a <code>(3, 2)</code> tensor. <b>They contain different numbers in different places.</b>
+<code>reshape</code> re-slices the flat stream; <code>transpose</code> re-maps the coordinates. If you ever
+use one where you meant the other, your model will not crash — it will just be quietly wrong, which is much
+worse.</p>
+
+<div class="box gotcha">
+<span class="t">The classic error message, decoded</span>
+<pre style="margin:.6em 0 .6em"><code class="nohl">RuntimeError: view size is not compatible with input tensor's size and stride
+(at least one dimension spans across two contiguous subspaces).
+Use .reshape(...) instead.</code></pre>
+<p style="margin-bottom:0">Translation: <i>"you transposed this tensor, so it is no longer laid out in
+row-major order, and I cannot give you the shape you asked for by just changing strides."</i>
+Fix: <code>x.transpose(1,2).contiguous().view(...)</code>, or just use <code>.reshape(...)</code>
+which does the copy for you. This exact error appears in every from-scratch attention implementation, and
+you'll meet it for real in Chapter 6.</p>
+</div>
+
+<h3>permute is transpose for more than two axes</h3>
+
+<pre><code>x = torch.randn(2, 4, 8, 16)                  # (B, T, H, D)
+x.permute(0, 2, 1, 3).shape                   # (2, 8, 4, 16) → (B, H, T, D)
+# read it as: "new axis 0 comes from old axis 0,
+#              new axis 1 comes from old axis 2,
+#              new axis 2 comes from old axis 1,
+#              new axis 3 comes from old axis 3"
+</code></pre>
+
+<p>That specific permutation — moving the head axis in front of the time axis — is <b>the</b> reshape of
+multi-head attention. You will do it in Chapter 6 and it will feel obvious by then.</p>
+
+<h2>1.6 · dtype and memory — the numbers that decide what fits</h2>
+
+<p>Shape tells you how many numbers. dtype tells you how big each one is. Multiply them and you get the
+constraint that governs everything in practice.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>dtype</th><th class="num">Bytes</th><th>Where it's used</th><th>Note</th></tr></thead>
+<tbody>
+<tr><td><code>float32</code></td><td class="num">4</td><td>optimizer states, small models, reference code</td><td>the safe default</td></tr>
+<tr><td><code>bfloat16</code></td><td class="num">2</td><td>almost all modern training</td><td>same exponent range as fp32, fewer mantissa bits — resists overflow</td></tr>
+<tr><td><code>float16</code></td><td class="num">2</td><td>older inference paths</td><td>narrow range, needs loss scaling</td></tr>
+<tr><td><code>float8</code> (e4m3/e5m2)</td><td class="num">1</td><td>H100+/Blackwell training &amp; inference</td><td>needs per-block scaling factors</td></tr>
+<tr><td><code>int8</code>/<code>int4</code></td><td class="num">1 / 0.5</td><td>post-training quantized weights</td><td>weights only, activations usually stay higher</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Back-of-envelope you should be able to do in your head:</p>
+
+<pre><code># A 7B-parameter model in bf16
+7e9 params * 2 bytes = 14 GB          # just to hold the weights
+
+# Training it with AdamW in mixed precision:
+#   bf16 weights           7e9 * 2  = 14 GB
+#   fp32 master weights    7e9 * 4  = 28 GB
+#   Adam m                 7e9 * 4  = 28 GB
+#   Adam v                 7e9 * 4  = 28 GB
+#   gradients              7e9 * 4  = 28 GB
+#                                   ≈ 126 GB, before a single activation
+</code></pre>
+
+<p>That number — roughly <b>16–20 bytes per parameter to train, 2 bytes per parameter to serve</b> — explains
+most of the engineering in Parts IV and V of this course.</p>
+
+<div class="quiz" data-title="Checkpoint 2 — memory arithmetic">
+<div class="qitem" data-answer="1">
+  <div class="qq">A tensor of shape <code>(32, 2048, 4096)</code> in bfloat16. How much memory?</div>
+  <div class="opts">
+    <div class="opt">≈ 268 MB</div>
+    <div class="opt">≈ 512 MB</div>
+    <div class="opt">≈ 1 GB</div>
+    <div class="opt">≈ 2 GB</div>
+  </div>
+  <div class="expl"><b>≈ 512 MB.</b> 32 × 2048 × 4096 = 268,435,456 elements × 2 bytes = 536,870,912 bytes = 512 MiB.
+  Worth noticing: that's <i>one activation tensor</i> for one layer. A 32-layer model keeping activations for
+  backprop is why gradient checkpointing exists.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Why is <code>bfloat16</code> generally preferred over <code>float16</code> for training?</div>
+  <div class="opts">
+    <div class="opt">It has the same exponent range as fp32, so activations rarely overflow to inf</div>
+    <div class="opt">It has more mantissa bits, so it's more precise</div>
+    <div class="opt">It uses less memory than fp16</div>
+    <div class="opt">It's faster on all GPUs</div>
+  </div>
+  <div class="expl"><b>Range, not precision.</b> bf16 has 8 exponent bits (same as fp32) but only 7 mantissa
+  bits; fp16 has 5 exponent and 10 mantissa. Training cares far more about not overflowing than about the
+  last few decimal digits — so bf16 trains stably without the loss-scaling machinery fp16 requires.
+  Both are 2 bytes.</div>
+</div>
+</div>
+
+<h2>1.7 · The habit that will save you the most time</h2>
+
+<p>Annotate every shape, in a comment, on every line. Not sometimes — every line. Every serious research
+codebase does this, and it is the single highest-return habit in this field.</p>
+
+<pre><code>def forward(self, x):
+    # x: (B, T, C)
+    B, T, C = x.shape
+    qkv = self.qkv_proj(x)                              # (B, T, 3C)
+    q, k, v = qkv.split(C, dim=2)                       # 3 x (B, T, C)
+    q = q.view(B, T, self.nh, C // self.nh)             # (B, T, nh, hd)
+    q = q.transpose(1, 2)                               # (B, nh, T, hd)
+    ...
+</code></pre>
+
+<p>And when you're debugging, don't guess — print:</p>
+
+<pre><code>def shp(name, t):
+    print(f"{name:>14}  {tuple(t.shape)}  {str(t.dtype).replace('torch.',''):>8}  "
+          f"contig={t.is_contiguous()}")
+
+shp("x", x)                # x  (8, 128, 512)  float32  contig=True
+shp("q", q)                # q  (8, 8, 128, 64)  float32  contig=False
+</code></pre>
+
+<div class="box intuition">
+<span class="t">A trick worth knowing: name your dimensions in a docstring</span>
+<p style="margin-bottom:0">Some teams go further and use <a href="https://github.com/arogozhnikov/einops">einops</a>,
+where the shape lives in the operation itself: <code>rearrange(x, 'b t (h d) -&gt; b h t d', h=8)</code>.
+That single line replaces a <code>view</code> + <code>transpose</code> pair and is self-documenting.
+We cover einops properly in Chapter 2.</p>
+</div>
+
+<h2>1.8 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">1.1</span><span class="ti">Shape golf</span><span class="lvl">warm-up</span></div>
+<div class="eb">
+<p>For each line, write down the output shape <i>before</i> running it. Then check in Python.
+<code>x = torch.randn(4, 6, 8)</code>.</p>
+<pre><code>a = x.transpose(0, 2)
+b = x.reshape(4, 48)
+c = x.mean(dim=1)
+d = x[:, ::2, :]
+e = x.unsqueeze(2)
+f = x.permute(2, 0, 1)
+g = x[..., :4]
+h = x.sum(dim=(0, 2), keepdim=True)
+i = x.view(4, 6, 2, 4)
+j = x.transpose(1, 2).reshape(4, -1)
+</code></pre>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">a (8, 6, 4)      f (8, 4, 6)
+b (4, 48)        g (4, 6, 4)
+c (4, 8)         h (1, 6, 1)
+d (4, 3, 8)      i (4, 6, 2, 4)
+e (4, 6, 1, 8)   j (4, 48)</code></pre>
+<p style="margin-bottom:0"><b>The one to think hard about is <code>j</code>.</b> It has the same shape as
+<code>b</code> but contains the numbers in a completely different order, because the transpose ran first.
+This is exactly the bug that silently breaks hand-written multi-head attention.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">1.2</span><span class="ti">Prove transpose ≠ reshape to yourself</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Run this and explain, in one sentence, why the two results differ:</p>
+<pre><code>x = torch.arange(12).reshape(3, 4)
+print(x.reshape(4, 3))
+print(x.transpose(0, 1).reshape(4, 3))
+</code></pre>
+<details class="reveal"><summary>Answer</summary><div>
+<p style="margin-bottom:0"><code>reshape</code> reads the flat stream <code>0..11</code> in its existing
+row-major order and re-cuts it into rows of 3. <code>transpose</code> first changes what "row-major order"
+<i>means</i> for this tensor (strides become <code>(1, 4)</code>), so when <code>reshape</code> then forces a
+contiguous copy it walks the elements in the transposed order — producing
+<code>[[0,4,8],[1,5,9],[2,6,10],[3,7,11]]</code>. Same shape, different contents.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">1.3</span><span class="ti">Write the shape inspector</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Write a function <code>describe(t)</code> that prints shape, rank, numel, dtype, bytes, strides, and
+contiguity. Then run it on <code>torch.randn(2,3,4).permute(2,0,1)</code> and explain the stride tuple you see.</p>
+<details class="reveal"><summary>Solution</summary><div>
+<pre><code>def describe(t):
+    print(f"shape      {tuple(t.shape)}")
+    print(f"rank       {t.ndim}")
+    print(f"numel      {t.numel()}")
+    print(f"dtype      {t.dtype}")
+    print(f"bytes      {t.numel() * t.element_size():,}")
+    print(f"stride     {t.stride()}")
+    print(f"contiguous {t.is_contiguous()}")
+
+describe(torch.randn(2, 3, 4).permute(2, 0, 1))
+# shape      (4, 2, 3)
+# stride     (1, 12, 4)
+# contiguous False
+</code></pre>
+<p style="margin-bottom:0">The strides are <i>not</i> descending, which is precisely the definition of
+non-contiguous. Advancing along the new axis 0 moves 1 step in memory; advancing along new axis 1 moves 12.
+No <code>view</code> can express that as a simple re-label, which is why <code>.view()</code> would raise.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">1.4</span><span class="ti">Estimate before you measure</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>Llama-3-8B has <code>n_layer=32</code>, <code>d_model=4096</code>, <code>n_head=32</code>,
+<code>n_kv_head=8</code>, <code>d_ff=14336</code>, <code>V=128256</code>.</p>
+<ol>
+<li>What shape is the token embedding matrix? How many parameters is it?</li>
+<li>What shape does the residual stream have for a batch of 4 sequences of 2048 tokens?</li>
+<li>In bf16, how much memory is that one activation tensor?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<ol>
+<li><code>(128256, 4096)</code> = 525,336,576 ≈ <b>0.53 B parameters</b> — about 6.6% of the whole model
+sits in the embedding table alone. (Llama-3 does <i>not</i> tie input and output embeddings at 8B, so the
+unembedding is another 0.53 B.)</li>
+<li><code>(4, 2048, 4096)</code></li>
+<li>4 × 2048 × 4096 × 2 bytes = 67,108,864 bytes = <b>64 MiB</b> per layer, per saved activation. Multiply
+by 32 layers and the several tensors saved per layer for backprop, and you see why activation memory,
+not weights, is often what OOMs you.</li>
+</ol>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://docs.pytorch.org/docs/stable/tensor_view.html">PyTorch — Tensor Views</a> — the authoritative list of which ops return views vs copies.</li>
+<li><a href="https://numpy.org/doc/stable/reference/arrays.ndarray.html#internal-memory-layout-of-an-ndarray">NumPy — internal memory layout</a> — the clearest written explanation of strides.</li>
+<li><a href="https://jalammar.github.io/visual-numpy/">Jay Alammar — A Visual Intro to NumPy</a> — if any of §1.1–1.4 still felt abstract, read this next.</li>
+<li>Companion notebook: <code>notebooks/01_tensors_and_shapes.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("01");</script>
+</body>
+</html>

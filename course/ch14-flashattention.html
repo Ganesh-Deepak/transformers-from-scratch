@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 14 — FlashAttention and the Online Softmax</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>14 · FlashAttention and the Online Softmax</h1>
+<p class="lead">
+FlashAttention computes <em>exactly</em> the same function as the attention you wrote in Chapter 5 — no
+approximation, no sparsity, identical outputs up to floating-point rounding. It is 2–4× faster and uses
+10–20× less memory. That combination sounds impossible until you realise the bottleneck was never the
+arithmetic.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the T x T score matrix<br><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; why memory traffic dominates</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch15-serving.html">Ch&nbsp;15</a> &mdash; serving stacks assume this exists<br><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; it removed the memory wall, not the quadratic</div>
+<div class="mn orient"><span class="k">Why this chapter</span>Same maths, same output, 2-4x faster — because the bottleneck was never arithmetic.</div>
+
+<h2>14.1 · The insight: attention is IO-bound, not compute-bound</h2>
+
+<p>A GPU has a memory hierarchy, and the numbers are wildly asymmetric:</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Level</th><th class="num">Size (A100)</th><th class="num">Bandwidth</th><th>Analogy</th></tr></thead>
+<tbody>
+<tr><td><b>SRAM</b> (on-chip, per SM)</td><td class="num">~20 MB total</td><td class="num">~19 TB/s</td><td>your desk</td></tr>
+<tr><td><b>HBM</b> (the "GPU memory" you buy)</td><td class="num">40–80 GB</td><td class="num">1.5–2 TB/s</td><td>the filing cabinet</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>SRAM is roughly <b>10× faster and 3000× smaller</b>. Standard attention ignores this completely:</p>
+
+<pre><code>S = Q @ K.T          # write an (N, N) matrix to HBM        ← 4 GB at N=32k, fp32
+P = softmax(S)       # read (N,N) from HBM, write (N,N) back ← 8 GB of traffic
+O = P @ V            # read (N,N) from HBM again             ← 4 GB
+</code></pre>
+
+<div class="box intuition">
+<span class="t">The realisation</span>
+<p style="margin-bottom:0">We materialise an <code>N×N</code> matrix in slow memory, then read it back
+twice, only to throw it away. The <b>output</b> is only <code>N×d</code>. Nearly all the time is spent moving
+a temporary result that nobody wants. Dao et al.'s question was: <b>can we never write it down at all?</b></p>
+</div>
+
+<h2>14.2 · The obstacle: softmax needs the whole row</h2>
+
+<p>The obvious plan is to process K and V in tiles that fit in SRAM. But softmax has a global denominator:</p>
+
+<div class="mathblock">
+softmax(x)<sub>i</sub> = <span class="frac"><span class="n">e<sup>x<sub>i</sub> − max(x)</sup></span><span class="d"><span class="op">Σ</span><sub>j</sub> e<sup>x<sub>j</sub> − max(x)</sup></span></span>
+<span class="lbl">both max(x) and the sum require seeing every element of the row</span>
+</div>
+
+<p>(The <code>− max(x)</code> is not cosmetic. Without it, <code>exp(x)</code> overflows to <code>inf</code>
+for <code>x &gt; 88</code> in fp32. Every real softmax subtracts the max.)</p>
+
+<p>So how do you compute a softmax over data you're seeing in pieces?</p>
+
+<h2>14.3 · The online softmax</h2>
+
+<p>You maintain a <b>running max</b> and a <b>running sum</b>, and when the max changes you retroactively
+<b>rescale</b> everything you've accumulated so far. Milakov &amp; Gimelshein (2018) worked this out; Dao
+et al. applied it to attention.</p>
+
+<p>Suppose you've processed a prefix with max <span class="math">m</span> and sum
+<span class="math">ℓ</span>, and a new value <span class="math">x</span> arrives:</p>
+
+<div class="mathblock">
+m<sub>new</sub> = max(m, x) &nbsp;&nbsp;&nbsp;&nbsp;
+ℓ<sub>new</sub> = ℓ · e<sup>m − m<sub>new</sub></sup> + e<sup>x − m<sub>new</sub></sup>
+<span class="lbl">the correction factor e<sup>m−m<sub>new</sub></sup> re-bases the old sum to the new max</span>
+</div>
+
+<p>Step through it. The bottom line proves the two agree exactly:</p>
+
+<div data-viz="online" data-x="1.0,3.0,2.0,5.0,4.0,0.5,6.0,2.5"></div>
+
+<p>The same correction applies to the accumulated <b>output</b>, which is what makes it useful for attention:</p>
+
+<div class="mathblock">
+O<sub>new</sub> = O<sub>old</sub> · e<sup>m<sub>old</sub> − m<sub>new</sub></sup> + e<sup>s − m<sub>new</sub></sup> · v
+<span class="lbl">rescale the running output, then add the new tile's contribution</span>
+</div>
+
+<div class="box math-note">
+<span class="t">Why this is exact, not approximate</span>
+<p style="margin-bottom:0">Every rescale multiplies both the accumulated numerator and the accumulated
+denominator by the same factor, so their ratio — the actual softmax output — is unchanged. It's algebra,
+not an approximation. That's why FlashAttention can be used for <b>training</b>, where a lossy attention
+approximation would compound into a materially different model.</p>
+</div>
+
+<h2>14.4 · The algorithm</h2>
+
+<pre><code># FlashAttention, forward pass (simplified, one head)
+#   Q: (N, d)   K, V: (N, d)   →   O: (N, d)
+#   Tile sizes Br, Bc chosen so that a tile of Q, K, V and the running
+#   state all fit in SRAM simultaneously.
+
+for i in range(0, N, Br):                       # OUTER loop over query blocks
+    Qi = load(Q[i:i+Br])                        # → SRAM,  (Br, d)
+    Oi = zeros(Br, d)                           # running output    (in SRAM)
+    mi = full(Br, -inf)                         # running max       (in SRAM)
+    li = zeros(Br)                              # running sum       (in SRAM)
+
+    for j in range(0, N, Bc):                   # INNER loop over key blocks
+        Kj, Vj = load(K[j:j+Bc]), load(V[j:j+Bc])       # → SRAM
+
+        Sij = Qi @ Kj.T / sqrt(d)               # (Br, Bc)  ← ONLY THIS TILE EXISTS
+        if causal and j > i: continue           # skip fully-masked blocks entirely
+
+        m_new = maximum(mi, Sij.max(dim=-1))    # (Br,)
+        Pij   = exp(Sij - m_new[:, None])       # (Br, Bc)
+        corr  = exp(mi - m_new)                 # (Br,)  the rescale factor
+
+        li = corr * li + Pij.sum(dim=-1)        # rescale + accumulate the denominator
+        Oi = corr[:, None] * Oi + Pij @ Vj      # rescale + accumulate the numerator
+        mi = m_new
+
+    write(O[i:i+Br], Oi / li[:, None])          # normalise ONCE, then → HBM
+</code></pre>
+
+<p>Notice what never happens: <b>the <code>(N, N)</code> matrix is never allocated.</b> Only a
+<code>(Br, Bc)</code> tile exists at any moment, and it lives in SRAM.</p>
+
+<h3>The backward pass: recomputation</h3>
+
+<p>Backprop through attention needs the attention weights <code>P</code>. We didn't store them. So
+FlashAttention <b>recomputes them</b> from Q, K, V during the backward pass — which sounds wasteful but
+isn't, because recomputing a tile in SRAM is far cheaper than having written and re-read
+<code>N²</code> values from HBM.</p>
+
+<p>This is the same trade as gradient checkpointing, applied at the kernel level: <b>spend FLOPs to save
+memory traffic</b>, in a regime where FLOPs are abundant and traffic is the constraint.</p>
+
+<h3>The complexity result</h3>
+
+<div class="tw">
+<table>
+<thead><tr><th></th><th>Standard attention</th><th>FlashAttention</th></tr></thead>
+<tbody>
+<tr><td>FLOPs</td><td>O(N²d)</td><td>O(N²d) — <i>the same, or slightly more</i></td></tr>
+<tr><td><b>HBM accesses</b></td><td><b>O(N² + Nd)</b></td><td><b>O(N²d²/M)</b>, M = SRAM size</td></tr>
+<tr><td>Extra memory</td><td>O(N²)</td><td><b>O(N)</b></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>With <code>d = 64</code> and <code>M ≈ 100 KB</code> of usable SRAM per block, <code>d²/M</code> is
+around 1/25 — so FlashAttention does roughly <b>25× fewer HBM accesses</b> at the same FLOP count. And
+<code>O(N)</code> memory instead of <code>O(N²)</code> is what made 128k-token contexts possible at all.</p>
+
+<div class="quiz" data-title="Checkpoint 1 — how it works">
+<div class="qitem" data-answer="2">
+  <div class="qq">FlashAttention does the <i>same or slightly more</i> arithmetic than standard attention.
+  Why is it faster?</div>
+  <div class="opts">
+    <div class="opt">It uses lower precision</div>
+    <div class="opt">It skips computing some attention weights</div>
+    <div class="opt">Attention is bottlenecked by HBM traffic, and FlashAttention drastically reduces reads/writes by keeping tiles in SRAM</div>
+    <div class="opt">It parallelises across more GPUs</div>
+  </div>
+  <div class="expl"><b>Memory traffic, not arithmetic.</b> The GPU's arithmetic units were idle waiting on
+  HBM. Removing the round-trip of the N×N matrix removes the stall. This is the central lesson: on modern
+  accelerators, <b>the data movement is the algorithm</b>. FlashAttention computes exactly the same
+  function — no approximation, no precision change.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">What does the correction factor <code>exp(m_old − m_new)</code> do?</div>
+  <div class="opts">
+    <div class="opt">Re-bases previously accumulated values to the new maximum, keeping the running sum and output exact</div>
+    <div class="opt">Approximates the softmax to within a small error</div>
+    <div class="opt">Prevents underflow in the value matrix</div>
+    <div class="opt">Normalises the attention weights to sum to 1</div>
+  </div>
+  <div class="expl"><b>Exact re-basing.</b> Everything accumulated so far was scaled by
+  <code>e^{−m_old}</code>; the new max requires <code>e^{−m_new}</code>. Multiplying by
+  <code>e^{m_old−m_new}</code> converts between them exactly. Since numerator and denominator get the same
+  factor, the final ratio is unaffected — hence <i>exact</i>, not approximate.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">Why does the backward pass recompute the attention weights instead of storing them?</div>
+  <div class="opts">
+    <div class="opt">Storing them would be numerically unstable</div>
+    <div class="opt">Storing an (N,N) matrix would reintroduce the O(N²) memory and HBM traffic the whole design exists to avoid</div>
+    <div class="opt">The weights aren't needed for the gradient</div>
+    <div class="opt">Recomputation is faster in FLOPs</div>
+  </div>
+  <div class="expl"><b>It would undo the entire optimisation.</b> Recomputation costs extra FLOPs but keeps
+  memory at O(N). In an IO-bound regime that's a clear win — the same reasoning as gradient checkpointing,
+  applied inside a single kernel.</div>
+</div>
+</div>
+
+<h2>14.5 · The version history</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Version</th><th>Year</th><th>Key change</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td><b>FlashAttention</b></td><td>2022</td><td>tiling + online softmax + recomputation</td><td>2–4× faster, 10–20× less memory</td></tr>
+<tr><td><b>FlashAttention-2</b></td><td>2023</td><td>fewer non-matmul FLOPs; parallelise over sequence length, not just batch×head; better warp partitioning</td><td>~2× over FA1; ~70% of A100 peak</td></tr>
+<tr><td><b>FlashAttention-3</b></td><td>2024</td><td>Hopper-specific: async TMA copies, WGMMA, warp specialisation, overlapping matmul with softmax, FP8 support</td><td>1.5–2× over FA2 on H100; ~740 TFLOP/s bf16, ~1.2 PFLOP/s fp8</td></tr>
+<tr><td><b>FlashAttention-4</b></td><td><b>2026</b></td><td>Blackwell co-design; written in CuTe-DSL; software-emulated exponentials via polynomial approximation on FMA units instead of the SFU</td><td>fastest Blackwell attention kernel; backs PyTorch FlexAttention on Hopper &amp; Blackwell</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box sota">
+<span class="t">FlashAttention-4, March 2026</span>
+<p>Released by Tri Dao and collaborators (Princeton, Together AI, Meta, NVIDIA, Colfax). Two details worth
+knowing:</p>
+<ul style="margin-bottom:0">
+<li><b>The exponential became the bottleneck.</b> On Blackwell, matmul throughput grew so much that the
+special function unit computing <code>exp</code> couldn't keep up. FA4 approximates the exponential with a
+polynomial evaluated on the general-purpose FMA units, moving that work onto hardware Blackwell has in
+abundance. That's a striking example of how kernel design chases whatever the hardware made scarce.</li>
+<li><b>FlexAttention integration.</b> You can now write attention variants — ALiBi, sliding window, document
+masking, soft-capping — as plain Python <code>score_mod</code> functions and have them JIT-compiled into FA4
+kernels, reportedly 1.2–3.2× faster than the previous Triton backend. Custom attention no longer requires
+writing CUDA.</li>
+</ul>
+<p class="tiny" style="margin:.8em 0 0">FA4 requires Hopper or Blackwell. On older GPUs you're on FA2.</p>
+</div>
+
+<h2>14.6 · Using it</h2>
+
+<pre><code># Almost always the right answer — PyTorch picks the best available backend.
+import torch.nn.functional as F
+out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+#   q, k, v: (B, n_head, T, d_head)
+
+# Inspect / force a backend:
+from torch.nn.attention import sdpa_kernel, SDPBackend
+with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+    out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+</code></pre>
+
+<div class="box gotcha">
+<span class="t">Why you might silently fall back to the slow path</span>
+<ul style="margin-bottom:0">
+<li><b>dtype is fp32.</b> The Flash kernels need fp16/bf16. This is the most common cause.</li>
+<li><b>You passed an explicit <code>attn_mask</code>.</b> Use <code>is_causal=True</code> instead of
+building a mask tensor — a materialised mask usually forces the math backend.</li>
+<li><b><code>d_head</code> is unsupported</b> (must typically be ≤ 256 and a multiple of 8).</li>
+<li><b>Tensors aren't contiguous</b> in the expected layout.</li>
+</ul>
+<p style="margin:.7em 0 0">Diagnose it: if memory scales as O(T²) with sequence length, you are not on
+FlashAttention. Measure <code>torch.cuda.max_memory_allocated()</code> at T=1k, 2k, 4k — Flash grows
+linearly, the fallback quadratically.</p>
+</div>
+
+<h2>14.7 · What it does <i>not</i> solve</h2>
+
+<ul>
+<li><b>FLOPs are still O(N²).</b> FlashAttention removes the memory wall, not the quadratic. At 1M tokens
+you still need genuine sparsity (Chapter 18).</li>
+<li><b>The KV cache is untouched.</b> Flash speeds up computing attention; it doesn't shrink what you store.
+That's GQA/MLA's job (Chapter 13). The two are complementary and always used together.</li>
+<li><b>Decode gets much less benefit.</b> With a single query row there's no large intermediate to avoid.
+Decode-optimised variants (FlashDecoding, and DeepSeek's FlashMLA) split the <i>key</i> dimension across SMs
+instead — a different parallelisation for a different regime.</li>
+</ul>
+
+<h2>14.8 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">14.1</span><span class="ti">Implement the online softmax</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Write <code>online_softmax_sum(xs, chunk_size)</code> that processes <code>xs</code> in chunks,
+maintaining running max and sum. Assert it matches <code>torch.logsumexp</code> to <code>1e-6</code> for
+1000 random vectors, including adversarial ones with values spanning ±100.</p>
+<details class="reveal"><summary>Solution</summary><div>
+<pre><code>def online_softmax_sum(xs, chunk=4):
+    m, l = float('-inf'), 0.0
+    for i in range(0, len(xs), chunk):
+        blk = xs[i:i+chunk]
+        m_new = max(m, blk.max().item())
+        l = l * math.exp(m - m_new) + torch.exp(blk - m_new).sum().item()
+        m = m_new
+    return m + math.log(l)          # = logsumexp(xs)
+
+x = torch.randn(1000) * 50
+assert abs(online_softmax_sum(x) - torch.logsumexp(x, 0).item()) < 1e-6
+</code></pre>
+<p style="margin-bottom:0">Try it <i>without</i> the max tracking (just accumulate <code>exp(x).sum()</code>)
+and watch it return <code>inf</code>. That failure is why the running max isn't optional.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">14.2</span><span class="ti">Write FlashAttention in PyTorch</span><span class="lvl">hard</span></div>
+<div class="eb">
+<p>Implement the tiled algorithm from §14.4 in pure PyTorch (no CUDA). It will be <b>slower</b> than the
+naive version — Python loops, no SRAM control — but it must be <b>numerically identical</b>.</p>
+<pre><code>def flash_attention(Q, K, V, Br=32, Bc=32, causal=True):
+    N, d = Q.shape
+    O = torch.zeros(N, d)
+    for i in range(0, N, Br):
+        Qi = Q[i:i+Br]
+        Oi = torch.zeros(Qi.shape[0], d)
+        mi = torch.full((Qi.shape[0],), float('-inf'))
+        li = torch.zeros(Qi.shape[0])
+        for j in range(0, N, Bc):
+            if causal and j > i + Br - 1:
+                break                                  # whole block is masked
+            Kj, Vj = K[j:j+Bc], V[j:j+Bc]
+            Sij = Qi @ Kj.T / d**0.5
+            if causal:
+                qi = torch.arange(i, i+Qi.shape[0])[:, None]
+                kj = torch.arange(j, j+Kj.shape[0])[None, :]
+                Sij = Sij.masked_fill(kj > qi, float('-inf'))
+            m_new = torch.maximum(mi, Sij.max(dim=-1).values)
+            corr  = torch.exp(mi - m_new)
+            Pij   = torch.exp(Sij - m_new[:, None])
+            li = corr * li + Pij.sum(dim=-1)
+            Oi = corr[:, None] * Oi + Pij @ Vj
+            mi = m_new
+        O[i:i+Br] = Oi / li[:, None]
+    return O
+
+assert torch.allclose(flash_attention(Q,K,V), naive_attention(Q,K,V), atol=1e-5)
+</code></pre>
+<p class="tiny" style="margin-bottom:0">Watch for the fully-masked-block case: if every entry of a tile is
+<code>-inf</code>, <code>m_new</code> is <code>-inf</code> and you get <code>nan</code>. The <code>break</code>
+above avoids it. Real kernels skip those blocks too — which is why causal attention is roughly 2× faster
+than bidirectional, not the same speed.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">14.3</span><span class="ti">Measure the memory scaling</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>For <code>T ∈ {512, 1024, 2048, 4096, 8192}</code>, measure peak memory and wall time for
+(a) your naive attention and (b) <code>F.scaled_dot_product_attention</code>. Plot both on log-log axes and
+fit the slopes.</p>
+<details class="reveal"><summary>Expected</summary><div>
+<p style="margin-bottom:0">Naive: memory slope ≈ 2 (quadratic). Flash: slope ≈ 1 (linear). The naive version
+will OOM somewhere around T=8k–16k on a consumer GPU while Flash keeps going. <b>The slope is the proof</b> —
+if your "Flash" line has slope 2, you fell back to the math backend; check the dtype (§14.6).</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/2205.14135">Dao et al. 2022 — FlashAttention</a></li>
+<li><a href="https://arxiv.org/abs/2307.08691">Dao 2023 — FlashAttention-2</a></li>
+<li><a href="https://arxiv.org/abs/2407.08608">Shah et al. 2024 — FlashAttention-3</a></li>
+<li><a href="https://www.together.ai/blog/flashattention-4">Together AI — FlashAttention-4</a> (2026)</li>
+<li><a href="https://arxiv.org/abs/1805.02867">Milakov &amp; Gimelshein 2018 — Online normalizer calculation for softmax</a> — the algorithmic core.</li>
+<li><a href="https://pytorch.org/blog/flexattention/">PyTorch — FlexAttention</a></li>
+<li>Companion notebook: <code>notebooks/14_flashattention.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("14");</script>
+</body>
+</html>

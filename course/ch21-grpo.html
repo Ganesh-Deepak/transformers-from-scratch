@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 21 — DPO Variants, GRPO, and RLVR</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>21 · DPO Variants, GRPO, and RLVR</h1>
+<p class="lead">
+DPO opened a design space, and the field explored it thoroughly. Then reasoning models arrived and changed
+the question entirely: when you can <em>verify</em> whether an answer is correct, you don't need preferences
+at all. This chapter covers both branches.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch20-dpo.html">Ch&nbsp;20</a> &mdash; DPO<br><a href="ch19-sft-rlhf.html">Ch&nbsp;19</a> &mdash; PPO</div>
+<div class="mn orient"><span class="k">Leads to</span><a href="ch22-capstone.html">Ch&nbsp;22</a> &mdash; align your own model</div>
+<div class="mn orient"><span class="k">Why this chapter</span>When you can verify an answer, you do not need preferences at all.</div>
+
+<h2>21.1 · The DPO family</h2>
+
+<p>Every variant below changes one specific thing about the DPO loss. Knowing <i>which</i> thing tells you
+when to reach for it.</p>
+
+<h3>IPO — Identity Preference Optimization</h3>
+<div class="mathblock" style="font-size:1em">
+ℒ<sub>IPO</sub> = E <big>[</big> <big>(</big> h<sub>θ</sub>(x,y<sub>w</sub>,y<sub>l</sub>) − <span class="frac"><span class="n">1</span><span class="d">2β</span></span> <big>)</big><sup>2</sup> <big>]</big>
+<span class="lbl">h = the log-ratio difference; a squared loss toward a fixed margin instead of a sigmoid</span>
+</div>
+<p><b>Problem it fixes:</b> DPO's sigmoid is only minimised as the margin → ∞. When preferences are
+deterministic (annotators always pick A over B), nothing stops the model pushing the margin arbitrarily far
+and over-fitting. IPO targets a <i>specific</i> finite margin, so the KL constraint stays effective.</p>
+
+<h3>KTO — Kahneman-Tversky Optimization</h3>
+<p><b>Problem it fixes:</b> DPO needs <b>paired</b> data — two responses to the same prompt. In production
+you usually have unpaired thumbs-up/thumbs-down. KTO borrows prospect theory's value function to learn from
+individual labelled examples, weighting losses relative to a reference point and applying
+<i>loss aversion</i> (bad examples count more than good ones). Enormously more practical when your data is
+whatever users clicked.</p>
+
+<h3>ORPO — Odds Ratio Preference Optimization</h3>
+<div class="mathblock" style="font-size:1em">
+ℒ<sub>ORPO</sub> = ℒ<sub>SFT</sub> + λ · ℒ<sub>OR</sub>, &nbsp;&nbsp;
+ℒ<sub>OR</sub> = − log σ<big>(</big> log <span class="frac"><span class="n">odds(y<sub>w</sub>|x)</span><span class="d">odds(y<sub>l</sub>|x)</span></span> <big>)</big>
+</div>
+<p><b>Problem it fixes:</b> the two-stage pipeline. ORPO needs <b>no reference model</b> and <b>no separate
+SFT stage</b> — it does both at once by adding an odds-ratio penalty to the standard SFT loss. Half the
+memory, one training run. Popular for resource-constrained fine-tuning.</p>
+
+<h3>SimPO — Simple Preference Optimization</h3>
+<div class="mathblock" style="font-size:1em">
+ℒ<sub>SimPO</sub> = − log σ<big>(</big> <span class="frac"><span class="n">β</span><span class="d">|y<sub>w</sub>|</span></span> log π<sub>θ</sub>(y<sub>w</sub>|x) − <span class="frac"><span class="n">β</span><span class="d">|y<sub>l</sub>|</span></span> log π<sub>θ</sub>(y<sub>l</sub>|x) − γ <big>)</big>
+</div>
+<p><b>Problem it fixes:</b> two at once. It uses the <b>length-normalised average</b> log-probability rather
+than the sum — which removes DPO's implicit length bias and matches what generation actually optimises —
+and it drops the reference model entirely, adding an explicit margin <span class="math">γ</span> instead.
+Simpler and often stronger than DPO on benchmarks.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Method</th><th>Ref model?</th><th>Paired data?</th><th>Reach for it when…</th></tr></thead>
+<tbody>
+<tr><td><b>DPO</b></td><td>yes</td><td>yes</td><td>the default; well understood, well supported</td></tr>
+<tr><td><b>IPO</b></td><td>yes</td><td>yes</td><td>preferences are near-deterministic and DPO over-fits</td></tr>
+<tr><td><b>KTO</b></td><td>yes</td><td><b>no</b></td><td>you have thumbs-up/down, not pairs</td></tr>
+<tr><td><b>ORPO</b></td><td><b>no</b></td><td>yes</td><td>memory-constrained; want one stage instead of two</td></tr>
+<tr><td><b>SimPO</b></td><td><b>no</b></td><td>yes</td><td>length bias is hurting you; want a simpler, strong baseline</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>21.2 · RLVR — reinforcement learning with verifiable rewards</h2>
+
+<div class="box intuition">
+<span class="t">The shift</span>
+<p style="margin-bottom:0">For maths, code, and logic you don't need a reward model at all. <b>Run the unit
+tests. Check the answer.</b> The reward is a program, not a neural network — so it cannot be hacked in the
+usual way, needs no preference data, and is exactly correct by construction.</p>
+</div>
+
+<pre><code>def reward(prompt, completion):
+    # Format reward: did it use the required structure?
+    r = 0.1 if re.search(r"&lt;think&gt;.*?&lt;/think&gt;.*?\\boxed\{.*?\}", completion, re.S) else 0.0
+    # Correctness reward: is the final answer right?
+    if extract_boxed(completion) == ground_truth[prompt]:
+        r += 1.0
+    return r
+</code></pre>
+
+<p>This removes the whole reward-model failure surface from Chapter 19 — no length bias, no format bias, no
+annotator noise ceiling. The catch is scope: it only works where correctness is checkable. Maths, code,
+formal logic, structured extraction — yes. "Write a moving poem" — no.</p>
+
+<h2>21.3 · GRPO — Group Relative Policy Optimization</h2>
+
+<p>DeepSeek's algorithm, introduced in DeepSeekMath and used to train R1. It removes PPO's <b>value model</b>
+— the fourth model from Chapter 19 — by a simple observation.</p>
+
+<div class="box intuition">
+<span class="t">The idea</span>
+<p style="margin-bottom:0">PPO needs a value model to estimate "how good is this state?" so it can compute
+an advantage. But if you sample <b>G different completions for the same prompt</b>, the <b>group mean reward
+is already a baseline</b>. Advantage = how much better this completion is than its siblings. No critic
+needed.</p>
+</div>
+
+<div class="mathblock">
+Â<sub>i</sub> = <span class="frac"><span class="n">r<sub>i</sub> − mean(r<sub>1</sub>…r<sub>G</sub>)</span><span class="d">std(r<sub>1</sub>…r<sub>G</sub>)</span></span>
+<span class="lbl">z-score the rewards within the group. That's the advantage.</span>
+</div>
+
+<pre><code>def grpo_step(policy, ref, prompts, reward_fn, G=8, beta=0.04, eps=0.2):
+    for prompt in prompts:
+        # 1. Sample a GROUP of completions from the current policy
+        comps = [policy.generate(prompt, temperature=1.0) for _ in range(G)]
+        rewards = torch.tensor([reward_fn(prompt, c) for c in comps])
+
+        # 2. Group-relative advantage — no value model anywhere
+        adv = (rewards - rewards.mean()) / (rewards.std() + 1e-4)      # (G,)
+
+        # 3. PPO-style clipped objective, with the group advantage
+        logp     = policy.logprobs(prompt, comps)                      # (G, T)
+        logp_old = logp.detach()
+        ratio    = torch.exp(logp - logp_old)
+        obj = torch.min(ratio * adv[:, None],
+                        ratio.clamp(1-eps, 1+eps) * adv[:, None])
+
+        # 4. KL to the reference, added directly to the loss
+        logp_ref = ref.logprobs(prompt, comps)
+        kl = torch.exp(logp_ref - logp) - (logp_ref - logp) - 1        # unbiased, >= 0
+
+        loss = -(obj - beta * kl).mean()
+        loss.backward()
+</code></pre>
+
+<div class="tw">
+<table>
+<thead><tr><th></th><th>PPO</th><th>GRPO</th></tr></thead>
+<tbody>
+<tr><td>Models in memory</td><td>4</td><td><b>3</b> (policy, reference, reward fn — and the reward fn may be a program)</td></tr>
+<tr><td>Advantage from</td><td>learned value model</td><td>group mean of sampled rewards</td></tr>
+<tr><td>Rewards needed</td><td>per token (via the critic)</td><td><b>outcome only</b> — one number per completion</td></tr>
+<tr><td>Extra cost</td><td>training the critic</td><td>G× generation per prompt</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The outcome-only property is what makes it fit RLVR so naturally: a unit test gives you one bit at the
+end, not a per-token score.</p>
+
+<div class="box sota">
+<span class="t">DeepSeek-R1-Zero: the striking result</span>
+<p style="margin-bottom:0">DeepSeek trained a base model with GRPO and verifiable rewards <b>with no SFT
+stage at all</b>. Reasoning behaviours — self-verification, backtracking, extending its own chain of thought
+when stuck — <b>emerged from the reward signal alone</b>, without any demonstrations of reasoning. The
+model's average response length grew on its own over training as it discovered that thinking longer paid
+off. R1-Zero had readability problems (language mixing), so the shipped R1 added a small SFT cold-start; but
+the zero result is the scientifically important one.</p>
+</div>
+
+<h3>DAPO and the refinements</h3>
+
+<p>GRPO has known failure modes, and <b>DAPO</b> (2025) addresses four:</p>
+<ul>
+<li><b>Clip-Higher</b> — decouple the upper and lower clip bounds so low-probability tokens can still gain
+probability. Fixes entropy collapse, where the policy becomes deterministic too early.</li>
+<li><b>Dynamic sampling</b> — discard prompts where all G completions get the same reward. Their advantage
+is exactly 0, so they contribute no gradient and just waste generation compute.</li>
+<li><b>Token-level policy gradient loss</b> — weight by tokens rather than by sequence, so long completions
+aren't under-weighted.</li>
+<li><b>Overlong reward shaping</b> — penalise truncated generations gently instead of treating them as
+simply wrong.</li>
+</ul>
+
+<div class="quiz" data-title="Checkpoint 1 — GRPO and RLVR">
+<div class="qitem" data-answer="1">
+  <div class="qq">How does GRPO eliminate PPO's value model?</div>
+  <div class="opts">
+    <div class="opt">It uses the reward model as the value model</div>
+    <div class="opt">It samples G completions per prompt and uses the group's mean reward as the baseline for the advantage</div>
+    <div class="opt">It doesn't use advantages at all</div>
+    <div class="opt">It estimates the value from the reference model</div>
+  </div>
+  <div class="expl"><b>The group is the baseline.</b> A value model exists to answer "how good is average
+  here?" — and G samples from the same prompt answer that empirically. You trade a learned critic for G×
+  generation cost, which is usually the better deal, especially when rewards are cheap programs.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Why is RLVR less prone to reward hacking than RLHF with a learned reward model?</div>
+  <div class="opts">
+    <div class="opt">The reward is computed by a program (test suite, answer checker) rather than a learned approximation with exploitable failure modes</div>
+    <div class="opt">RLVR uses a stronger KL penalty</div>
+    <div class="opt">RLVR doesn't use RL</div>
+    <div class="opt">Verifiable tasks are easier</div>
+  </div>
+  <div class="expl"><b>The reward is exact, not approximated.</b> Chapter 19's hacking arises because the
+  reward model is a finite-sample fit to human preference. A unit test has no such gap. Caveat: RLVR has its
+  <i>own</i> hacking modes — models that special-case the visible tests, or produce right answers via wrong
+  reasoning — so "less prone", not immune.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">In GRPO, a prompt yields 8 completions that all receive reward 1.0. What is the gradient
+  contribution?</div>
+  <div class="opts">
+    <div class="opt">Large and positive — all completions were good</div>
+    <div class="opt">Depends on the KL term only</div>
+    <div class="opt">Approximately zero — advantages are all 0 after mean subtraction, so the group teaches nothing</div>
+    <div class="opt">Negative</div>
+  </div>
+  <div class="expl"><b>Zero, and that's wasteful.</b> The advantage is <code>(1.0 − 1.0)/std ≈ 0</code> for
+  every sample. You paid for 8 generations and learned nothing. This is precisely what DAPO's <b>dynamic
+  sampling</b> fixes — filter out all-same-reward groups and resample, so every generation you pay for
+  carries signal.</div>
+</div>
+</div>
+
+<h2>21.4 · How to choose</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Your situation</th><th>Use</th></tr></thead>
+<tbody>
+<tr><td>Paired preferences, want simple and reliable</td><td><b>DPO</b> (or SimPO if length bias bites)</td></tr>
+<tr><td>Thumbs up/down from production users</td><td><b>KTO</b></td></tr>
+<tr><td>Tight memory, want one stage</td><td><b>ORPO</b></td></tr>
+<tr><td>Maths / code / anything checkable</td><td><b>GRPO + RLVR</b></td></tr>
+<tr><td>Maximum quality, have an RL team</td><td><b>PPO</b>, or GRPO/DAPO with a reward model</td></tr>
+<tr><td>General assistant, production scale</td><td><b>SFT → DPO → RLVR on verifiable subsets</b> — the current standard stack</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box sota">
+<span class="t">The 2026 post-training stack</span>
+<p style="margin-bottom:0">RLHF was not replaced; it was <b>modularised</b>. The consensus pipeline is now:
+<b>SFT</b> for instruction following and format → <b>preference optimisation</b> (DPO/SimPO/KTO) for tone,
+helpfulness and safety → <b>RL with verifiable rewards</b> (GRPO/DAPO) for reasoning and tool use. Different
+capabilities are trained by different mechanisms, and the verifiable-reward stage is where most of the
+capability gains of the last two years have come from.</p>
+</div>
+
+<h2>21.5 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">21.1</span><span class="ti">Implement four losses, compare on one dataset</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Implement DPO, IPO, SimPO and ORPO as four loss functions with a shared training harness. Run all four
+on the same SFT checkpoint and preference data with matched compute. Report: ranking accuracy on held-out
+pairs, mean generation length, and win-rate against the SFT baseline judged by a stronger model.</p>
+<details class="reveal"><summary>What to watch for</summary><div>
+<p style="margin-bottom:0">Track <b>mean generation length</b> especially. DPO usually increases it (it
+optimises summed log-probs, which correlates with length); SimPO should not (length-normalised). If your
+win-rate improves but length doubled, you may have bought the win with verbosity rather than quality —
+which is why length-controlled evaluation exists. Always report both.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">21.2</span><span class="ti">GRPO on a verifiable task</span><span class="lvl">the interesting one</span></div>
+<div class="eb">
+<p>Take a small instruct model and train it with GRPO on GSM8K-style arithmetic. Reward: +1 correct answer,
++0.1 correct <code>&lt;think&gt;…&lt;/think&gt;</code> format. Use G=8, β=0.04.</p>
+<ol>
+<li>Plot accuracy and mean completion length against training step.</li>
+<li>Does completion length increase on its own? (This is the R1 phenomenon in miniature.)</li>
+<li>Add DAPO's dynamic sampling. What fraction of groups get filtered, and how much compute does that save?</li>
+</ol>
+<details class="reveal"><summary>Practical notes</summary><div>
+<p>Use a model that already has <i>some</i> arithmetic ability — GRPO amplifies existing capability, it
+doesn't create it from nothing. If accuracy starts at 0%, every group gets reward 0, every advantage is 0,
+and nothing happens. This is the most common reason a GRPO run appears to do nothing.</p>
+<p style="margin-bottom:0">Expect 20–60% of groups to be filtered by dynamic sampling once the model is
+decent — either all-correct or all-wrong. That's a large fraction of your generation budget recovered.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">21.3</span><span class="ti">Hack your own reward function</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>Write a code-generation reward that runs 3 visible unit tests. Train with GRPO. Then evaluate on 20
+<b>held-out</b> tests the model never saw.</p>
+<details class="reveal"><summary>What usually happens</summary><div>
+<p style="margin-bottom:0">Visible-test pass rate climbs to near 100%. Held-out rate lags badly, and
+inspecting the code often shows explicit special-casing of the visible inputs — <code>if n == 5: return
+120</code>. Verifiable rewards remove <i>one</i> class of hacking and introduce another: the model optimises
+the <b>measurement</b>, not the goal. The mitigations — many more tests, held-out test sets, property-based
+testing, penalising hardcoded literals — are the same ones you'd use against a lazy human contractor.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://arxiv.org/abs/2402.03300">Shao et al. 2024 — DeepSeekMath (GRPO)</a></li>
+<li><a href="https://arxiv.org/abs/2501.12948">DeepSeek-AI 2025 — DeepSeek-R1</a> — read §2.2 for the R1-Zero result.</li>
+<li><a href="https://arxiv.org/abs/2503.14476">Yu et al. 2025 — DAPO</a></li>
+<li><a href="https://arxiv.org/abs/2310.12036">Azar et al. 2023 — IPO</a> · <a href="https://arxiv.org/abs/2402.01306">Ethayarajh et al. 2024 — KTO</a> · <a href="https://arxiv.org/abs/2403.07691">Hong et al. 2024 — ORPO</a> · <a href="https://arxiv.org/abs/2405.14734">Meng et al. 2024 — SimPO</a></li>
+<li><a href="https://www.turingpost.com/p/reasoning-rl-in-2026">Turing Post — Reasoning RL in 2026</a></li>
+<li>Companion notebook: <code>notebooks/21_grpo.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("21");</script>
+</body>
+</html>

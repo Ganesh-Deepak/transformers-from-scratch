@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 3 — Tokenization: Text → Integers</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=2">
+</head>
+<body>
+<main>
+
+<h1>3 · Tokenization: Text → Integers</h1>
+<p class="lead">
+A neural network multiplies numbers. Text is not numbers. Tokenization is the seam between those two worlds —
+and because it is a seam, it leaks. Nearly every "why is the model so stupid about <em>that</em>?" story ends
+at the tokenizer.
+</p>
+
+<div class="mn orient"><span class="k">Leads to</span><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; token ids index the embedding table<br><a href="ch17-scaling.html">Ch&nbsp;17</a> &mdash; vocabulary size drives long-context economics</div>
+<div class="mn orient"><span class="k">Why this chapter</span>The seam between text and numbers — and because it is a seam, it leaks.</div>
+
+<div class="box intuition">
+<span class="t">The one idea in this chapter</span>
+<p style="margin-bottom:0">A tokenizer is a <b>lossless, learned compression scheme</b> that maps strings to
+sequences of integers from a fixed vocabulary. It is trained on a corpus by a greedy statistical procedure,
+it is <b>not</b> trained with the model, and its choices become permanent constraints on what the model can
+easily represent.</p>
+</div>
+
+<h2>3.1 · Why not just use characters? Or words?</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Scheme</th><th class="num">Vocab</th><th>Sequence length</th><th>Fatal problem</th></tr></thead>
+<tbody>
+<tr><td><b>Characters</b></td><td class="num">~256</td><td>very long</td><td>Attention is O(T²). 10× longer sequences = 100× the attention cost. Also each token carries almost no meaning.</td></tr>
+<tr><td><b>Words</b></td><td class="num">millions</td><td>short</td><td>Unbounded vocabulary. Every typo, name, and number is <code>&lt;UNK&gt;</code>. The embedding table alone would be enormous.</td></tr>
+<tr><td><b>Subwords (BPE)</b></td><td class="num">32k–256k</td><td>moderate</td><td>The compromise everyone uses. Common words stay whole, rare words split into pieces, nothing is ever unknown.</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The subword bet is: <b>frequent things should be cheap</b>. <code>" the"</code> is one token.
+<code>"antidisestablishmentarianism"</code> is seven. Nothing is ever unrepresentable.</p>
+
+<div class="box math-note">
+<span class="t">The number to remember</span>
+<p style="margin-bottom:0">For English text with a modern tokenizer, <b>1 token ≈ 4 characters ≈ 0.75 words</b>.
+So 1000 tokens ≈ 750 words ≈ 1.5 pages. This is how you convert a context window into something human.
+Code is denser (~3 chars/token); non-English languages are much worse — see §3.5.</p>
+</div>
+
+<h2>3.2 · Byte-Pair Encoding, built from scratch</h2>
+
+<p>BPE was originally a 1994 data-compression algorithm, repurposed for NLP by Sennrich et al. in 2015.
+The training algorithm is four lines of English:</p>
+
+<div class="box intuition">
+<span class="t">BPE training</span>
+<ol style="margin-bottom:0">
+<li>Start with a vocabulary of every individual byte (256 tokens). Every text is now a sequence of bytes.</li>
+<li>Count every <b>adjacent pair</b> of tokens in the corpus.</li>
+<li>Take the <b>most frequent pair</b>, mint a new token for it, and replace every occurrence.</li>
+<li>Repeat until the vocabulary reaches the target size.</li>
+</ol>
+</div>
+
+<p>Here is the whole thing, working, in about 40 lines:</p>
+
+<pre><code>from collections import Counter
+
+def get_pair_counts(ids):
+    """Count every adjacent pair in a list of token ids."""
+    return Counter(zip(ids, ids[1:]))
+
+def merge(ids, pair, new_id):
+    """Replace every occurrence of `pair` with `new_id`."""
+    out, i = [], 0
+    while i &lt; len(ids):
+        if i &lt; len(ids) - 1 and (ids[i], ids[i+1]) == pair:
+            out.append(new_id)
+            i += 2
+        else:
+            out.append(ids[i])
+            i += 1
+    return out
+
+def train_bpe(text, vocab_size):
+    ids = list(text.encode("utf-8"))        # start from raw BYTES, ids 0..255
+    merges = {}                             # (a, b) -> new_id, in learned order
+    for new_id in range(256, vocab_size):
+        counts = get_pair_counts(ids)
+        if not counts:
+            break
+        pair = max(counts, key=counts.get)  # greedy: most frequent pair
+        if counts[pair] &lt; 2:
+            break                           # nothing repeats any more
+        ids = merge(ids, pair, new_id)
+        merges[pair] = new_id
+    return merges
+
+def encode(text, merges):
+    ids = list(text.encode("utf-8"))
+    # Apply merges in the ORDER THEY WERE LEARNED. This is essential:
+    # it is what makes encoding deterministic and reversible.
+    for pair, new_id in merges.items():
+        ids = merge(ids, pair, new_id)
+    return ids
+
+def decode(ids, merges):
+    vocab = {i: bytes([i]) for i in range(256)}
+    for (a, b), new_id in merges.items():
+        vocab[new_id] = vocab[a] + vocab[b]
+    return b"".join(vocab[i] for i in ids).decode("utf-8", errors="replace")
+</code></pre>
+
+<pre><code>text = "the theory of the theatre is the theme " * 40
+merges = train_bpe(text, vocab_size=280)
+
+ids = encode("the theatre theme", merges)
+print(len(ids), ids)          # far shorter than the 17 raw bytes
+print(decode(ids, merges))    # 'the theatre theme'  — perfectly reversible
+</code></pre>
+
+<div class="box warn">
+<span class="t">Why start from bytes and not characters?</span>
+<p style="margin-bottom:0">Unicode has ~150,000 assigned code points. Starting from characters would need a
+huge base vocabulary and would still fail on anything unassigned. Starting from the <b>256 possible byte
+values</b> means <i>every possible string on earth</i> — emoji, Sanskrit, corrupted binary — is representable
+with zero <code>&lt;UNK&gt;</code> tokens. This is "byte-level BPE", introduced by GPT-2, and it is what
+essentially every modern model uses.</p>
+</div>
+
+<h3>The pre-tokenization step nobody mentions</h3>
+
+<p>Real tokenizers don't run BPE on raw text. They first split it with a regex, then run BPE
+<i>within</i> each piece. GPT-2's pattern is famous:</p>
+
+<pre><code>import regex as re
+GPT2_PAT = re.compile(
+    r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+)
+print(GPT2_PAT.findall("Hello world's 123 items!"))
+# ['Hello', ' world', "'s", ' ', '123', ' items', '!']
+</code></pre>
+
+<p>This prevents merges from crossing category boundaries — you never get a single token spanning
+<code>"dog."</code> or <code>"3cats"</code>. Note that <b>the leading space is attached to the following
+word</b>: <code>" world"</code> is a different token from <code>"world"</code>. That detail causes an entire
+family of bugs, covered in §3.5.</p>
+
+<div class="quiz" data-title="Checkpoint 1 — BPE mechanics">
+<div class="qitem" data-answer="1">
+  <div class="qq">Why must merges be applied in the order they were learned, rather than (say) longest-first?</div>
+  <div class="opts">
+    <div class="opt">Because longest-first would be slower</div>
+    <div class="opt">Because later merges are built out of earlier ones — the order defines the token tree</div>
+    <div class="opt">Because the vocabulary is sorted by frequency</div>
+    <div class="opt">It doesn't matter; any order gives the same result</div>
+  </div>
+  <div class="expl"><b>Later merges are built from earlier ones.</b> If <code>("t","h")→"th"</code> was learned
+  at step 1 and <code>("th","e")→"the"</code> at step 2, you cannot form <code>"the"</code> before
+  <code>"th"</code> exists. Applying merges out of order produces a <i>different, inconsistent</i>
+  tokenization — the model would see token sequences it never saw in training.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Byte-level BPE starts with a base vocabulary of 256. What does that guarantee?</div>
+  <div class="opts">
+    <div class="opt">Any possible byte string can be encoded — there is never an unknown token</div>
+    <div class="opt">The vocabulary will be exactly 256 + number of merges, always</div>
+    <div class="opt">Every character in every language gets its own token</div>
+    <div class="opt">Encoding is always shorter than the original text</div>
+  </div>
+  <div class="expl"><b>No unknowns, ever.</b> Worst case a weird string falls back to individual bytes —
+  inefficient but never impossible. (Option B is <i>nearly</i> true but ignores special tokens added
+  afterwards; option D is false — for text unlike the training corpus, BPE can produce more tokens than the
+  string has characters... in bytes.)</div>
+</div>
+</div>
+
+<h2>3.3 · Vocabulary size: the real trade-off</h2>
+
+<div class="tw">
+<table>
+<thead><tr><th>Model</th><th class="num">Vocab</th><th>Tokenizer</th></tr></thead>
+<tbody>
+<tr><td>GPT-2</td><td class="num">50,257</td><td>byte-level BPE</td></tr>
+<tr><td>Llama 2</td><td class="num">32,000</td><td>SentencePiece BPE</td></tr>
+<tr><td>Llama 3 / 3.1</td><td class="num">128,256</td><td>tiktoken-style BPE</td></tr>
+<tr><td>Qwen 2.5 / 3</td><td class="num">151,936</td><td>byte-level BPE, multilingual-heavy</td></tr>
+<tr><td>Gemma 2 / 3</td><td class="num">256,000</td><td>SentencePiece, very multilingual</td></tr>
+<tr><td>DeepSeek-V3</td><td class="num">129,280</td><td>byte-level BPE</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Bigger vocab means:</p>
+<ul>
+<li><b>Good:</b> shorter sequences → less attention compute (quadratic!) → more real text per context window,
+and better coverage of non-English languages and code.</li>
+<li><b>Bad:</b> a bigger embedding table and a bigger output softmax. At <code>d_model=4096</code>, going from
+32k to 256k vocab adds <code>224,000 × 4096 ≈ 0.9B</code> parameters <i>per</i> embedding matrix — and rare
+tokens get few gradient updates, so they're poorly trained.</li>
+</ul>
+
+<p>The trend since 2024 has been clearly <b>toward larger vocabularies</b>, because inference-time sequence
+length is the expensive thing and embedding parameters are cheap (they're a lookup, not a matmul — see
+Chapter 4).</p>
+
+<h2>3.4 · Special tokens and chat templates</h2>
+
+<p>Beyond learned merges, tokenizers reserve IDs for control signals the model learns to obey:</p>
+
+<pre><code># Llama-3-Instruct
+&lt;|begin_of_text|&gt;
+&lt;|start_header_id|&gt;system&lt;|end_header_id|&gt;
+
+You are a helpful assistant.&lt;|eot_id|&gt;
+&lt;|start_header_id|&gt;user&lt;|end_header_id|&gt;
+
+What is attention?&lt;|eot_id|&gt;
+&lt;|start_header_id|&gt;assistant&lt;|end_header_id|&gt;
+
+</code></pre>
+
+<p>These are <b>single tokens</b>, not text. That is the entire mechanism separating "system prompt" from
+"user message" — there is no privileged channel, just special token IDs the model was trained to treat as
+boundaries.</p>
+
+<div class="box gotcha">
+<span class="t">The #1 fine-tuning bug in the world</span>
+<p style="margin-bottom:0">Using the wrong chat template. If you fine-tune with a template that differs by
+even one newline from what the base model was trained on, quality collapses and it looks like your data is
+bad. <b>Always</b> use <code>tokenizer.apply_chat_template(messages, tokenize=False)</code> and print the
+result before training. Never hand-write the format.</p>
+</div>
+
+<h2>3.5 · Tokenizer pathologies — why LLMs are weird about specific things</h2>
+
+<h3>Arithmetic</h3>
+<pre><code># GPT-2 tokenizes numbers inconsistently:
+"127"   -> ["127"]          1 token
+"128"   -> ["128"]          1 token
+"1270"  -> ["127", "0"]     2 tokens
+"1271"  -> ["12", "71"]     2 tokens   ← different split!
+</code></pre>
+<p>The model has to learn arithmetic over chunks that don't align with place value. Modern tokenizers
+(Llama 3, DeepSeek) fix this by forcing digits to split into consistent groups — usually every digit
+separately, or fixed 3-digit groups. This measurably improves arithmetic.</p>
+
+<h3>The trailing-space trap</h3>
+<pre><code>"I love"     -> [..., " love"]      # ' love' with leading space
+"I love "    -> [..., " love", " "] # now a lone space token
+</code></pre>
+<p>If your prompt ends with a space, the model must predict a continuation that starts <i>without</i> one —
+a token distribution it has barely ever seen, because in training the space is always glued to the next word.
+<b>Never end a completion prompt with a trailing space.</b> This is a real, reproducible quality drop.</p>
+
+<h3>Under-trained tokens ("SolidGoldMagikarp")</h3>
+<p>Tokenizers are trained on a different (often larger, messier) corpus than the model. Some tokens end up
+in the vocabulary but appear almost never in the model's training data — their embeddings stay near their
+random initialisation. Prompting GPT-2/GPT-3 with these produced bizarre, evasive, or hallucinated output.
+The 2023 investigation that found them is a genuinely fun read (linked below).</p>
+
+<h3>The multilingual tax</h3>
+<pre><code>English:   "The cat sat on the mat"           →  6 tokens
+Hindi:     "बिल्ली चटाई पर बैठी"                    → ~20 tokens (older tokenizers)
+Burmese:   equivalent sentence                 → ~40 tokens
+</code></pre>
+<p>Same meaning, 3–7× the tokens. That means: shorter effective context, more compute, and — since APIs bill
+per token — <b>a direct financial penalty for not speaking English</b>. This is a major reason recent models
+moved to 128k–256k vocabularies with better multilingual coverage.</p>
+
+<div class="quiz" data-title="Checkpoint 2 — pathologies">
+<div class="qitem" data-answer="2">
+  <div class="qq">Your prompt is <code>"The answer is "</code> (with trailing space) and the model produces
+  worse output than <code>"The answer is"</code>. Why?</div>
+  <div class="opts">
+    <div class="opt">The extra space wastes context window</div>
+    <div class="opt">Spaces are stripped by the tokenizer, so nothing changes</div>
+    <div class="opt">The space becomes its own rare token, and the model must now predict a word-token without its usual leading space</div>
+    <div class="opt">Trailing spaces trigger the EOS token</div>
+  </div>
+  <div class="expl"><b>Option C.</b> In training, <code>" answer"</code> etc. almost always carry their leading
+  space. By emitting the space yourself you've moved the model into a state it rarely saw, and it must now
+  produce the space-less variant of the next word — a much lower-probability path. Strip trailing whitespace
+  from completion prompts.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">A team increases vocab from 32k to 128k at <code>d_model = 4096</code>, with tied
+  input/output embeddings. Roughly how many parameters does that add?</div>
+  <div class="opts">
+    <div class="opt">~96 million</div>
+    <div class="opt">~393 million</div>
+    <div class="opt">~786 million</div>
+    <div class="opt">~1.6 billion</div>
+  </div>
+  <div class="expl"><b>~393M.</b> (128,000 − 32,000) × 4096 = 96,000 × 4096 = 393,216,000. With
+  <i>untied</i> embeddings it would be double that (~786M) since input and output tables are separate.
+  Notice this is pure lookup memory — it adds almost nothing to the per-token FLOP cost, which is why the
+  trade is usually worth it.</div>
+</div>
+</div>
+
+<h2>3.6 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">3.1</span><span class="ti">Train your own BPE</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Using the code in §3.2, train a BPE tokenizer with <code>vocab_size=500</code> on a few pages of text
+(the notebook provides a corpus). Then:</p>
+<ol>
+<li>Print the first 30 merges in order. Do they look linguistically sensible?</li>
+<li>Compute the compression ratio (bytes ÷ tokens) for held-out text.</li>
+<li>Plot compression ratio vs vocab size for 300, 500, 1000, 2000, 5000. What shape is the curve?</li>
+</ol>
+<details class="reveal"><summary>What you should find</summary><div>
+<p>The first merges are almost always <code>("e"," ")</code>-style frequent bigrams, then common words
+(<code>"th"</code>, <code>"the"</code>, <code>" the"</code>), then suffixes (<code>"ing"</code>,
+<code>"ed"</code>). BPE rediscovers morphology without being told it exists.</p>
+<p style="margin-bottom:0">The compression curve is <b>logarithmic</b> — steeply improving to ~1000, then
+strongly diminishing returns. That shape is exactly why nobody uses a 10-million-token vocabulary: you pay
+linearly in parameters for logarithmic gains in sequence length.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">3.2</span><span class="ti">Tokenizer forensics</span><span class="lvl">essential</span></div>
+<div class="eb">
+<pre><code>from transformers import AutoTokenizer
+tok = AutoTokenizer.from_pretrained("gpt2")   # or any local tokenizer
+
+tests = ["hello", " hello", "Hello", "HELLO",
+         "1234567890", "3.14159",
+         "    indented code",
+         "def foo():\n    return 1",
+         "🤖 emoji", "مرحبا", "こんにちは"]
+for t in tests:
+    ids = tok.encode(t)
+    print(f"{t!r:28} {len(ids):3d}  {[tok.decode([i]) for i in ids]}")
+</code></pre>
+<p>Answer these from the output:</p>
+<ol>
+<li>How many tokens does a single emoji cost? Why more than one?</li>
+<li>Compare <code>"hello"</code> vs <code>" hello"</code> vs <code>"Hello"</code>. Are they the same token?</li>
+<li>How is 4-space indentation handled? What does that imply for training on Python?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<ol>
+<li>Usually 2–4 tokens. Emoji are multi-byte UTF-8 sequences, and byte-level BPE only merges byte pairs it
+saw often — most emoji are rare, so they stay near raw bytes.</li>
+<li><b>All three are different token IDs.</b> Casing and leading whitespace are part of the token identity.
+This is why "the model treats <code>Apple</code> and <code>apple</code> differently" is literally true at
+the input layer.</li>
+<li>GPT-2 tokenizes runs of spaces poorly (often one token per 1–2 spaces), which is why GPT-2 was mediocre
+at Python. Code-focused tokenizers add explicit tokens for 4, 8, 12, 16 spaces — a small change with a large
+effect on code quality and context efficiency.</li>
+</ol>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">3.3</span><span class="ti">Measure the multilingual tax</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>Take one paragraph, translate it into 5 languages (any translator is fine), and tokenize each with the
+same tokenizer. Build a table of tokens-per-character. Then compute: if an API charges $3 per million input
+tokens, what does the same <i>meaning</i> cost in each language?</p>
+<details class="reveal"><summary>Discussion</summary><div>
+<p style="margin-bottom:0">With GPT-2's tokenizer you'll see 3–8× ratios for non-Latin scripts. With Gemma's
+256k vocabulary the gap narrows to roughly 1.2–2×. This is one of the clearest cases where a purely
+<i>engineering</i> decision — vocabulary composition — has a direct equity consequence. It's also a good
+thing to check before deploying a multilingual product: the cost model may differ by region far more than
+you expect.</p>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://www.youtube.com/watch?v=zduSFxRajkE">Karpathy — Let's build the GPT Tokenizer</a> — 2 hours, and the best thing ever made on this topic. Watch it.</li>
+<li><a href="https://github.com/karpathy/minbpe">karpathy/minbpe</a> — clean reference implementation.</li>
+<li><a href="https://arxiv.org/abs/1508.07909">Sennrich et al. 2015</a> — the paper that brought BPE to NLP.</li>
+<li><a href="https://www.lesswrong.com/posts/aPeJE8bSo6rAFoLqg/solidgoldmagikarp-plus-prompt-generation">SolidGoldMagikarp</a> — the under-trained token investigation.</li>
+<li>Companion notebook: <code>notebooks/03_tokenization.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=2"></script>
+<script src="assets/course.js?v=2"></script>
+<script src="assets/viz.js?v=2"></script>
+<script>initChapter("03");</script>
+</body>
+</html>
