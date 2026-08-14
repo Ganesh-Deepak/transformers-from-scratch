@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 14 — The GPU: Memory, Tensor Cores, and the Roofline</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=9">
+</head>
+<body>
+<main>
+
+<h1>14 · The GPU: Memory, Tensor Cores, and the Roofline</h1>
+<p class="lead">
+Every performance claim in the rest of this course — the KV cache, GQA, FlashAttention, continuous
+batching — is an argument about <b>one machine</b>. This chapter is that machine. By the end you will be
+able to look at any operation and predict, with arithmetic and before running it, whether it is limited
+by compute or by memory. That single prediction explains almost every design decision in Parts IV and V.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; the matmul whose cost we are now counting<br><a href="ch12-precision.html">Ch&nbsp;12</a> &mdash; why bf16 exists at all<div class="sep"></div><span class="k">Leads to</span><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; the memory wall, which is this chapter applied once<br><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; a kernel designed entirely around the hierarchy below<br><a href="ch18-serving.html">Ch&nbsp;18</a> &mdash; batching, which is a roofline argument<div class="sep"></div><span class="k">Why this chapter</span>Without it, "memory-bound" is a phrase you repeat. With it, it is a number you compute.</div>
+
+<div class="box intuition">
+<span class="t">The one idea in this chapter</span>
+<p style="margin-bottom:0">A GPU can do arithmetic <b>far</b> faster than it can fetch numbers to do
+arithmetic on. An H100 can perform about <b>295 floating-point operations in the time it takes to read
+one byte</b> from its main memory. So the only question that matters for any operation is: <b>how many
+FLOPs do I get per byte I move?</b> Below 295, you are waiting on memory and your expensive silicon is
+idle. Above it, you are actually computing.</p>
+</div>
+
+<h2>14.1 · The hierarchy, and the only number that matters</h2>
+
+<p>A GPU is not one memory. It is a pyramid, and each level down is roughly an order of magnitude
+bigger and an order of magnitude slower. Figures below are for an <b>H100 SXM5</b>:</p>
+
+<pre><code class="nohl">                         size            bandwidth        ~latency
+  registers              256 KB / SM     ~100 TB/s        ~1 cycle
+  shared memory / L1     up to 228 KB    ~20 TB/s         ~30 cycles      <- FlashAttention lives here
+  L2 cache               50 MB total     ~10 TB/s         ~200 cycles
+  HBM3 ("VRAM")          80 GB           3.35 TB/s        ~500 cycles     <- everything you allocate
+  host RAM over PCIe     TBs             ~60 GB/s         ~microseconds
+
+  compute: 989 TFLOP/s bf16 dense, across 132 SMs</code></pre>
+
+<div class="box math-note">
+<span class="t">Where the whole chapter comes from</span>
+<p style="margin-bottom:0">Divide the top two numbers:</p>
+<div class="mathblock" style="margin:.6rem 0">
+ridge point = <span class="frac"><span class="n">989.4 &times; 10<sup>12</sup> FLOP/s</span><span class="d">3.35 &times; 10<sup>12</sup> byte/s</span></span> = <b>295 FLOP/byte</b>
+</div>
+<p style="margin-bottom:0">That is the exchange rate between the two resources. An operation that does
+fewer than 295 FLOPs per byte it touches <b>cannot</b> reach peak compute, no matter how good the kernel
+is, because the arithmetic units will run dry waiting for data.</p>
+</div>
+
+<p>The ridge point is a property of the chip, and it has been getting <i>worse</i>, not better —
+compute has outrun bandwidth for a decade:</p>
+
+<pre><code class="nohl">                  compute        bandwidth      ridge point
+  A100 80GB       312 TFLOP/s    2.04 TB/s      153 FLOP/byte
+  H100 SXM5       989 TFLOP/s    3.35 TB/s      295 FLOP/byte
+  H200 SXM        989 TFLOP/s    4.80 TB/s      206 FLOP/byte
+  B200           2250 TFLOP/s    8.00 TB/s      281 FLOP/byte</code></pre>
+
+<p>H200 is the interesting row: same die as H100, only more bandwidth, and the ridge point <i>drops</i>
+to 206. A lower ridge means more workloads land on the compute side of the line. <b>That is what you are
+buying when you buy memory bandwidth</b> — not throughput directly, but the ability to keep the compute
+you already own busy.</p>
+
+<h2>14.2 · Arithmetic intensity: computing the number yourself</h2>
+
+<p>For any operation, define:</p>
+
+<div class="mathblock">
+AI = <span class="frac"><span class="n">FLOPs performed</span><span class="d">bytes moved to and from HBM</span></span>
+&nbsp;&nbsp;compare against&nbsp;&nbsp; 295
+</div>
+
+<p>Do it for a matmul. Multiplying
+<span class="shape q"><b>M</b><span class="x">, </span><b>K</b></span> by
+<span class="shape k"><b>K</b><span class="x">, </span><b>N</b></span> gives
+<span class="shape o"><b>M</b><span class="x">, </span><b>N</b></span>:</p>
+
+<div class="example">
+<span class="t">Derivation — the arithmetic intensity of a matmul</span>
+
+<div class="step"><div class="i">1</div><div>
+<b>Count FLOPs.</b> Each output element is a dot product of length <span class="math">K</span>: that is
+<span class="math">K</span> multiplies and <span class="math">K</span> adds. There are
+<span class="math">MN</span> outputs.
+<pre style="margin:.4rem 0"><code class="nohl">FLOPs = 2 · M · K · N</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Count bytes.</b> Read both inputs, write the output. In bf16 each element is 2 bytes:
+<pre style="margin:.4rem 0"><code class="nohl">bytes = 2 · (M·K + K·N + M·N)</code></pre>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>Divide.</b> The 2s cancel:
+<pre style="margin:.4rem 0"><code class="nohl">AI = M·K·N / (M·K + K·N + M·N)</code></pre>
+</div></div>
+
+<div class="step"><div class="i">4</div><div>
+<b>Set <span class="math">M = N = K = n</span>.</b> Numerator <span class="math">n³</span>, denominator
+<span class="math">3n²</span>:
+<pre style="margin:.4rem 0"><code class="nohl">AI = n / 3</code></pre>
+<b>Arithmetic intensity grows linearly with matrix size.</b> Small matmuls are memory-bound; large ones
+are compute-bound; and the crossover is exactly <span class="math">n = 3 &times; 295 &asymp; 886</span>.
+</div></div>
+</div>
+
+<pre><code class="nohl">square bf16 matmul on H100 (ridge 295):
+   n= 128   AI=   42.7   MEMORY-bound
+   n= 256   AI=   85.3   MEMORY-bound
+   n= 512   AI=  170.7   MEMORY-bound
+   n=1024   AI=  341.3   COMPUTE-bound
+   n=4096   AI= 1365.3   COMPUTE-bound</code></pre>
+
+<div class="box intuition">
+<span class="t">Why "bigger batches are more efficient" is not folklore</span>
+<p style="margin-bottom:0">It is <span class="math">AI = n/3</span>. A 512-wide matmul reaches at most
+<span class="math">171/295 = 58%</span> of the H100's peak <b>even with a perfect kernel</b> — the
+hardware is simply starved. This is also why very small models are wasteful on big GPUs, and why
+tiny per-head matrices get batched together rather than run one at a time
+(<a href="ch06-mha.html">Ch&nbsp;06</a>'s reshape dance is partly a performance measure).</p>
+</div>
+
+<h2>14.3 · The result that explains Part IV</h2>
+
+<p>Now apply it to a real transformer. Take a 7B model in bf16 — <b>14 GB of weights</b> — and compute
+one token.</p>
+
+<p>Generating a single token requires reading <b>every weight exactly once</b> and doing about
+<span class="math">2P</span> FLOPs with them (one multiply and one add per parameter). So:</p>
+
+<pre><code class="nohl">7B model, bf16, batch 1, one decoded token
+  bytes moved   = 14 GB   (every weight, once)
+  FLOPs done    = 14 GFLOP
+  AI            = 1 FLOP/byte          <- against a ridge of 295
+
+  time if memory-bound   14e9 / 3.35e12  =  4.179 ms
+  time if compute-bound  14e9 /  989e12  =  0.014 ms   (300x faster)
+
+  -> MEMORY bound, by a factor of ~300
+  -> hard ceiling: 239 tokens/second, batch 1, on an H100</code></pre>
+
+<div class="box warn">
+<span class="t">Read the last line carefully</span>
+<p style="margin-bottom:0"><b>239 tokens/second is not a software limit.</b> It is 14 GB divided by
+3.35 TB/s. No kernel, compiler, or framework can beat it, because the weights must physically cross the
+memory bus once per token. <b>The GPU is idle 99.7% of the time</b>, waiting. Every technique in
+<a href="ch15-kvcache.html">Ch&nbsp;15</a>–<a href="ch18-serving.html">Ch&nbsp;18</a> is an attack on this
+one number — either move fewer bytes (quantization, GQA, MLA) or do more work per byte moved (batching,
+speculative decoding).</p>
+</div>
+
+<h3>Prefill is a completely different machine</h3>
+
+<p>Process 2048 prompt tokens at once and the weights are still read once — but now they are used
+2048 times:</p>
+
+<pre><code class="nohl">                     AI          memory time    compute time    verdict
+  decode 1 token        1.0        4.179 ms        0.014 ms     MEMORY bound
+  prefill 2048       2048.0        4.179 ms       28.979 ms     COMPUTE bound</code></pre>
+
+<p><b>Same weights, same GPU, opposite bottleneck.</b> Prefill spends 29 ms computing and 4 ms fetching;
+decode spends 4 ms fetching and 14 <i>microseconds</i> computing. This is why serving stacks treat them
+as two different problems, schedule them separately, and report time-to-first-token and
+time-per-output-token as separate metrics (<a href="ch18-serving.html">Ch&nbsp;18</a>).</p>
+
+<h3>Batching, quantified</h3>
+
+<p>In decode with batch <span class="math">B</span>, the weights are still read once but used for
+<span class="math">2B</span> FLOPs. So <span class="math">AI = B</span>, exactly:</p>
+
+<pre><code class="nohl">batch B     AI          fraction of peak compute reachable
+      1       1                 0.3%
+      8       8                 2.7%
+     32      32                10.8%
+    128     128                43.3%
+    256     256                86.7%
+    295     295                99.9%   <- the ridge point, in batch units</code></pre>
+
+<div class="box intuition">
+<span class="t">Continuous batching, explained in one line</span>
+<p style="margin-bottom:0">You need <b>~295 concurrent sequences</b> before an H100 stops being
+bandwidth-starved during decode. That is the entire economic argument for
+<a href="ch18-serving.html">continuous batching</a>: a request served alone wastes 99.7% of the machine,
+and serving 256 at once costs almost exactly the same wall-clock time per token as serving one. It is
+also why the KV cache's memory footprint is so precious — <b>cache size is what limits how many
+sequences fit</b>, and therefore what limits <span class="math">B</span>, and therefore what limits your
+position on this table.</p>
+</div>
+
+<h2>14.4 · Tensor cores, and why d_head is 64 or 128</h2>
+
+<p>The 989 TFLOP/s figure is not from general-purpose arithmetic units. It comes from <b>tensor
+cores</b>: fixed-function hardware that multiplies small matrix tiles in one instruction. On Ampere and
+Hopper, the bf16/fp16 instruction has shape:</p>
+
+<div class="mathblock">
+<code>mma.sync.aligned.<b>m16n8k16</b></code> &nbsp;&mdash;&nbsp; a
+<span class="shape q"><b>16</b><span class="x">, </span><b>16</b></span> &times;
+<span class="shape k"><b>16</b><span class="x">, </span><b>8</b></span> &rarr;
+<span class="shape o"><b>16</b><span class="x">, </span><b>8</b></span> tile, per instruction
+</div>
+
+<p>Crucially, it <b>multiplies in bf16 and accumulates in fp32</b> — the hardware embodiment of
+<a href="ch12-precision.html">§12.5</a>'s rule about accumulators. You get the wider accumulator for
+free, and cannot turn it off.</p>
+
+<p>Any dimension that is not a multiple of the tile is <b>padded to one</b>, and you pay full price for
+the padding. So <span class="math">d_{head}</span> should be a multiple of 16. But that alone would
+permit 48, 80, 96 — and you never see those. The sharper constraint is the memory system:</p>
+
+<div class="example">
+<span class="t">Why 64 and 128 specifically</span>
+
+<div class="step"><div class="i">1</div><div>
+<b>A memory transaction is 128 bytes.</b> That is the cache line — 4 sectors of 32 B. You cannot fetch
+less; a request for 1 byte still moves 32.
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>One head's slice of a row is <span class="math">d_{head}</span> values &times; 2 bytes.</b> For that
+slice to sit in whole cache lines with no waste:
+<pre style="margin:.4rem 0"><code class="nohl">d_head    bytes    cache lines
+   32        64      0.50   ragged - two heads share a line
+   48        96      0.75   ragged
+   64       128      1.00   CLEAN
+   80       160      1.25   ragged
+   96       192      1.50   ragged
+  128       256      2.00   CLEAN
+  256       512      4.00   CLEAN</code></pre>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>Only multiples of 64 are clean</b>, and 64/128 are the two that also keep
+<span class="math">\sqrt{d_{head}}</span> in a sensible range for attention
+(<a href="ch05-attention.html">Ch&nbsp;05</a>). Hence: essentially every production model uses 64 or 128,
+and FlashAttention kernels are compiled as separate template instantiations for exactly those values.
+</div></div>
+</div>
+
+<div class="box math-note">
+<span class="t">A number you have seen before, now explained</span>
+<p style="margin-bottom:0">Whenever a config says <code>d_model=4096, n_head=32</code>, that is
+<span class="math">d_{head} = 128</span>. When it says <code>d_model=768, n_head=12</code>, that is
+<span class="math">64</span>. It looks like a modelling choice. It is a <b>cache-line choice</b> that has
+been stable since 2018 and will stay stable as long as the line is 128 bytes.</p>
+</div>
+
+<h2>14.5 · Coalescing: the same bytes, 32× the traffic</h2>
+
+<p>A GPU executes threads in groups of <b>32, called a warp</b>, in lockstep. When a warp issues a load,
+the hardware merges the 32 addresses into as few 128-byte transactions as it can. If the threads read
+<b>consecutive</b> 4-byte words, all 32 fall in one line:</p>
+
+<pre><code class="nohl">32 threads x 4 bytes = 128 bytes = exactly one cache line
+
+  stride 1   ->   1 line per warp    perfect  (100% of fetched bytes used)
+  stride 2   ->   2 lines per warp   2x the traffic, half of it discarded
+  stride 4   ->   4 lines per warp   4x
+  stride 32  ->  32 lines per warp   32x - every thread pulls its own line</code></pre>
+
+<div class="box warn">
+<span class="t">This is why memory layout is a correctness-adjacent concern</span>
+<p style="margin-bottom:0">A strided access pattern moves the same <i>useful</i> bytes but consumes up to
+32× the bandwidth — and you already know bandwidth is the binding constraint. This is the real reason
+<code>.contiguous()</code> appears after transposes in attention code, and why the
+<a href="ch06-mha.html">reshape dance</a> is written to keep <span class="math">d_{head}</span> as the
+<b>last, fastest-varying axis</b>: so that threads reading across a head's features read consecutive
+addresses. <b>The axis order in your tensor is a bandwidth decision.</b></p>
+</div>
+
+<h2>14.6 · Kernel fusion, and what FlashAttention is really doing</h2>
+
+<p>Every separate kernel launch means a round trip to HBM: read inputs, write outputs. Chain several
+elementwise operations and you pay that repeatedly for no arithmetic gain.</p>
+
+<pre><code class="nohl">unfused:  x -> [read, gelu, write] -> [read, mul, write] -> [read, add, write]
+          3 round trips to HBM, ~3 FLOPs per element  ->  AI well under 1
+
+fused:    x -> [read, gelu, mul, add, write]
+          1 round trip, same FLOPs                    ->  3x the intensity</code></pre>
+
+<p>Elementwise ops are <i>always</i> memory-bound — they do O(1) work per element — so their runtime is
+essentially "how many times did I touch HBM". Fusion is the only lever, which is what
+<code>torch.compile</code> spends most of its effort on.</p>
+
+<p>FlashAttention is this idea applied to the one operation where it is hardest. Naive attention
+materialises the
+<span class="shape"><b>T</b><span class="x">, </span><b>T</b></span> score matrix in HBM — for
+<span class="math">T = 8192</span> that is 128 MB per head, written and read back, when the L2 cache is
+only 50 MB. FlashAttention never writes it: it tiles Q, K and V into <b>shared memory</b> (the 228 KB
+level, ~7× the bandwidth of HBM), computes each tile's contribution, and keeps only a running softmax.
+<b>The FLOPs are identical. The bytes moved drop by orders of magnitude.</b> On this chapter's roofline
+that is the whole speedup — see <a href="ch17-flashattention.html">Ch&nbsp;17</a> for the algorithm and
+the online-softmax proof that makes it exact.</p>
+
+<div class="quiz" data-title="Checkpoint — the machine">
+<div class="qitem" data-answer="2">
+  <div class="qq">A 7B bf16 model decodes at 239 tokens/s at batch 1 on an H100. You write a much better kernel. What happens?</div>
+  <div class="opts">
+    <div class="opt">Roughly 2× faster — kernels usually leave that much on the table</div>
+    <div class="opt">Up to ~300× faster, since the GPU is 99.7% idle</div>
+    <div class="opt">Essentially nothing: 14 GB ÷ 3.35 TB/s = 4.18 ms is a bandwidth floor, not a software one</div>
+    <div class="opt">Slower, because better kernels use more registers</div>
+  </div>
+  <div class="expl"><b>The weights must cross the bus once per token.</b> The GPU <i>is</i> idle 99.7% of
+  the time, but that idleness is unreachable by faster arithmetic — it is time spent waiting for bytes.
+  The only ways forward are moving fewer bytes (quantize, GQA/MLA) or doing more per byte
+  (batch, speculate).</div>
+</div>
+
+<div class="qitem" data-answer="1">
+  <div class="qq">Why is <code>d_head</code> almost always 64 or 128, rather than 48 or 96?</div>
+  <div class="opts">
+    <div class="opt">Powers of two are faster to index</div>
+    <div class="opt">At 2 bytes per value, only multiples of 64 fill whole 128-byte cache lines; 48 and 96 leave ragged fractions</div>
+    <div class="opt">Attention requires <code>d_head</code> to be a power of two</div>
+    <div class="opt">Because <code>√d_head</code> must be an integer</div>
+  </div>
+  <div class="expl"><b>Cache lines, then tensor-core tiles.</b> 48 and 96 <i>are</i> valid multiples of the
+  16-wide tensor-core k-dimension — so tile alignment alone doesn't rule them out. What does is the
+  128-byte transaction: 96 × 2 = 192 B = 1.5 lines. 64 × 2 = 128 B exactly; 128 × 2 = 256 B exactly.</div>
+</div>
+
+<div class="qitem" data-answer="3">
+  <div class="qq">Prefill on 2048 tokens is compute-bound; decoding one token with the same weights is memory-bound. Why?</div>
+  <div class="opts">
+    <div class="opt">Prefill uses different kernels</div>
+    <div class="opt">Decode has to read the KV cache as well</div>
+    <div class="opt">The KV cache makes decode read more memory than prefill</div>
+    <div class="opt">Both read the weights once, but prefill does 2048× more arithmetic with them — AI goes from 1 to 2048, crossing the ridge at 295</div>
+  </div>
+  <div class="expl"><b>Same bytes, 2048× the work.</b> Arithmetic intensity is FLOPs ÷ bytes, and only the
+  numerator changed. Measured: memory time 4.18 ms for both; compute time 0.014 ms vs 28.98 ms. The KV
+  cache does add decode traffic, but it is not what flips the verdict — the ratio is.</div>
+</div>
+</div>
+
+<h2>14.7 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">14.1</span><span class="ti">Build the roofline calculator</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Write a function that takes an operation's FLOPs and bytes and returns the predicted time, the
+bottleneck, and the achievable fraction of peak:</p>
+<pre><code>def roofline(flops, bytes_moved, peak_flops=989.4e12, bw=3.35e12):
+    t_compute, t_memory = flops / peak_flops, bytes_moved / bw
+    return dict(ai=flops / bytes_moved,
+                bound="compute" if t_compute > t_memory else "memory",
+                seconds=max(t_compute, t_memory),
+                frac_of_peak=min(1.0, (flops / bytes_moved) / (peak_flops / bw)))</code></pre>
+<p>Now use it on every operation in a transformer block for
+<span class="math">d = 4096</span>, <span class="math">B = 1</span>, <span class="math">T = 1</span>:
+the four attention projections, the three SwiGLU matrices, RMSNorm, the residual add, and the softmax.
+<b>Rank them by predicted time.</b> Which are memory-bound? What fraction of a decode step is spent in
+operations that do essentially no arithmetic?</p>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">14.2</span><span class="ti">Find your own ridge point empirically</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>On whatever hardware you have — including CPU — time square matmuls for
+<span class="math">n</span> from 64 to 4096 and plot achieved FLOP/s against <span class="math">n</span>:</p>
+<pre><code>for n in [64, 128, 256, 512, 1024, 2048, 4096]:
+    a, b = torch.randn(n, n), torch.randn(n, n)
+    # warm up first, then time several iterations
+    achieved = 2 * n**3 / elapsed_seconds</code></pre>
+<p>The curve should rise and then flatten. <b>The knee is your machine's ridge point.</b> Compare where
+it lands to <span class="math">n = 3 \times \text{ridge}</span> predicted in §14.2. A CPU's ridge is far
+lower than a GPU's — explain why in terms of the two numbers that define it.</p>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">14.3</span><span class="ti">Predict the batch size that saturates a GPU</span><span class="lvl">hard</span></div>
+<div class="eb">
+<p>For a 70B model in bf16 on 8×H100 (aggregate 26.8 TB/s, 7912 TFLOP/s), compute:</p>
+<ol>
+<li>The decode batch size at which it becomes compute-bound.</li>
+<li>The KV cache size per sequence at 8192 context, with 8 KV heads and
+<span class="math">d_{head} = 128</span> (formula in <a href="ch15-kvcache.html">Ch&nbsp;15</a>).</li>
+<li>Whether the batch from (1) actually <i>fits</i> in the leftover HBM after 140 GB of weights.</li>
+</ol>
+<p>If it does not fit, you have just derived — from arithmetic alone — the reason GQA, MLA and
+PagedAttention exist. State that reason in one sentence.</p>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">14.4</span><span class="ti">Measure the cost of a bad layout</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Build a large 2-D tensor and sum it along each axis, timing both. Then transpose it and repeat:</p>
+<pre><code>x = torch.randn(8192, 8192)
+# time x.sum(0) vs x.sum(1); then x.t().contiguous() and repeat</code></pre>
+<p>One direction walks memory contiguously; the other strides. Report the ratio. Then explain why
+<code>.contiguous()</code> — which <i>copies the whole tensor</i> — often makes the following operation
+faster overall, and connect that to the coalescing table in §14.5.</p>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://dl.acm.org/doi/10.1145/1498765.1498785">Williams, Waterman &amp; Patterson 2009 — Roofline</a> — the original model; everything in §14.1–14.3 is an application of it.</li>
+<li><a href="https://resources.nvidia.com/en-us-hopper-architecture/nvidia-h100-tensor-c">NVIDIA H100 architecture whitepaper</a> — source of the SM, cache and bandwidth figures used here.</li>
+<li><a href="https://docs.nvidia.com/cuda/parallel-thread-execution/">PTX ISA — <code>mma</code> instructions</a> — the actual tile shapes, if you want to confirm <code>m16n8k16</code> rather than take it on trust.</li>
+<li><a href="https://horace.io/brrr_intro.html">Horace He — Making Deep Learning Go Brrrr From First Principles</a> — the clearest short treatment of compute vs memory vs overhead.</li>
+<li><a href="https://arxiv.org/abs/2205.14135">Dao et al. 2022 — FlashAttention</a> — §2 is a worked example of reasoning at this level.</li>
+<li>Companion notebook: <code>notebooks/14_gpu.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
+<script src="assets/viz.js?v=9"></script>
+<script>initChapter("14");</script>
+</body>
+</html>

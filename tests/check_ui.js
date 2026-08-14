@@ -178,7 +178,8 @@ console.log("\n=== MANIFEST INTEGRITY ==========================");
 
 (async () => {
 console.log("\n=== PAGE STRUCTURE ==============================");
-for (const file of ["index.html", "ch01-tensors.html", "ch16-gqa-mla.html", "ch10-backprop.html"]) {
+for (const file of ["index.html", "ch01-tensors.html", "ch16-gqa-mla.html", "ch10-backprop.html",
+                    "ch12-precision.html", "ch14-gpu.html", "ch19-distributed.html"]) {
   const { dom, errors, ready } = load(file, "dark");
   await ready;
   const d = dom.window.document;

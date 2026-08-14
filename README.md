@@ -37,9 +37,9 @@ Almost everyone who finds transformers confusing is actually confused about tens
 ## What's here
 
 ```
-course/            23 interactive chapters. Open with serve.py. This is the course.
+course/            26 interactive chapters. Open with serve.py. This is the course.
   index.html         roadmap, progress tracking, the dimension cheat sheet
-  ch01..ch23         the chapters
+  ch01..ch26         the chapters
   assets/            style.css, course.js (quiz engine), viz.js (12 widgets)
                      chapters.js — the outline; chapter order lives here and nowhere else
 
@@ -67,19 +67,25 @@ data/              downloaded corpus + trained tokenizers (created on first run)
 | **0 · Seeing tensors** | 1–2 | Shapes, strides, broadcasting, matmul, einsum. The foundation everything else stands on. |
 | **I · Text → vectors** | 3–4 | BPE from scratch; embeddings; **the residual stream** |
 | **II · Attention** | 5–7 | Attention derived (incl. why √d_k); the multi-head reshape dance; RoPE |
-| **III · The block and the model** | 8–11 | The block, whole architectures, end-to-end shape trace, **every gradient derived by hand**, then training |
-| **IV · Making it fast** | 12–16 | Sampling, **KV cache & the memory wall**, MQA/GQA/**MLA**, **FlashAttention**, serving |
-| **V · Making it big** | 17–19 | MoE, scaling laws, long context, the 2026 frontier |
-| **VI · Making it useful** | 20–22 | SFT/RLHF/PPO, **DPO derived line by line**, GRPO & RLVR |
-| **VII · Capstone** | 23 | Build the whole thing: RMSNorm+RoPE+GQA+SwiGLU+cache, trained, DPO-aligned |
+| **III · The block and the model** | 8–12 | The block, whole architectures, end-to-end shape trace, **every gradient derived by hand**, training, then **what a float actually is** |
+| **IV · Making it fast** | 13–18 | Sampling, **the GPU and the roofline**, **KV cache & the memory wall**, MQA/GQA/**MLA**, **FlashAttention**, serving |
+| **V · Making it big** | 19–22 | **Distributed training (DP/TP/PP/ZeRO)**, MoE, scaling laws, long context, the 2026 frontier |
+| **VI · Making it useful** | 23–25 | SFT/RLHF/PPO, **DPO derived line by line**, GRPO & RLVR |
+| **VII · Capstone** | 26 | Build the whole thing: RMSNorm+RoPE+GQA+SwiGLU+cache, trained, DPO-aligned |
 
-~30 hours of work. 82 quiz questions, 73 exercises, 12 interactive widgets.
+~35 hours of work. 91 quiz questions, 86 exercises, 12 interactive widgets.
 
-**Chapter 10 (the backward pass) sits deliberately in the middle, not in an appendix.**
-It comes after you can trace a forward pass (Ch 9) and before you are asked to train
-anything (Ch 11), because "training diverged" is unreadable until you know what flows
-backwards. Every gradient — softmax, cross-entropy, RMSNorm, attention — is derived by
-hand and then checked against autograd in the same page.
+### Four chapters that are usually missing
+
+Most courses stop at "autograd handles it" and "GPUs are fast". These four are placed
+where the argument needs them, not appended as an appendix:
+
+| Ch | | |
+|---|---|---|
+| **10** | The backward pass, derived | After you can trace a forward pass (Ch 9), before you are asked to train anything (Ch 11) — "training diverged" is unreadable until you know what flows backwards. Every gradient checked against autograd on the page. |
+| **12** | fp32 / fp16 / bf16 / fp8 | Straight after training, because "my loss went to NaN" is the question it answers. Measured on this repo's own model: **36% of gradients silently flush to zero in fp16** once it converges. |
+| **14** | The GPU and the roofline | Before the memory-wall chapter, which was already doing roofline arithmetic it never justified. Ends with: a 7B model has a hard ceiling of **239 tokens/s at batch 1**, and no kernel can beat it. |
+| **19** | Distributed training | Before MoE, because expert parallelism is meaningless without the vocabulary. Every strategy costed in **bytes on the wire**. |
 
 ---
 
@@ -96,11 +102,11 @@ These are the answer to "I can't picture tensor dimensions." Drag the sliders.
 | **attention** | 5 | Scores → mask → softmax, with √d_k and causal toggles |
 | **rope** | 7 | Position as rotation; why the dot product depends only on distance |
 | **trace** | 9 | 19-step walk through a full forward pass, shape by shape |
-| **softmax** | 12 | Temperature, top-k, top-p reshaping a distribution |
-| **kv** | 13 | KV cache calculator: MHA vs GQA vs MQA vs MLA |
-| **gqa** | 14 | Which query heads share which KV head |
-| **online** | 15 | Streaming vs one-shot softmax agreeing exactly — FlashAttention's theorem |
-| **chinchilla** | 18 | Compute-optimal model/data split |
+| **softmax** | 13 | Temperature, top-k, top-p reshaping a distribution |
+| **kv** | 15 | KV cache calculator: MHA vs GQA vs MQA vs MLA |
+| **gqa** | 16 | Which query heads share which KV head |
+| **online** | 17 | Streaming vs one-shot softmax agreeing exactly — FlashAttention's theorem |
+| **chinchilla** | 21 | Compute-optimal model/data split |
 
 ---
 
@@ -125,7 +131,7 @@ python tests/test_tfs.py         # 30 tests
 python tests/run_notebooks.py    # executes every notebook's code
 
 cd tests && npm install jsdom && node check_ui.js
-#   86 UI checks: WCAG contrast for every colour pair in BOTH themes, plus
+#   145 UI checks: WCAG contrast for every colour pair in BOTH themes, plus
 #   confirmation that each page builds its layout, topbar, theme toggle,
 #   copy buttons, chapter nav and quiz markers.
 

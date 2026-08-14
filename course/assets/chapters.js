@@ -48,7 +48,7 @@ const PARTS = [
         s: "Every gradient by hand: softmax, cross-entropy, RMSNorm, attention — checked against autograd", tag: "100 min" },
       { id: "11", f: "ch11-training.html", t: "Training a Transformer",
         s: "Cross-entropy, teacher forcing, AdamW, warmup+cosine, and the tricks that matter", tag: "80 min" },
-      { id: "12", f: "ch12-precision.html", wip: true, t: "Numbers: fp32, fp16, bf16, fp8",
+      { id: "12", f: "ch12-precision.html", t: "Numbers: fp32, fp16, bf16, fp8",
         s: "What a float actually is, why fp16 training NaNs, loss scaling, and where fp32 survives", tag: "85 min" },
     ]
   },
@@ -58,7 +58,7 @@ const PARTS = [
     ch: [
       { id: "13", f: "ch13-decoding.html", t: "Decoding and Sampling",
         s: "Greedy, temperature, top-k, top-p, min-p, beam — and what each does to the distribution", tag: "55 min" },
-      { id: "14", f: "ch14-gpu.html", wip: true, t: "The GPU: Memory, Tensor Cores, and the Roofline",
+      { id: "14", f: "ch14-gpu.html", t: "The GPU: Memory, Tensor Cores, and the Roofline",
         s: "Why d_head is 64 or 128, why HBM is the bottleneck, and how to predict which it is", tag: "90 min" },
       { id: "15", f: "ch15-kvcache.html", t: "The KV Cache and the Memory Wall",
         s: "Prefill vs decode, why generation is memory-bound, and the arithmetic that proves it", tag: "65 min" },
@@ -74,7 +74,7 @@ const PARTS = [
     n: "Part V", t: "Making It Big",
     d: "More GPUs, sparser models, and the 2026 frontier",
     ch: [
-      { id: "19", f: "ch19-distributed.html", wip: true, t: "Distributed Training: DP, TP, PP, ZeRO",
+      { id: "19", f: "ch19-distributed.html", t: "Distributed Training: DP, TP, PP, ZeRO",
         s: "What each split costs in bytes on the wire, and why the 4-D mesh is shaped the way it is", tag: "90 min" },
       { id: "20", f: "ch20-moe.html", t: "Mixture of Experts",
         s: "Routing, top-k, load balancing, shared experts, and why 671B can run like 37B", tag: "70 min" },
