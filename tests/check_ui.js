@@ -128,7 +128,7 @@ for (const theme of ["light", "dark"]) {
 
 (async () => {
 console.log("\n=== PAGE STRUCTURE ==============================");
-for (const file of ["index.html", "ch01-tensors.html", "ch13-gqa-mla.html"]) {
+for (const file of ["index.html", "ch01-tensors.html", "ch13-gqa-mla.html", "ch23-backprop.html"]) {
   const { dom, errors, ready } = load(file, "dark");
   await ready;
   const d = dom.window.document;
@@ -143,8 +143,11 @@ for (const file of ["index.html", "ch01-tensors.html", "ch13-gqa-mla.html"]) {
      "copy buttons on every code block", `${d.querySelectorAll(".copy-btn").length}/${pres.length}`);
   // navigation
   ok(!!d.querySelector(".sidebar"), "sidebar built");
-  ok(d.querySelectorAll(".sb-ch").length === 22, "all 22 chapters in sidebar",
-     `${d.querySelectorAll(".sb-ch").length}`);
+  // read the expected count from the manifest so this can never go stale
+  const manifest = fs.readFileSync(path.join(ROOT, "assets", "chapters.js"), "utf8");
+  const nChapters = (manifest.match(/id:\s*"\d+"/g) || []).length;
+  ok(d.querySelectorAll(".sb-ch").length === nChapters,
+     `all ${nChapters} chapters in sidebar`, `${d.querySelectorAll(".sb-ch").length}`);
   ok(!!d.querySelector("#sbq"), "chapter filter present");
   ok(!!d.querySelector(".readbar"), "reading-progress bar present");
   ok(!!d.querySelector(".sb-toggle"), "drawer toggle present (narrow screens)");

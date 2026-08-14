@@ -94,6 +94,14 @@ const PARTS = [
         s: "RMSNorm + RoPE + GQA + SwiGLU + KV cache, trained, then DPO-aligned", tag: "4-8 hrs" },
     ]
   },
+  {
+    n: "Part VIII", t: "Under the Hood",
+    d: "The layer below everything above",
+    ch: [
+      { id: "23", f: "ch23-backprop.html", t: "The Backward Pass, Derived",
+        s: "Every gradient in a transformer, by hand: softmax, cross-entropy, RMSNorm, attention", tag: "100 min" },
+    ]
+  },
 ];
 
 /* flat list for prev/next */

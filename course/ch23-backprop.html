@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 23 — The Backward Pass, Derived</title>
+<meta name="color-scheme" content="light dark">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=7">
+</head>
+<body>
+<main>
+
+<h1>23 · The Backward Pass, Derived</h1>
+<p class="lead">
+Everything so far said "autograd handles it". That is a hole. This chapter derives every gradient in
+a transformer by hand — softmax, cross-entropy, RMSNorm, attention — and checks each one against
+autograd. After this you can implement a backward pass, debug a wrong one, and read a CUDA kernel.
+</p>
+
+<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the forward attention you are about to differentiate<br><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; RMSNorm and the residual<br><a href="ch10-training.html">Ch&nbsp;10</a> &mdash; where these gradients get used<div class="sep"></div><span class="k">Leads to</span><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; why the backward pass can recompute tiles<div class="sep"></div><span class="k">Why this chapter</span>The layer under "autograd handles it". Nothing here is optional if you want to work below the framework.</div>
+
+<div class="box intuition">
+<span class="t">The one idea in this chapter</span>
+<p style="margin-bottom:0">Backprop is <b>one rule applied repeatedly</b>: given
+<span class="math">∂L/∂output</span>, produce <span class="math">∂L/∂input</span> and
+<span class="math">∂L/∂weights</span>. Every layer is a small, local function that answers that
+question. The chain rule stitches them together. There is no global magic.</p>
+</div>
+
+<h2>23.1 · The only rule</h2>
+
+<p>Write the network as a chain of functions. The loss is a scalar at the end:</p>
+
+<div class="mathblock">
+x &rarr; f<sub>1</sub> &rarr; h<sub>1</sub> &rarr; f<sub>2</sub> &rarr; h<sub>2</sub> &rarr; &hellip; &rarr; L
+</div>
+
+<p>Each layer receives the <b>upstream gradient</b> <span class="math">∂L/∂h<sub>i</sub></span> — a tensor
+<i>the same shape as its own output</i> — and must return <span class="math">∂L/∂h<sub>i−1</sub></span>,
+the same shape as its input.</p>
+
+<div class="box math-note">
+<span class="t">Shapes make backprop almost mechanical</span>
+<p style="margin-bottom:0">A gradient always has <b>the same shape as the thing it is a gradient of</b>.
+<code>x.grad.shape == x.shape</code>, always. So if the forward was
+<span class="shape"><b>4</b><span class="x">, </span><b>3</b></span> <code>@</code>
+<span class="shape"><b>3</b><span class="x">, </span><b>5</b></span> →
+<span class="shape"><b>4</b><span class="x">, </span><b>5</b></span>, then backward takes a
+<span class="shape o"><b>4</b><span class="x">, </span><b>5</b></span> and must produce a
+<span class="shape q"><b>4</b><span class="x">, </span><b>3</b></span> and a
+<span class="shape k"><b>3</b><span class="x">, </span><b>5</b></span>. There is usually only one way to
+contract the indices that gives those shapes — <b>which is often enough to derive the formula</b>.</p>
+</div>
+
+<h3>Matmul, the base case</h3>
+
+<p>For <span class="math">C = A B</span> with <span class="math">A</span> of shape
+<span class="math">(m,k)</span> and <span class="math">B</span> of shape <span class="math">(k,n)</span>:</p>
+
+<div class="mathblock">
+<span class="frac"><span class="n">∂L</span><span class="d">∂A</span></span> =
+<span class="frac"><span class="n">∂L</span><span class="d">∂C</span></span> B<sup>T</sup>
+&nbsp;&nbsp;&nbsp;&nbsp;
+<span class="frac"><span class="n">∂L</span><span class="d">∂B</span></span> = A<sup>T</sup>
+<span class="frac"><span class="n">∂L</span><span class="d">∂C</span></span>
+<span class="lbl">shapes: (m,n)(n,k) = (m,k) ✓ &nbsp;·&nbsp; (k,m)(m,n) = (k,n) ✓</span>
+</div>
+
+<p>Read those shapes. <code>dL/dC</code> is <code>(m,n)</code>; to get something <code>(m,k)</code> you
+must multiply by something <code>(n,k)</code>, and the only candidate is <code>B<sup>T</sup></code>.
+The formula is forced.</p>
+
+<h2>23.2 · Softmax: the dense Jacobian</h2>
+
+<p>Softmax is the first genuinely interesting one, because <b>every output depends on every input</b>.
+So its derivative is not a vector but a full <span class="math">(n, n)</span> Jacobian.</p>
+
+<p>Let <span class="math">s<sub>i</sub> = e<sup>x<sub>i</sub></sup> / Σ<sub>j</sub>
+e<sup>x<sub>j</sub></sup></span>. Differentiate with the quotient rule, splitting on whether the index
+matches:</p>
+
+<div class="example">
+<span class="t">Derivation — two cases</span>
+
+<div class="step"><div class="i">1</div><div>
+<b>Case <span class="math">i = j</span>.</b> Let <span class="math">Z = Σ<sub>k</sub>e<sup>x<sub>k</sub></sup></span>.
+<pre style="margin:.4rem 0"><code class="nohl">ds_i/dx_i = (e^x_i · Z − e^x_i · e^x_i) / Z²
+          = (e^x_i/Z) · (1 − e^x_i/Z)
+          = s_i(1 − s_i)</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Case <span class="math">i ≠ j</span>.</b> The numerator <span class="math">e<sup>x<sub>i</sub></sup></span>
+does not depend on <span class="math">x<sub>j</sub></span>, only <span class="math">Z</span> does:
+<pre style="margin:.4rem 0"><code class="nohl">ds_i/dx_j = (0 · Z − e^x_i · e^x_j) / Z²
+          = −s_i s_j</code></pre>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>Combine with the Kronecker delta</b> (<span class="math">δ<sub>ij</sub></span> is 1 when
+<span class="math">i=j</span>, else 0):
+<div class="mathblock" style="margin:.4rem 0">
+<span class="frac"><span class="n">∂s<sub>i</sub></span><span class="d">∂x<sub>j</sub></span></span>
+= s<sub>i</sub>(δ<sub>ij</sub> − s<sub>j</sub>)
+&nbsp;&nbsp;i.e.&nbsp;&nbsp; J = diag(s) − s s<sup>T</sup>
+</div>
+</div></div>
+
+<div class="step"><div class="i">=</div><div>
+<b>Checked numerically</b> at <code>x = [1.0, 2.0, 0.5]</code>, so
+<code>s = [0.2312, 0.6285, 0.1402]</code>:
+<pre style="margin:.4rem 0"><code class="nohl">autograd Jacobian        diag(s) − s sᵀ
+[ 0.1778 −0.1453 −0.0324]   [ 0.1778 −0.1453 −0.0324]
+[−0.1453  0.2335 −0.0881] = [−0.1453  0.2335 −0.0881]
+[−0.0324 −0.0881  0.1206]   [−0.0324 −0.0881  0.1206]</code></pre>
+Note it is <b>symmetric</b>, and every <b>row sums to zero</b> — because the outputs must keep summing
+to 1, so any increase somewhere is exactly paid for elsewhere.
+</div></div>
+</div>
+
+<h3>The vector-Jacobian product, which is what actually runs</h3>
+
+<p>Frameworks never build that <span class="math">(n,n)</span> matrix. They compute
+<span class="math">J<sup>T</sup>g</span> directly for upstream gradient <span class="math">g</span>:</p>
+
+<div class="mathblock">
+<span class="frac"><span class="n">∂L</span><span class="d">∂x</span></span>
+= s ⊙ <big>(</big>g − (g·s)<big>)</big>
+<span class="lbl">one elementwise multiply and one dot product — O(n), not O(n²)</span>
+</div>
+
+<pre><code>def softmax_backward(s, g):
+    """s: forward output. g: upstream gradient. Both (..., n)."""
+    return s * (g - (g * s).sum(-1, keepdim=True))
+
+# equals the full Jacobian product, without ever forming it
+x = torch.tensor([1.0, 2.0, 0.5], requires_grad=True)
+s = x.softmax(0); g = torch.tensor([0.3, -1.2, 0.7])
+s.backward(g)
+assert torch.allclose(x.grad, softmax_backward(s.detach(), g), atol=1e-6)</code></pre>
+
+<h2>23.3 · Cross-entropy + softmax: why it collapses to <code>p − y</code></h2>
+
+<p>Here is the most satisfying result in the chapter. Softmax alone has that dense Jacobian. Compose it
+with cross-entropy and almost everything cancels.</p>
+
+<p>With <span class="math">L = −log p<sub>c</sub></span> for correct class <span class="math">c</span>,
+and <span class="math">p = softmax(z)</span>:</p>
+
+<div class="example">
+<span class="t">Derivation — three lines</span>
+
+<div class="step"><div class="i">1</div><div>
+<b>Gradient of the loss w.r.t. the probabilities.</b> Only the correct class appears in the loss:
+<pre style="margin:.4rem 0"><code class="nohl">dL/dp_i = −1/p_c   if i = c,   else 0</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Chain through the softmax Jacobian.</b> Only the <span class="math">i=c</span> term survives step 1:
+<pre style="margin:.4rem 0"><code class="nohl">dL/dz_j = Σ_i (dL/dp_i)(dp_i/dz_j)
+        = (−1/p_c) · p_c(δ_cj − p_j)
+        = −(δ_cj − p_j)
+        = p_j − δ_cj</code></pre>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>In vector form,</b> with <span class="math">y</span> the one-hot target:
+<div class="mathblock" style="margin:.4rem 0;font-size:1.15em">
+<span class="frac"><span class="n">∂L</span><span class="d">∂z</span></span> = p − y
+</div>
+</div></div>
+
+<div class="step"><div class="i">=</div><div>
+<b>Checked</b> at <code>logits = [2.0, 1.0, 0.1]</code>, target class 0:
+<pre style="margin:.4rem 0"><code class="nohl">p        = [ 0.6590,  0.2424,  0.0986]
+p − y    = [−0.3410,  0.2424,  0.0986]
+autograd = [−0.3410,  0.2424,  0.0986]   ✓</code></pre>
+</div></div>
+</div>
+
+<div class="box intuition">
+<span class="t">Read what <code>p − y</code> says</span>
+<p style="margin-bottom:0">The gradient on each logit is simply <b>"how much probability you assigned
+minus how much you should have"</b>. The correct token gets a negative gradient proportional to how much
+mass it was missing; every wrong token gets a positive one proportional to the mass it stole. It is the
+prediction error, nothing more.</p>
+<p style="margin-bottom:0"><b>And this is why you must never softmax before <code>cross_entropy</code>.</b>
+PyTorch's <code>F.cross_entropy</code> takes <i>logits</i> precisely so it can use this fused, stable
+form. Feed it probabilities and you apply softmax twice — the loss still decreases, so it looks like it
+works, while the gradients are wrong.</p>
+</div>
+
+<h2>23.4 · RMSNorm: where the gradient gets a correction term</h2>
+
+<p>Forward (dropping <span class="math">γ</span> for clarity):
+<span class="math">y = x / r</span> where <span class="math">r = √(mean(x²))</span>.</p>
+
+<p>The subtlety: <span class="math">r</span> depends on <b>every</b> element of
+<span class="math">x</span>, so changing <span class="math">x<sub>1</sub></span> changes <i>all</i> the
+outputs. That produces a second term:</p>
+
+<div class="mathblock">
+<span class="frac"><span class="n">∂L</span><span class="d">∂x</span></span>
+= <span class="frac"><span class="n">1</span><span class="d">r</span></span>
+<big>[</big> g ⊙ γ − x <span class="frac"><span class="n">(g ⊙ γ) · x</span><span class="d">d · r²</span></span> <big>]</big>
+<span class="lbl">first term: the obvious rescale. second: the correction because r moved too.</span>
+</div>
+
+<div class="example">
+<span class="t">Verified, and what the correction term does</span>
+<p><code>x = [3, 1, 4, 8]</code>, <code>rms = 4.7434</code>, upstream <code>g = [1, 0, 0, 0]</code>:</p>
+<pre style="margin:.4rem 0"><code class="nohl">autograd:  [ 0.189737, −0.007027, −0.028109, −0.056218]
+formula :  [ 0.189737, −0.007027, −0.028109, −0.056218]   ✓</code></pre>
+<p>Look at what happened: we pushed <b>only</b> on element 0, yet elements 1–3 received
+<b>negative</b> gradient. Raising <span class="math">x<sub>0</sub></span> would raise the RMS, which
+would shrink everything else — so the gradient pre-emptively pushes them the other way.</p>
+<p style="margin-bottom:0"><b>The geometric fact:</b>
+<code>dot(grad, x) = 0.0</code>, exactly. The gradient is <b>orthogonal to x</b>. Normalisation makes
+the layer invariant to the scale of its input, so the gradient carries <i>no</i> component that would
+merely rescale <span class="math">x</span> — that direction cannot change the loss, so it gets zero
+gradient. <b>This is the mechanism behind "normalisation stabilises training"</b>, stated precisely.</p>
+</div>
+
+<pre><code>def rmsnorm_backward(x, g, gamma, eps=0.0):
+    d = x.shape[-1]
+    r = x.pow(2).mean(-1, keepdim=True).add(eps).sqrt()
+    gg = g * gamma
+    return (gg - x * (gg * x).sum(-1, keepdim=True) / (d * r**2)) / r
+
+x = torch.tensor([3., 1., 4., 8.], requires_grad=True)
+gamma = torch.ones(4); g = torch.tensor([1., 0., 0., 0.])
+(x / x.pow(2).mean().sqrt() * gamma).backward(g)
+assert torch.allclose(x.grad, rmsnorm_backward(x.detach(), g, gamma), atol=1e-6)
+assert abs(torch.dot(x.grad, x.detach())) < 1e-5          # orthogonal</code></pre>
+
+<h2>23.5 · Attention backward, all three gradients</h2>
+
+<p>Now assemble. Forward:
+<span class="math">S = QK<sup>T</sup>/√d</span>,
+<span class="math">P = softmax(S)</span>,
+<span class="math">O = PV</span>. Given <span class="math">dO</span>, we need
+<span class="math">dQ, dK, dV</span>.</p>
+
+<div class="example">
+<span class="t">Derivation — walk the chain backwards</span>
+
+<div class="step"><div class="i">1</div><div>
+<b><span class="math">O = PV</span>, so by the matmul rule:</b>
+<pre style="margin:.4rem 0"><code class="nohl">dV = Pᵀ @ dO           (T,T)ᵀ(T,d) -> (T,d) ✓
+dP = dO @ Vᵀ           (T,d)(d,T)  -> (T,T) ✓</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Through the softmax</b>, row by row, using §23.2's VJP:
+<pre style="margin:.4rem 0"><code class="nohl">dS = P ⊙ (dP − rowsum(dP ⊙ P))</code></pre>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b><span class="math">S = QK<sup>T</sup>/√d</span>, matmul rule again:</b>
+<pre style="margin:.4rem 0"><code class="nohl">dQ = dS  @ K / √d
+dK = dSᵀ @ Q / √d</code></pre>
+</div></div>
+
+<div class="step"><div class="i">=</div><div>
+<b>All three verified against autograd</b> for random <code>(T=4, d=3)</code> inputs — match to 1e-5.
+</div></div>
+</div>
+
+<pre><code>def attention_backward(q, k, v, P, dO):
+    dk_ = q.shape[-1]
+    dV = P.transpose(-2, -1) @ dO
+    dP = dO @ v.transpose(-2, -1)
+    dS = P * (dP - (dP * P).sum(-1, keepdim=True))       # softmax VJP
+    dQ = dS @ k / dk_**0.5
+    dK = dS.transpose(-2, -1) @ q / dk_**0.5
+    return dQ, dK, dV</code></pre>
+
+<div class="box intuition">
+<span class="t">Now Chapter 14 makes sense at the kernel level</span>
+<p style="margin-bottom:0">Look at what step 2 needs: <b><code>P</code> and a row sum.</b> No
+<span class="math">(T,T)</span> Jacobian is ever constructed — the softmax backward is elementwise plus
+one reduction. That is <i>exactly</i> why FlashAttention can throw <code>P</code> away in the forward
+pass and <b>recompute it tile by tile</b> in the backward: each tile of <code>dS</code> needs only the
+corresponding tile of <code>P</code> and a running row statistic. Without this structure, the
+recomputation trick would be impossible.</p>
+</div>
+
+<h2>23.6 · The residual connection, quantified</h2>
+
+<p>Chapter 4 asserted that <span class="math">y = x + f(x)</span> gives
+<span class="math">∂y/∂x = 1 + f′(x)</span>. Here is what that does over depth.</p>
+
+<div class="example">
+<span class="t">Why 100 layers train at all</span>
+<div class="step"><div class="i">1</div><div>
+<b>Plain stack.</b> The gradient reaching layer 1 is a <b>product</b> of every Jacobian above it.
+If each has magnitude 0.9:
+<pre style="margin:.4rem 0"><code class="nohl">20 layers:  0.9²⁰ = 0.1216      <- 8× weaker
+50 layers:  0.9⁵⁰ = 0.0052      <- 190× weaker
+100 layers: 0.9¹⁰⁰ = 0.0000266  <- 37,600× weaker, effectively dead</code></pre>
+</div></div>
+<div class="step"><div class="i">2</div><div>
+<b>Residual stack.</b> Each term is <span class="math">(1 + f′)</span>. Even when
+<span class="math">f′</span> is small, the <b>1</b> survives, so the product stays near 1 and the
+gradient reaches layer 1 essentially undamped.
+</div></div>
+<div class="step"><div class="i">=</div><div>
+Verified: <code>f(x)=0.3x²</code> at <code>x=2</code> gives <code>f′=1.2</code>, and autograd returns
+<b>2.2000</b> for <code>d(x+f)/dx</code> — exactly <code>1 + 1.2</code>.
+</div></div>
+</div>
+
+<div class="quiz" data-title="Checkpoint — the backward pass">
+<div class="qitem" data-answer="1">
+  <div class="qq">Why does <code>F.cross_entropy</code> take <b>logits</b> rather than probabilities?</div>
+  <div class="opts">
+    <div class="opt">Probabilities would be slower to compute</div>
+    <div class="opt">Fusing softmax with the loss lets the gradient collapse to the stable, exact <code>p − y</code></div>
+    <div class="opt">Logits use less memory</div>
+    <div class="opt">It doesn't matter; both work</div>
+  </div>
+  <div class="expl"><b>The fused gradient.</b> Separately, softmax has a dense Jacobian and
+  <code>log</code> of a tiny probability is numerically nasty. Fused, everything cancels to
+  <code>p − y</code> — one subtraction, no cancellation error. If you softmax first and then call
+  <code>cross_entropy</code>, you apply softmax <b>twice</b>; loss still falls, so it looks like it
+  works, while gradients are wrong.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">You push upstream gradient on <b>one</b> element of an RMSNorm output. Why do the other
+  elements receive nonzero gradient?</div>
+  <div class="opts">
+    <div class="opt">A bug — they should be zero</div>
+    <div class="opt">Because γ mixes the channels</div>
+    <div class="opt">Because the RMS depends on every element, so changing one changes all the outputs</div>
+    <div class="opt">Because of the epsilon term</div>
+  </div>
+  <div class="expl"><b>The normaliser couples them.</b> Raising one element raises the RMS, which shrinks
+  every other output — so the gradient includes a correction pushing them the other way. The result is a
+  gradient exactly <b>orthogonal to x</b>: the direction that merely rescales the input cannot change the
+  loss, so it receives no gradient. (γ is elementwise and does not mix channels.)</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">What does the softmax backward need, and why does that matter for FlashAttention?</div>
+  <div class="opts">
+    <div class="opt">Only P and a row sum — elementwise plus one reduction, so P can be recomputed tile by tile</div>
+    <div class="opt">The full (T,T) Jacobian, which must be stored</div>
+    <div class="opt">The original logits S, which must be stored</div>
+    <div class="opt">Nothing — softmax has no gradient</div>
+  </div>
+  <div class="expl"><b>P and a row sum.</b> <code>dS = P ⊙ (dP − rowsum(dP ⊙ P))</code> is elementwise
+  plus one reduction. No Jacobian is materialised, and each tile is independent given its row statistic —
+  which is precisely what lets FlashAttention discard P in the forward pass and rebuild it in SRAM during
+  backward.</div>
+</div>
+</div>
+
+<h2>23.7 · Exercises</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">23.1</span><span class="ti">Write backward for every layer, check against autograd</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Implement <code>softmax_backward</code>, <code>rmsnorm_backward</code>, <code>attention_backward</code>
+and a linear layer's backward. Verify each against autograd on random inputs:</p>
+<pre><code>def check(fn_forward, manual_backward, *inputs):
+    ins = [t.clone().requires_grad_(True) for t in inputs]
+    out = fn_forward(*ins)
+    g = torch.randn_like(out)
+    out.backward(g)
+    mine = manual_backward(*[t.detach() for t in inputs], g)
+    for auto, man in zip([t.grad for t in ins], mine):
+        assert torch.allclose(auto, man, atol=1e-5), (auto, man)
+    return "ok"</code></pre>
+<p class="tiny" style="margin-bottom:0">Use <code>float64</code> while debugging — float32 noise can
+hide a genuinely wrong formula behind a loose tolerance.</p>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">23.2</span><span class="ti">Gradient checking from first principles</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Before autograd existed, this is how everyone verified a backward pass. Central differences:</p>
+<div class="mathblock" style="margin:.6rem 0;font-size:1em">
+<span class="frac"><span class="n">∂L</span><span class="d">∂x<sub>i</sub></span></span> &asymp;
+<span class="frac"><span class="n">L(x + εe<sub>i</sub>) − L(x − εe<sub>i</sub>)</span><span class="d">2ε</span></span>
+</div>
+<pre><code>def grad_check(f, x, eps=1e-6):
+    x = x.double()
+    num = torch.zeros_like(x)
+    for i in range(x.numel()):
+        xp, xm = x.clone(), x.clone()
+        xp.view(-1)[i] += eps; xm.view(-1)[i] -= eps
+        num.view(-1)[i] = (f(xp) - f(xm)) / (2 * eps)
+    xa = x.clone().requires_grad_(True); f(xa).backward()
+    rel = (num - xa.grad).norm() / (num.norm() + xa.grad.norm())
+    return rel.item()          # want < 1e-7 in float64
+</code></pre>
+<details class="reveal"><summary>Why central and not forward differences</summary><div>
+<p style="margin-bottom:0">Forward differences <code>(L(x+ε) − L(x))/ε</code> have error
+<span class="math">O(ε)</span>; central differences have <span class="math">O(ε²)</span>. With
+<code>ε=1e-6</code> that is the difference between ~1e-6 and ~1e-12 error — enough to distinguish a
+correct formula from a subtly wrong one. Also: do this in <code>float64</code>. In float32 the
+subtraction of two nearly-equal numbers loses most of your significant digits, and everything looks
+wrong.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">23.3</span><span class="ti">Measure the residual's effect on gradient flow</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Build a 40-layer stack of <code>x -&gt; tanh(Wx)</code> with and without a residual connection. Do one
+backward pass and plot <code>grad.norm()</code> per layer on a log axis.</p>
+<details class="reveal"><summary>What you should see</summary><div>
+<p style="margin-bottom:0">Without residuals the gradient norm decays roughly geometrically with depth —
+a straight line on a log axis, often 4–6 orders of magnitude between layer 40 and layer 1. With
+residuals it is nearly flat. That plot <i>is</i> the vanishing-gradient problem, and it is far more
+convincing than any prose about it.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">23.4</span><span class="ti">Break cross-entropy on purpose</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>Compute the loss two ways and compare both the value <i>and</i> the gradient:</p>
+<pre><code>logits = torch.randn(4, 10, requires_grad=True)
+target = torch.randint(0, 10, (4,))
+
+a = F.cross_entropy(logits, target)                    # correct
+b = F.cross_entropy(logits.softmax(-1), target)        # softmax applied TWICE
+c = F.nll_loss(logits.softmax(-1).log(), target)       # also correct, less stable</code></pre>
+<ol>
+<li>Which two agree? By how much do the gradients differ?</li>
+<li>Now set <code>logits = logits * 50</code> and compare <code>a</code> against <code>c</code>. What
+happens to <code>c</code>, and why?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<ol>
+<li><b>a and c</b> agree. <code>b</code> is wrong — it softmaxes an already-normalised vector, which
+flattens it drastically, so the loss is far too uniform and the gradient direction is wrong. Critically
+<code>b</code> still <i>decreases</i> during training, which is why this bug survives code review.</li>
+<li>At <code>×50</code> the largest logits dominate completely; <code>softmax</code> underflows the
+small entries to exactly <b>0</b>, and <code>log(0) = −inf</code>. Version <code>a</code> is fine
+because the fused kernel uses the log-sum-exp trick internally and never materialises a zero
+probability. <b>This is what "numerically stable" buys you</b> — not accuracy in the last decimal, but
+the difference between a number and <code>inf</code>.</li>
+</ol>
+</div></details>
+</div></div>
+
+<h2>Sources &amp; further reading</h2>
+<ul class="tiny">
+<li><a href="https://cs231n.github.io/optimization-2/">CS231n — Backprop, intuitions</a> — the clearest introduction to the local-gradient view.</li>
+<li><a href="https://www.youtube.com/watch?v=VMj-3S1tku0">Karpathy — building micrograd</a> — autograd from nothing, in 100 lines.</li>
+<li><a href="https://arxiv.org/abs/2205.14135">Dao et al. 2022 — FlashAttention</a>, Appendix B, for the tiled backward pass.</li>
+<li><a href="https://arxiv.org/abs/1502.01852">He et al. 2015</a> — where the variance argument behind initialisation is made.</li>
+<li>Companion notebook: <code>notebooks/23_backprop.ipynb</code></li>
+</ul>
+
+</main>
+
+<script src="assets/chapters.js?v=7"></script>
+<script src="assets/course.js?v=7"></script>
+<script src="assets/viz.js?v=7"></script>
+<script>initChapter("23");</script>
+</body>
+</html>
