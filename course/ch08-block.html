@@ -6,7 +6,7 @@
 <title>Ch 8 — The Transformer Block</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=9">
+<link rel="stylesheet" href="assets/style.css?v=10">
 </head>
 <body>
 <main>
@@ -41,39 +41,39 @@ Communicate, then compute. Repeat.</p>
 <figure>
 <svg viewBox="0 0 560 330" xmlns="http://www.w3.org/2000/svg">
   <defs><marker id="a8" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-    <path d="M0,0 L6,3 L0,6 z" fill="var(--ink-3,#6E7885)"/></marker></defs>
+    <path d="M0,0 L6,3 L0,6 z" fill="var(--ink-3,#775446)"/></marker></defs>
   <g font-family="monospace" font-size="11">
-    <line x1="90" y1="310" x2="90" y2="20" stroke="var(--accent,#0B6E62)" stroke-width="6" opacity=".25"/>
+    <line x1="90" y1="310" x2="90" y2="20" stroke="var(--accent,#6A2E93)" stroke-width="6" opacity=".25"/>
 
-    <text x="90" y="325" fill="var(--accent,#0B6E62)" text-anchor="middle">x  (B, T, C)</text>
+    <text x="90" y="325" fill="var(--accent,#6A2E93)" text-anchor="middle">x  (B, T, C)</text>
 
     <!-- sublayer 1 -->
-    <path d="M90 300 V270 H190" stroke="var(--ink-3,#6E7885)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
-    <rect x="195" y="252" width="120" height="34" rx="7" fill="var(--surface,#fff)" stroke="var(--dim-4,#5A7A2E)" stroke-width="1.3"/>
-    <text x="255" y="273" fill="var(--dim-4,#5A7A2E)" text-anchor="middle">RMSNorm</text>
-    <path d="M315 269 H345" stroke="var(--ink-3,#6E7885)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
-    <rect x="350" y="252" width="150" height="34" rx="7" fill="var(--surface,#fff)" stroke="var(--dim-1,#A8761C)" stroke-width="1.3"/>
-    <text x="425" y="273" fill="var(--dim-1,#A8761C)" text-anchor="middle">Multi-Head Attn</text>
-    <path d="M425 252 V215 H98" stroke="var(--dim-1,#A8761C)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
-    <circle cx="90" cy="215" r="9" fill="var(--paper,#FAFAF9)" stroke="var(--dim-1,#A8761C)" stroke-width="1.6"/>
-    <text x="90" y="219" fill="var(--dim-1,#A8761C)" text-anchor="middle" font-size="12">+</text>
-    <text x="270" y="208" fill="var(--ink-3,#6E7885)" font-size="10">residual add — the stream is never replaced</text>
+    <path d="M90 300 V270 H190" stroke="var(--ink-3,#775446)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <rect x="195" y="252" width="120" height="34" rx="7" fill="var(--surface,#FBF4E4)" stroke="var(--dim-4,#3F6B14)" stroke-width="1.3"/>
+    <text x="255" y="273" fill="var(--dim-4,#3F6B14)" text-anchor="middle">RMSNorm</text>
+    <path d="M315 269 H345" stroke="var(--ink-3,#775446)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <rect x="350" y="252" width="150" height="34" rx="7" fill="var(--surface,#FBF4E4)" stroke="var(--dim-1,#B4430A)" stroke-width="1.3"/>
+    <text x="425" y="273" fill="var(--dim-1,#B4430A)" text-anchor="middle">Multi-Head Attn</text>
+    <path d="M425 252 V215 H98" stroke="var(--dim-1,#B4430A)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <circle cx="90" cy="215" r="9" fill="var(--paper,#E7D8BC)" stroke="var(--dim-1,#B4430A)" stroke-width="1.6"/>
+    <text x="90" y="219" fill="var(--dim-1,#B4430A)" text-anchor="middle" font-size="12">+</text>
+    <text x="270" y="208" fill="var(--ink-3,#775446)" font-size="10">residual add — the stream is never replaced</text>
 
     <!-- sublayer 2 -->
-    <path d="M90 195 V165 H190" stroke="var(--ink-3,#6E7885)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
-    <rect x="195" y="147" width="120" height="34" rx="7" fill="var(--surface,#fff)" stroke="var(--dim-4,#5A7A2E)" stroke-width="1.3"/>
-    <text x="255" y="168" fill="var(--dim-4,#5A7A2E)" text-anchor="middle">RMSNorm</text>
-    <path d="M315 164 H345" stroke="var(--ink-3,#6E7885)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
-    <rect x="350" y="147" width="150" height="34" rx="7" fill="var(--surface,#fff)" stroke="var(--dim-3,#A8484F)" stroke-width="1.3"/>
-    <text x="425" y="168" fill="var(--dim-3,#A8484F)" text-anchor="middle">MLP / SwiGLU</text>
-    <path d="M425 147 V110 H98" stroke="var(--dim-3,#A8484F)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
-    <circle cx="90" cy="110" r="9" fill="var(--paper,#FAFAF9)" stroke="var(--dim-1,#A8761C)" stroke-width="1.6"/>
-    <text x="90" y="114" fill="var(--dim-1,#A8761C)" text-anchor="middle" font-size="12">+</text>
+    <path d="M90 195 V165 H190" stroke="var(--ink-3,#775446)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <rect x="195" y="147" width="120" height="34" rx="7" fill="var(--surface,#FBF4E4)" stroke="var(--dim-4,#3F6B14)" stroke-width="1.3"/>
+    <text x="255" y="168" fill="var(--dim-4,#3F6B14)" text-anchor="middle">RMSNorm</text>
+    <path d="M315 164 H345" stroke="var(--ink-3,#775446)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <rect x="350" y="147" width="150" height="34" rx="7" fill="var(--surface,#FBF4E4)" stroke="var(--dim-3,#A3176B)" stroke-width="1.3"/>
+    <text x="425" y="168" fill="var(--dim-3,#A3176B)" text-anchor="middle">MLP / SwiGLU</text>
+    <path d="M425 147 V110 H98" stroke="var(--dim-3,#A3176B)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <circle cx="90" cy="110" r="9" fill="var(--paper,#E7D8BC)" stroke="var(--dim-1,#B4430A)" stroke-width="1.6"/>
+    <text x="90" y="114" fill="var(--dim-1,#B4430A)" text-anchor="middle" font-size="12">+</text>
 
-    <path d="M90 90 V45" stroke="var(--accent,#0B6E62)" stroke-width="1.6" fill="none" marker-end="url(#a8)"/>
-    <text x="90" y="35" fill="var(--accent,#0B6E62)" text-anchor="middle">to next block</text>
+    <path d="M90 90 V45" stroke="var(--accent,#6A2E93)" stroke-width="1.6" fill="none" marker-end="url(#a8)"/>
+    <text x="90" y="35" fill="var(--accent,#6A2E93)" text-anchor="middle">to next block</text>
 
-    <text x="350" y="105" fill="var(--ink-3,#6E7885)" font-size="10">×  n_layer  (12 … 126)</text>
+    <text x="350" y="105" fill="var(--ink-3,#775446)" font-size="10">×  n_layer  (12 … 126)</text>
   </g>
 </svg>
 <figcaption>One pre-LN transformer block. The shape is (B, T, C) on every wire.</figcaption>
@@ -479,9 +479,9 @@ what sparse autoencoders were invented to untangle, and it's the frontier of int
 
 </main>
 
-<script src="assets/chapters.js?v=9"></script>
-<script src="assets/course.js?v=9"></script>
-<script src="assets/viz.js?v=9"></script>
+<script src="assets/chapters.js?v=10"></script>
+<script src="assets/course.js?v=10"></script>
+<script src="assets/viz.js?v=10"></script>
 <script>initChapter("08");</script>
 </body>
 </html>

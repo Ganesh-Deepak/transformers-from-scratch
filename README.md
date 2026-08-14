@@ -146,22 +146,31 @@ node check_responsive.js
 
 ## The design
 
-A technical monograph rather than a web app: a measured column with a **live margin** carrying
-cross-references, so you can see how a chapter connects without losing your place.
+A **1960s aerospace field manual** that happens to be interactive: printed on kraft stock in two
+inks, with a measured column and a **live margin** carrying cross-references, so you can see how a
+chapter connects without losing your place.
 
-- **Type** — `Sitka Text` / `Sitka Heading` (Matthew Carter's family, built from legibility
-  research for long on-screen reading, with real optical sizes), `Bahnschrift` for technical
-  labels, `Cascadia Mono` for every shape annotation. All resolve natively on Windows — no
-  webfont, no silent fallback.
+- **Type** — `Space Grotesk` for display and technical labels (geometric, tight, drawn for
+  instrument panels rather than prose), `Literata` for body text (TypeTogether's screen-reading
+  family, with real italics), `JetBrains Mono` for every shape annotation. All three are
+  **self-hosted variable woff2** in `course/assets/fonts/` — ~228 KB, no CDN, no network
+  dependency, and identical on every OS. The previous stack was Windows-only and fell back
+  silently to Georgia everywhere else.
 - **Colour** — the boldness is spent on the **dimension palette**, because in this course colour
   encodes *which tensor axis you are looking at*: orange = Q / axis 0, blue = K / axis 1,
   magenta = V / axis 2, green = the output. Those four are deliberately **saturated** and
   maximally far apart in hue, because a muted palette makes two axes look like the same axis —
   which is the exact confusion the course exists to fix. The violet accent is excluded from that
   set so it can never be mistaken for a dimension.
-- **Grounds are neutral on purpose.** Light mode is a pale cool grey (`#F4F6F7`) with true-white
-  cards lifting off it — not blinding, and not cream. Dark mode is a neutral charcoal (`#18191B`)
-  — not navy, which tinted every diagram it sat behind.
+- **Oxblood does the structural work** (`#5A241F`): the masthead, every 2px border, every rule
+  under a heading, and the hard offset shadows. That is what carries the printed-manual look, which
+  frees the accent to be nothing but a link colour.
+- **Grounds are printed, not neutral.** Light mode is kraft stock (`#E7D8BC`) under a halftone dot
+  screen — 1px dots on a 5px grid — with cream cards (`#FBF4E4`) stamped onto it on zero-blur
+  shadows. Dark mode is espresso (`#1B1411`) with warm cream ink: a darkroom, not an inversion.
+- **No soft shadows anywhere.** Every card sits on a hard `4px 4px 0` offset, like ink stamped
+  slightly off register. Buttons collapse that shadow on `:active`, so they physically press into
+  the paper.
 - **Both themes** are designed, not inverted. Every pair passes WCAG AA in both.
 - **Responsive** down to 320px: no page scrolls sideways at any width. The sidebar collapses to a
   drawer; wide tables and code blocks scroll inside their own container rather than the body.

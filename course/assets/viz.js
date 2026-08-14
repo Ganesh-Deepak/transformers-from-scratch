@@ -19,21 +19,21 @@ function readTheme() {
   const s = getComputedStyle(document.documentElement);
   const v = (n, fb) => (s.getPropertyValue(n) || "").trim() || fb;
   Object.assign(C, {
-    q:      v("--dim-1", "#A8761C"),
-    k:      v("--dim-2", "#4A51B8"),
-    v:      v("--dim-3", "#A8484F"),
-    o:      v("--dim-4", "#5A7A2E"),
-    accent: v("--accent", "#0B6E62"),
-    grid:   v("--line", "#DFE0DD"),
-    gridHi: v("--line-2", "#C6C8C4"),
-    cell:   v("--surface-2", "#F2F3F1"),
-    paper:  v("--paper", "#FAFAF9"),
-    fg:     v("--ink", "#18202B"),
-    dim:    v("--ink-2", "#46505E"),
-    faint:  v("--ink-3", "#6E7885"),
-    fainter:v("--ink-4", "#9AA2AC"),
-    danger: v("--stop", "#A33028"),
-    ok:     v("--ok", "#2F6B3A"),
+    q:      v("--dim-1", "#B4430A"),
+    k:      v("--dim-2", "#1B4FA8"),
+    v:      v("--dim-3", "#A3176B"),
+    o:      v("--dim-4", "#3F6B14"),
+    accent: v("--accent", "#6A2E93"),
+    grid:   v("--line", "#C9B492"),
+    gridHi: v("--line-2", "#8C5F4B"),
+    cell:   v("--surface-2", "#DCCBA9"),
+    paper:  v("--paper", "#E7D8BC"),
+    fg:     v("--ink", "#2B1512"),
+    dim:    v("--ink-2", "#563A31"),
+    faint:  v("--ink-3", "#775446"),
+    fainter:v("--ink-4", "#9A7B66"),
+    danger: v("--stop", "#A82A16"),
+    ok:     v("--ok", "#2F6B22"),
   });
   return C;
 }

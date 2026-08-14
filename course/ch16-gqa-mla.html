@@ -6,7 +6,7 @@
 <title>Ch 16 — MQA, GQA, and Multi-Head Latent Attention</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=9">
+<link rel="stylesheet" href="assets/style.css?v=10">
 </head>
 <body>
 <main>
@@ -228,7 +228,7 @@ because of an <b>absorption</b> identity — the up-projection can be folded int
 <div class="mathblock">
 (q<sup>C</sup>)<sup>T</sup> k<sup>C</sup>
 = (W<sup>UQ</sup>c<sup>Q</sup>)<sup>T</sup> (W<sup>UK</sup>c<sup>KV</sup>)
-= (c<sup>Q</sup>)<sup>T</sup> <span style="color:#ffd166">(W<sup>UQ</sup>)<sup>T</sup>W<sup>UK</sup></span> c<sup>KV</sup>
+= (c<sup>Q</sup>)<sup>T</sup> <span style="color:var(--warn)">(W<sup>UQ</sup>)<sup>T</sup>W<sup>UK</sup></span> c<sup>KV</sup>
 <span class="lbl">the highlighted product is a fixed matrix — precompute it once, attend directly in latent space</span>
 </div>
 
@@ -237,7 +237,7 @@ because of an <b>absorption</b> identity — the up-projection can be folded int
 
 <div class="mathblock" style="border-left-color:var(--danger)">
 (R<sub>m</sub>W<sup>UQ</sup>c<sup>Q</sup>)<sup>T</sup>(R<sub>n</sub>W<sup>UK</sup>c<sup>KV</sup>)
-= (c<sup>Q</sup>)<sup>T</sup>(W<sup>UQ</sup>)<sup>T</sup> <span style="color:#ff6b6b">R<sub>n−m</sub></span> W<sup>UK</sup> c<sup>KV</sup>
+= (c<sup>Q</sup>)<sup>T</sup>(W<sup>UQ</sup>)<sup>T</sup> <span style="color:var(--stop)">R<sub>n−m</sub></span> W<sup>UK</sup> c<sup>KV</sup>
 <span class="lbl">R<sub>n−m</sub> sits <b>between</b> the two matrices and depends on the token pair — the product can no longer be precomputed</span>
 </div>
 
@@ -472,9 +472,9 @@ large part of the explanation — architecture choices show up directly on the i
 
 </main>
 
-<script src="assets/chapters.js?v=9"></script>
-<script src="assets/course.js?v=9"></script>
-<script src="assets/viz.js?v=9"></script>
+<script src="assets/chapters.js?v=10"></script>
+<script src="assets/course.js?v=10"></script>
+<script src="assets/viz.js?v=10"></script>
 <script>initChapter("16");</script>
 </body>
 </html>

@@ -6,7 +6,7 @@
 <title>Ch 24 — DPO From First Principles</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=9">
+<link rel="stylesheet" href="assets/style.css?v=10">
 </head>
 <body>
 <main>
@@ -127,8 +127,8 @@ P(y<sub>w</sub> ≻ y<sub>l</sub> | x) = σ<big>(</big> r(x,y<sub>w</sub>) − r
 
 <div class="mathblock" style="text-align:left;padding-left:24px;line-height:2.4">
 r(x,y<sub>w</sub>) − r(x,y<sub>l</sub>)
-= <big>[</big>β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>w</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>w</sub>|x)</span></span> + <span style="color:#ff6b6b">β log Z(x)</span><big>]</big>
-− <big>[</big>β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>l</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>l</sub>|x)</span></span> + <span style="color:#ff6b6b">β log Z(x)</span><big>]</big>
+= <big>[</big>β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>w</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>w</sub>|x)</span></span> + <span style="color:var(--stop)">β log Z(x)</span><big>]</big>
+− <big>[</big>β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>l</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>l</sub>|x)</span></span> + <span style="color:var(--stop)">β log Z(x)</span><big>]</big>
 <br>
 = β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>w</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>w</sub>|x)</span></span>
 − β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>l</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>l</sub>|x)</span></span>
@@ -205,17 +205,17 @@ memory and time, since the reference never changes.</li>
 
 <div class="mathblock" style="font-size:1.02em">
 ∇<sub>θ</sub>ℒ = −β E <big>[</big>
-<span style="color:#ffd166">σ(r̂<sub>l</sub> − r̂<sub>w</sub>)</span> ·
-<big(</big> <span style="color:#5cd6a8">∇ log π(y<sub>w</sub>|x)</span> − <span style="color:#ff6b6b">∇ log π(y<sub>l</sub>|x)</span> <big>)</big>
+<span style="color:var(--warn)">σ(r̂<sub>l</sub> − r̂<sub>w</sub>)</span> ·
+<big(</big> <span style="color:var(--ok)">∇ log π(y<sub>w</sub>|x)</span> − <span style="color:var(--stop)">∇ log π(y<sub>l</sub>|x)</span> <big>)</big>
 <big>]</big>
 <span class="lbl">r̂ = the implicit reward β·log(π/π<sub>ref</sub>)</span>
 </div>
 
 <p>Three parts, each meaningful:</p>
 <ul>
-<li><span style="color:#5cd6a8"><b>Increase</b></span> the likelihood of the chosen response.</li>
-<li><span style="color:#ff6b6b"><b>Decrease</b></span> the likelihood of the rejected response.</li>
-<li><span style="color:#ffd166"><b>Weight by how wrong the model currently is.</b></span> If the implicit
+<li><span style="color:var(--ok)"><b>Increase</b></span> the likelihood of the chosen response.</li>
+<li><span style="color:var(--stop)"><b>Decrease</b></span> the likelihood of the rejected response.</li>
+<li><span style="color:var(--warn)"><b>Weight by how wrong the model currently is.</b></span> If the implicit
 reward already ranks the pair correctly, <span class="math">σ(r̂<sub>l</sub>−r̂<sub>w</sub>)</span> is near
 0 and this example contributes almost nothing. Pairs the model gets wrong dominate the gradient.</li>
 </ul>
@@ -355,9 +355,9 @@ you can use a DPO'd model as a reranker for free, with no separate reward model 
 
 </main>
 
-<script src="assets/chapters.js?v=9"></script>
-<script src="assets/course.js?v=9"></script>
-<script src="assets/viz.js?v=9"></script>
+<script src="assets/chapters.js?v=10"></script>
+<script src="assets/course.js?v=10"></script>
+<script src="assets/viz.js?v=10"></script>
 <script>initChapter("24");</script>
 </body>
 </html>

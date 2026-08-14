@@ -1,0 +1,15 @@
+# Fonts are binary. Without this, git's autocrlf on Windows can rewrite bytes
+# inside a .woff2 and the font fails to decode with no useful error — the page
+# just silently falls back. Auto-detection already gets this right today; this
+# makes it guaranteed rather than lucky.
+*.woff2 binary
+*.woff  binary
+*.ttf   binary
+*.otf   binary
+
+# Notebooks and images likewise
+*.ipynb -text
+*.png   binary
+*.jpg   binary
+*.pt    binary
+*.bin   binary
