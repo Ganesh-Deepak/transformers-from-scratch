@@ -65,6 +65,70 @@ The training algorithm is four lines of English:</p>
 </ol>
 </div>
 
+<div class="example">
+<span class="t">Worked example — train BPE by hand on one tiny corpus</span>
+<p>Corpus: <code>"low low low lower lowest"</code>. Watch the vocabulary build itself.
+(Using letters rather than byte numbers so it stays readable.)</p>
+
+<div class="step"><div class="i">0</div><div>
+<b>Start: every character is a token.</b> (<code>_</code> is a space.)
+<pre style="margin:.4rem 0"><code class="nohl">l o w _ l o w _ l o w _ l o w e r _ l o w e s t
+vocab  = {l, o, w, _, e, r, s, t}           8 tokens
+length = 24</code></pre>
+</div></div>
+
+<div class="step"><div class="i">1</div><div>
+<b>Count adjacent pairs; merge the most frequent.</b>
+<pre style="margin:.4rem 0"><code class="nohl">(l,o) → 5   (o,w) → 5   (w,_) → 3   (w,e) → 2  ...
+merge (l,o):
+
+lo w _ lo w _ lo w _ lo w e r _ lo w e s t
+vocab += {lo}                              9 tokens,  length 19</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Recount — the new token now takes part in new pairs.</b>
+<pre style="margin:.4rem 0"><code class="nohl">(lo,w) → 5   (w,_) → 3   (w,e) → 2
+merge (lo,w):
+
+low _ low _ low _ low e r _ low e s t
+vocab += {low}                            10 tokens,  length 14</code></pre>
+<b>This is the key move: merges compound.</b> <code>low</code> can only exist because
+<code>lo</code> was made first — which is why encoding must replay merges <i>in learned
+order</i>.
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>Now the interesting one.</b> Which beats which?
+<pre style="margin:.4rem 0"><code class="nohl">(_,low) → 4      (low,_) → 3      (low,e) → 2
+merge (_,low):
+
+low _low _low _low e r _low e s t
+vocab += {_low}                           11 tokens,  length 10</code></pre>
+It attached the space to the <b>front</b> of the word, not the back — because
+<code>"_low"</code> occurs more often than <code>"low_"</code>. That is not a quirk of this
+corpus; it is why real tokenizers have <code>" hello"</code> (with a leading space) as a token
+and why the trailing-space bug in §3.5 exists.
+</div></div>
+
+<div class="step"><div class="i">4</div><div>
+<b>The last merge is nonsense, and that is worth seeing.</b>
+<pre style="margin:.4rem 0"><code class="nohl">merge (_low,_low):
+
+low _low_low _low e r _low e s t
+vocab += {_low_low}                       12 tokens,  length 9</code></pre>
+<code>_low_low</code> is not a linguistic unit — it is an artifact of a 24-character corpus
+where "low low" happens to repeat. Real BPE avoids this by training on gigabytes, where genuinely
+frequent pairs dominate the noise.
+</div></div>
+
+<p style="margin-bottom:0"><b>What it discovered, and what it didn't.</b> Nobody told it that
+<code>low</code> is a morpheme or that <code>lower</code>/<code>lowest</code> share a stem — it
+found that from adjacency counts alone. <b>BPE rediscovers morphology without being told
+morphology exists.</b> It also produced one useful insight (space-goes-in-front) and one piece of
+junk. Final: 24 characters → 9 tokens, <b>2.7× compression</b>.</p>
+</div>
+
 <p>Here is the whole thing, working, in about 40 lines:</p>
 
 <pre><code>from collections import Counter

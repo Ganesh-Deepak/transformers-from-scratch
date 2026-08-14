@@ -177,6 +177,71 @@ bytes = 2 × n_layer × n_kv_head × d_head × seq_len × batch × dtype_bytes
 
 <div data-viz="kv"></div>
 
+<div class="example">
+<span class="t">Worked example — build the number from scratch, one factor at a time</span>
+<p>Every factor in that formula is a physical thing you can point at. Llama-3-8B,
+one token, bf16.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>One head stores one key vector.</b> <code>d_head = 128</code> numbers, 2 bytes each in bf16:
+<pre style="margin:.4rem 0"><code class="nohl">128 × 2 = 256 bytes</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>You need the value vector too.</b> Same size — hence the leading 2:
+<pre style="margin:.4rem 0"><code class="nohl">256 × 2 = 512 bytes   (one K + one V, for one head, for one token)</code></pre>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>How many heads must you store?</b> Not 32 — Llama-3 uses GQA with
+<code>n_kv_head = 8</code>. This is the factor Chapter 13 attacks:
+<pre style="margin:.4rem 0"><code class="nohl">512 × 8 = 4,096 bytes   (per token, per LAYER)</code></pre>
+</div></div>
+
+<div class="step"><div class="i">4</div><div>
+<b>Every layer keeps its own cache.</b> Layer 7's keys are useless to layer 8 — they live in
+different representation spaces:
+<pre style="margin:.4rem 0"><code class="nohl">4,096 × 32 layers = 131,072 bytes = 128 KB per token</code></pre>
+</div></div>
+
+<div class="step"><div class="i">5</div><div>
+<b>Now multiply by context.</b> This is where it stops being small:
+<pre style="margin:.4rem 0"><code class="nohl">   2,048 tokens ->  128 KB ×   2,048 =   0.25 GB
+   8,192 tokens ->  128 KB ×   8,192 =   1.00 GB
+  32,768 tokens ->  128 KB ×  32,768 =   4.00 GB
+ 131,072 tokens ->  128 KB × 131,072 =  16.00 GB   <- ONE user</code></pre>
+</div></div>
+
+<div class="step"><div class="i">6</div><div>
+<b>Compare against the model itself.</b> Llama-3-8B in bf16 is <b>15 GB</b> of weights
+(8.03 B × 2 bytes). So at 128k context <b>one user's cache is larger than the entire
+model</b> — 16 GB vs 15 GB. Ten such users need 160 GB of cache alone, which does not fit on
+an 80 GB H100 at any batch size.
+</div></div>
+
+<p style="margin-bottom:0"><b>The factor to attack.</b> Look back at step 3: <code>n_kv_head</code>
+is a free parameter. Full MHA would use 32 there instead of 8 — <b>4× everything above</b>, so
+64 GB for that one 128k user. That single choice is the difference between servable and not.</p>
+</div>
+
+<pre><code>def kv_bytes(n_layer, n_kv_head, d_head, seq, batch=1, dtype_bytes=2):
+    """2 (K and V) × layers × kv_heads × head_dim × seq × batch × bytes"""
+    return 2 * n_layer * n_kv_head * d_head * seq * batch * dtype_bytes
+
+# Llama-3-8B, one token
+assert kv_bytes(32, 8, 128, 1) == 131_072          # 128 KB  ✓
+# ...at 128k context
+assert kv_bytes(32, 8, 128, 131072) / 1024**3 == 16.0   # 16 GB  ✓
+# ...and what full MHA would have cost
+assert kv_bytes(32, 32, 128, 131072) / 1024**3 == 64.0  # 4× worse</code></pre>
+
+<div class="mn">
+  <span class="k">Sanity check</span>
+  Every factor is a count of something real: <b>2</b> tensors, <b>8</b> heads, <b>128</b> numbers,
+  <b>2</b> bytes, <b>32</b> layers, <b>T</b> tokens. If a cache calculation ever surprises you,
+  name the thing each factor counts.
+</div>
+
 <h3>Worked example: Llama-3-70B</h3>
 
 <pre><code>n_layer = 80, n_kv_head = 8, d_head = 128, bf16
