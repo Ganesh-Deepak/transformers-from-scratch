@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Transformers From Scratch</title>
 <meta name="color-scheme" content="light dark">
-<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=4">
+<script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
+<link rel="stylesheet" href="assets/style.css?v=6">
 </head>
 <body>
 
@@ -193,8 +193,8 @@ mechanisms that have been stable for years.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=4"></script>
-<script src="assets/course.js?v=4"></script>
+<script src="assets/chapters.js?v=6"></script>
+<script src="assets/course.js?v=6"></script>
 <script>
 (function () {
   const wrap = document.getElementById("parts");
@@ -229,6 +229,14 @@ mechanisms that have been stable for years.</p>
   decorateCode();
   initReadingBar();
   initKeyboard(null);
+  applySidebarPref();
+  layoutMarginNotes();
+  window.addEventListener("load", layoutMarginNotes);
+  let rt;
+  window.addEventListener("resize", () => {
+    clearTimeout(rt);
+    rt = setTimeout(() => { applySidebarPref(); layoutMarginNotes(); }, 100);
+  });
 })();
 </script>
 </body>

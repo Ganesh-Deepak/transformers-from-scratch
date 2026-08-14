@@ -27,10 +27,15 @@
   --mono:    "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", ui-monospace, monospace;
   --math:    "Cambria Math", Cambria, "Latin Modern Math", Georgia, serif;
 
-  /* -- measure & rhythm ------------------------------------------------- */
-  --measure: 34rem;          /* ~64 characters of Sitka Text */
-  --margin-col: 13.5rem;     /* the live margin */
-  --gutter: 2.25rem;
+  /* -- measure & rhythm -------------------------------------------------
+     Prose stays near 70 characters because long lines genuinely hurt
+     reading. Code, tables, figures and widgets BREAK OUT to --wide, which
+     is where the extra screen width actually helps. */
+  --measure: 37rem;          /* ~70 characters of Sitka Text */
+  --margin-col: 15rem;       /* the live margin */
+  --gutter: 2.5rem;
+  --wide: calc(var(--measure) + var(--gutter) + var(--margin-col));
+  --breakout: var(--wide);   /* grows on large screens — see below */
   --rule: 1px;
 
   /* -- light theme (default) -------------------------------------------- */
@@ -314,53 +319,110 @@ body {
   color: var(--accent); border-left-color: var(--accent); font-weight: 600;
 }
 
-.sb-toggle { display: none; }
+/* The toggle is available at EVERY width — on a wide screen it reclaims the
+   sidebar's space for content; on a narrow one it opens the drawer. */
+.sb-toggle {
+  display: grid; place-items: center;
+  width: 2rem; height: 2rem; padding: 0; flex: none;
+  background: none; border: var(--rule) solid var(--line-2);
+  color: var(--ink-2); cursor: pointer;
+  transition: color .14s, border-color .14s, background .14s;
+}
+.sb-toggle:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
+.sb-toggle svg { width: 15px; height: 15px; display: block; }
 .scrim { display: none; }
 
-.wrap {
-  max-width: calc(var(--measure) + var(--gutter) + var(--margin-col));
-  margin: 0 auto;
-  padding: 3.5rem clamp(1rem, 4vw, 2.5rem) 8rem;
-}
-body.has-side .wrap { margin-left: var(--side); }
+/* wide screens: collapsing slides the sidebar away and widens the content */
+.sidebar { transition: transform .18s ease; }
+body.side-collapsed .sidebar { transform: translateX(-100%); }
+@media (prefers-reduced-motion: reduce) { .sidebar { transition: none; } }
 
-/* --- below this width the sidebar becomes an off-canvas drawer --------- */
-@media (max-width: 78rem) {
-  body.has-side .wrap { margin-left: 0; }
-  .sidebar {
-    transform: translateX(-100%);
-    transition: transform .18s ease;
-    box-shadow: var(--shadow);
+/* The sidebar is fixed, so .wrap only needs to reserve its width with padding.
+   Using padding (not margin-left) keeps `margin-inline: auto` intact, so the
+   content stays CENTRED in the space that remains. Setting margin-left alone
+   leaves margin-right:auto to swallow all leftover width and jams everything
+   against the sidebar. */
+.wrap {
+  max-width: calc(var(--breakout) + 2 * clamp(1rem, 4vw, 2.5rem));
+  margin-inline: auto;
+  padding: 3.5rem clamp(1rem, 4vw, 2.5rem) 8rem;
+  transition: padding-left .18s ease, max-width .18s ease;
+}
+body.has-side .wrap {
+  max-width: calc(var(--breakout) + var(--side) + 2 * clamp(1rem, 4vw, 2.5rem));
+  padding-left: calc(var(--side) + clamp(1rem, 4vw, 2.5rem));
+}
+body.has-side.side-collapsed .wrap {
+  max-width: calc(var(--breakout) + 2 * clamp(1rem, 4vw, 2.5rem));
+  padding-left: clamp(1rem, 4vw, 2.5rem);
+}
+@media (prefers-reduced-motion: reduce) { .wrap { transition: none; } }
+
+/* --- breakout ----------------------------------------------------------
+   Prose keeps its ~70-character measure because longer lines genuinely hurt
+   reading. Code, tables, figures and widgets have no such limit, so they take
+   the extra width — that is where a big screen actually helps. */
+main > pre,
+main > .tw,
+main > table,
+main > figure,
+main > .panel,
+main > [data-viz],
+main > .exercise,
+main > .quiz,
+main > .example,
+main > .mathblock {
+  max-width: none;             /* fill main, i.e. the full breakout width */
+}
+
+/* On large displays let that breakout keep growing. Prose does not. */
+@media (min-width: 100rem) { :root { --breakout: 64rem; } }
+@media (min-width: 120rem) { :root { --breakout: 74rem; } }
+/* nested content must not inherit the breakout */
+.box pre, .example pre, .exercise pre, .quiz pre,
+.reveal pre, .box .tw, .example .tw, .exercise .tw, .reveal .tw {
+  width: auto;
+}
+
+/* Set before first paint so a collapsed sidebar never flashes open. Replaced
+   by body.side-collapsed once JS runs. */
+:root.pre-collapsed .sidebar { transform: translateX(-100%); transition: none; }
+:root.pre-collapsed body.has-side .wrap {
+  max-width: calc(var(--wide) + 2 * clamp(1rem, 4vw, 2.5rem));
+  padding-left: clamp(1rem, 4vw, 2.5rem);
+  transition: none;
+}
+
+/* --- below this width the sidebar is an off-canvas drawer, never inline -- */
+@media (max-width: 82rem) {
+  body.has-side .wrap,
+  body.has-side.side-collapsed .wrap {
+    max-width: calc(var(--wide) + 2 * clamp(1rem, 4vw, 2.5rem));
+    padding-left: clamp(1rem, 4vw, 2.5rem);
   }
+  .sidebar { transform: translateX(-100%); box-shadow: var(--shadow); }
   body.side-open .sidebar { transform: none; }
-  .sb-toggle {
-    display: grid; place-items: center;
-    width: 2rem; height: 2rem; padding: 0;
-    background: none; border: var(--rule) solid var(--line-2);
-    color: var(--ink-2); cursor: pointer;
-  }
-  .sb-toggle:hover { color: var(--accent); border-color: var(--accent); }
-  .sb-toggle svg { width: 15px; height: 15px; }
   body.side-open .scrim {
     display: block; position: fixed; inset: var(--topbar-h) 0 0 0;
     background: rgba(0,0,0,.35); z-index: 50;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .sidebar { transition: none; }
-}
+/* `main` spans the FULL breakout width; prose is narrowed by the child rule
+   below. Doing it the other way round (main = measure, children widened) fails:
+   `max-width:100%` on a child resolves against main and silently caps it. */
 main {
   position: relative;          /* anchor for the live margin */
-  max-width: var(--measure);
+  max-width: var(--breakout);
   min-width: 0;
 }
-main.wide { max-width: 52rem; }
+main > * { max-width: var(--measure); }
 
 /* The live margin. Absolutely positioned with NO `top`, so each note keeps its
    static position — i.e. it lines up with the paragraph it follows. */
 .mn {
   position: absolute;
-  left: calc(100% + var(--gutter));
+  /* anchored to the PROSE measure, not to main (which is now breakout-wide) */
+  left: calc(var(--measure) + var(--gutter));
   width: var(--margin-col);
   font-family: var(--label);
   font-size: .76rem; line-height: 1.5;

@@ -103,8 +103,7 @@ function buildTopbar(currentId) {
     `<button class="theme-toggle" type="button">${SUN}${MOON}</button>`;
   document.body.prepend(bar);
   bar.querySelector(".theme-toggle").onclick = Theme.toggle;
-  bar.querySelector(".sb-toggle").onclick =
-    () => document.body.classList.toggle("side-open");
+  bar.querySelector(".sb-toggle").onclick = toggleSidebar;
   Theme.apply();
 }
 
@@ -253,6 +252,39 @@ function initQuizzes() {
 
 const ICON_MENU = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>';
 
+/* One control, two behaviours:
+   wide  -> collapse/expand the rail, handing its width back to the content
+   narrow-> open/close the off-canvas drawer
+   The wide-screen preference persists; the drawer never does. */
+const WIDE_MQ = "(min-width: 82.001rem)";
+const isWide = () => !window.matchMedia || window.matchMedia(WIDE_MQ).matches;
+
+function applySidebarPref() {
+  let collapsed = false;
+  try { collapsed = localStorage.getItem("tfs-side") === "collapsed"; } catch (e) { /* blocked */ }
+  document.body.classList.toggle("side-collapsed", collapsed && isWide());
+  if (!isWide()) document.body.classList.remove("side-collapsed");
+  const btn = document.querySelector(".sb-toggle");
+  if (btn) {
+    const open = isWide() ? !collapsed : document.body.classList.contains("side-open");
+    btn.setAttribute("aria-expanded", String(open));
+    btn.setAttribute("aria-label", open ? "Hide chapter list" : "Show chapter list");
+  }
+  if (window.layoutMarginNotes) window.layoutMarginNotes();
+}
+
+function toggleSidebar() {
+  if (isWide()) {
+    const collapsed = !document.body.classList.contains("side-collapsed");
+    try { localStorage.setItem("tfs-side", collapsed ? "collapsed" : "open"); } catch (e) { /* blocked */ }
+  } else {
+    document.body.classList.toggle("side-open");
+  }
+  applySidebarPref();
+  // the content column just changed width; re-flow the margin after paint
+  requestAnimationFrame(() => window.layoutMarginNotes && window.layoutMarginNotes());
+}
+
 function slug(s) {
   return s.toLowerCase().replace(/[^\w\s·.-]/g, "").trim()
           .replace(/[\s·.]+/g, "-").replace(/-+/g, "-").slice(0, 60);
@@ -369,20 +401,42 @@ function initScrollspy(sections) {
 function layoutMarginNotes() {
   const notes = [...document.querySelectorAll(".mn")];
   if (!notes.length) return;
+  notes.forEach(n => (n.style.marginTop = ""));
   // only applies when the margin is actually a column (not folded inline)
-  if (getComputedStyle(notes[0]).position !== "absolute") {
-    notes.forEach(n => (n.style.marginTop = ""));
-    return;
-  }
-  let prevBottom = -Infinity;
+  if (getComputedStyle(notes[0]).position !== "absolute") return;
+
+  const main = document.querySelector("main");
+  if (!main) return;
+
+  // Elements that break out of the prose measure now reach INTO the margin
+  // column, so a note must clear them vertically as well as clearing each other.
+  // main is now breakout-wide, so compare against the PROSE measure instead
+  const measurePx = parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue("--measure")) * 16;
+  const wide = [...main.children].filter(el => {
+    if (el.classList.contains("mn")) return false;
+    return el.offsetWidth > measurePx + 4;
+  }).map(el => ({ top: el.offsetTop, bottom: el.offsetTop + el.offsetHeight }));
+
   const GAP = 18;
+  let prevBottom = -Infinity;
+
   for (const n of notes) {
-    n.style.marginTop = "";                       // measure unshifted
-    const top = n.offsetTop;
-    if (top < prevBottom + GAP) n.style.marginTop = (prevBottom + GAP - top) + "px";
-    prevBottom = n.offsetTop + (parseFloat(n.style.marginTop) || 0) + n.offsetHeight;
+    const natural = n.offsetTop;
+    let top = Math.max(natural, prevBottom + GAP);
+    // walk down past any breakout block this note would sit across
+    for (let i = 0; i < wide.length; i++) {
+      const w = wide[i];
+      if (top < w.bottom + GAP && top + n.offsetHeight > w.top - GAP) {
+        top = w.bottom + GAP;
+        i = -1;                       // re-check from the start after moving
+      }
+    }
+    n.style.marginTop = top > natural ? (top - natural) + "px" : "";
+    prevBottom = top + n.offsetHeight;
   }
 }
+window.layoutMarginNotes = layoutMarginNotes;
 
 /* How far through this page you are. */
 function initReadingBar() {
@@ -444,9 +498,14 @@ function initChapter(id) {
   step("readbar",  () => initReadingBar());
   step("keyboard", () => initKeyboard(id));
   step("viz",      () => window.initViz && window.initViz());
+  step("sidebar-pref", () => applySidebarPref());
   step("margins",  () => layoutMarginNotes());
 
   // widgets and fonts change heights after first paint; re-flow the margin
   window.addEventListener("load", layoutMarginNotes);
-  window.addEventListener("resize", layoutMarginNotes);
+  let rt;
+  window.addEventListener("resize", () => {
+    clearTimeout(rt);
+    rt = setTimeout(() => { applySidebarPref(); layoutMarginNotes(); }, 100);
+  });
 }
