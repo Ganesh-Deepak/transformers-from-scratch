@@ -6,7 +6,7 @@
 <title>Ch 12 — The KV Cache and the Memory Wall</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -18,10 +18,7 @@ and why almost every architectural innovation since 2023 — GQA, MLA, MoE, spec
 at the same bottleneck. It is not FLOPs. It is memory bandwidth.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch11-decoding.html">Ch&nbsp;11</a> &mdash; the generation loop<br><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; arithmetic intensity</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; shrinking the cache<br><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; a different bottleneck<br><a href="ch15-serving.html">Ch&nbsp;15</a> &mdash; serving is built on this arithmetic</div>
-<div class="mn orient"><span class="k">Why this chapter</span>Not FLOPs. Memory bandwidth. This chapter reframes everything after it.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch11-decoding.html">Ch&nbsp;11</a> &mdash; the generation loop<br><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; arithmetic intensity<div class="sep"></div><span class="k">Leads to</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; shrinking the cache<br><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; a different bottleneck<br><a href="ch15-serving.html">Ch&nbsp;15</a> &mdash; serving is built on this arithmetic<div class="sep"></div><span class="k">Why this chapter</span>Not FLOPs. Memory bandwidth. This chapter reframes everything after it.</div>
 <h2>12.1 · The waste in the naive loop</h2>
 
 <p>Look again at generation. To produce token 101, we feed tokens 1–100 through the model. To produce token
@@ -327,9 +324,9 @@ on <i>separate GPU pools</i>. Chapter 15.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("12");</script>
 </body>
 </html>

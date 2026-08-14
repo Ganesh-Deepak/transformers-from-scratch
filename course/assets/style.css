@@ -78,9 +78,13 @@
   --shadow: 0 1px 2px rgba(24,32,43,.05), 0 8px 24px -12px rgba(24,32,43,.14);
 }
 
-/* -- dark theme: OS preference ------------------------------------------ */
+/* -- dark theme: OS preference ------------------------------------------
+   Scoped with :not([data-theme]) so the OS preference applies ONLY when the
+   reader has not made an explicit choice. Relying on specificity alone
+   (:root[data-theme="light"] beating :root) is fragile — it silently failed
+   for `background` while working for `color`. This is unambiguous. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --paper:      #0D1219;
     --surface:    #141B24;
     --surface-2:  #1B232D;
@@ -238,10 +242,112 @@ body {
 
 /* --------------------------------------------------- monograph layout */
 
+/* ---------------------------------------------------------------- sidebar */
+/* Global navigation. Answers "where can I go" AND, via the nested section
+   list, "where am I inside this chapter" — without leaving the page. */
+
+:root { --side: 15.5rem; --topbar-h: 3.05rem; }
+
+.readbar {
+  position: fixed; top: 0; left: 0; height: 2px; z-index: 70;
+  background: var(--accent); width: 0;
+  transition: width .08s linear;
+}
+
+.sidebar {
+  position: fixed; z-index: 55;
+  top: var(--topbar-h); left: 0; bottom: 0;
+  width: var(--side);
+  overflow-y: auto; overscroll-behavior: contain;
+  padding: 1.1rem 0 4rem;
+  border-right: var(--rule) solid var(--line);
+  background: var(--paper);
+}
+.sidebar::-webkit-scrollbar { width: 7px; }
+
+.sb-search { padding: 0 .85rem 1rem; }
+.sb-search input {
+  width: 100%; padding: .35rem .5rem;
+  font-family: var(--label); font-size: .78rem;
+  background: var(--surface); color: var(--ink);
+  border: var(--rule) solid var(--line-2);
+}
+.sb-search input::placeholder { color: var(--ink-4); }
+
+.sb-part { margin-bottom: .35rem; }
+.sb-part > .h {
+  padding: .55rem .85rem .3rem;
+  font-family: var(--label); font-size: .62rem; font-weight: 600;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--ink-4);
+}
+.sb-ch {
+  display: grid; grid-template-columns: 1.55rem 1fr; align-items: baseline;
+  padding: .3rem .85rem; gap: .1rem;
+  font-size: .82rem; line-height: 1.35;
+  color: var(--ink-2); text-decoration: none; border: 0;
+  border-left: 2px solid transparent;
+}
+.sb-ch:hover { background: var(--surface-2); color: var(--ink); border-bottom: 0; }
+.sb-ch .n {
+  font-family: var(--mono); font-size: .68rem; color: var(--ink-4);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.sb-ch.done .n { color: var(--accent); }
+.sb-ch.done .n::after { content: "\00B7"; margin-left: .1em; }
+.sb-ch.here {
+  border-left-color: var(--accent);
+  background: var(--surface-2);
+  color: var(--ink); font-weight: 600;
+}
+.sb-ch.here .n { color: var(--accent); }
+
+/* the current chapter's own sections, nested */
+.sb-sections { margin: .15rem 0 .5rem; }
+.sb-sec {
+  display: block; padding: .2rem .85rem .2rem 2.4rem;
+  font-size: .76rem; line-height: 1.35;
+  color: var(--ink-3); text-decoration: none; border: 0;
+  border-left: 2px solid transparent;
+}
+.sb-sec:hover { color: var(--accent); border-bottom: 0; background: var(--surface-2); }
+.sb-sec.active {
+  color: var(--accent); border-left-color: var(--accent); font-weight: 600;
+}
+
+.sb-toggle { display: none; }
+.scrim { display: none; }
+
 .wrap {
   max-width: calc(var(--measure) + var(--gutter) + var(--margin-col));
   margin: 0 auto;
   padding: 3.5rem clamp(1rem, 4vw, 2.5rem) 8rem;
+}
+body.has-side .wrap { margin-left: var(--side); }
+
+/* --- below this width the sidebar becomes an off-canvas drawer --------- */
+@media (max-width: 78rem) {
+  body.has-side .wrap { margin-left: 0; }
+  .sidebar {
+    transform: translateX(-100%);
+    transition: transform .18s ease;
+    box-shadow: var(--shadow);
+  }
+  body.side-open .sidebar { transform: none; }
+  .sb-toggle {
+    display: grid; place-items: center;
+    width: 2rem; height: 2rem; padding: 0;
+    background: none; border: var(--rule) solid var(--line-2);
+    color: var(--ink-2); cursor: pointer;
+  }
+  .sb-toggle:hover { color: var(--accent); border-color: var(--accent); }
+  .sb-toggle svg { width: 15px; height: 15px; }
+  body.side-open .scrim {
+    display: block; position: fixed; inset: var(--topbar-h) 0 0 0;
+    background: rgba(0,0,0,.35); z-index: 50;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar { transition: none; }
 }
 main {
   position: relative;          /* anchor for the live margin */
@@ -271,7 +377,12 @@ main.wide { max-width: 52rem; }
   letter-spacing: .12em; text-transform: uppercase;
   color: var(--ink-4); margin-bottom: .25rem;
 }
-.mn + .mn { margin-top: 0; }
+/* divider between fused sections of one margin note */
+.mn .sep {
+  height: 0; border-top: var(--rule) solid var(--line);
+  margin: .6rem 0 .5rem;
+}
+.mn .k:not(:first-child) { margin-top: .6rem; }
 
 /* Below the breakpoint the margin folds back into the column. */
 @media (max-width: 66rem) {

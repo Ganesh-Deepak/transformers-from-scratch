@@ -6,7 +6,7 @@
 <title>Ch 2 — Matrix Multiplication as a Machine</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -18,10 +18,7 @@ without thinking, and you know what broadcasting will do before you run it, the 
 bookkeeping. This chapter makes that automatic.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; shapes, strides, reshape vs transpose</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; attention is two matmuls and a softmax<br><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; the FLOP counting returns as the memory wall</div>
-<div class="mn orient"><span class="k">Why this chapter</span>A matmul consumes one dimension. Find the vanishing axis and you can read any equation in any paper.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; shapes, strides, reshape vs transpose<div class="sep"></div><span class="k">Leads to</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; attention is two matmuls and a softmax<br><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; the FLOP counting returns as the memory wall<div class="sep"></div><span class="k">Why this chapter</span>A matmul consumes one dimension. Find the vanishing axis and you can read any equation in any paper.</div>
 <div class="box intuition">
 <span class="t">The one idea in this chapter</span>
 <p style="margin-bottom:0">A matmul <b>consumes</b> one dimension. <code>(m, k) @ (k, n) → (m, n)</code>:
@@ -48,6 +45,73 @@ expression without any arithmetic.</li>
 <div class="mathblock">
 C<sub>ij</sub> = <span class="op">Σ</span><sub>k</sub> A<sub>ik</sub> B<sub>kj</sub>
 <span class="lbl">the repeated index k is the one being summed away</span>
+</div>
+
+<div class="example">
+<span class="t">Worked example — (2,3) @ (3,4), every number</span>
+<p>Do this one with a pencil. It is the only way the rule stops being abstract.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>Write the shapes and find the vanishing dimension.</b>
+<pre style="margin:.4rem 0"><code class="nohl">A is (2, 3)      B is (3, 4)
+      ↑  └──────────┘  ↑
+      │   these MUST   │
+      │   match, and   │
+      │   they VANISH  │
+      └── 2 ────── 4 ──┘   ->  C is (2, 4)</code></pre>
+The inner <code>3</code> is consumed. The output is "the outer two". You knew the answer
+before doing any arithmetic.
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>The actual numbers.</b>
+<pre style="margin:.4rem 0"><code class="nohl">A = [[1, 2, 3],        B = [[1, 0, 2, 1],
+     [4, 5, 6]]             [0, 1, 1, 0],
+                            [2, 1, 0, 3]]</code></pre>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>One output cell = one dot product.</b> <code>C[0,0]</code> uses <b>row 0 of A</b> and
+<b>column 0 of B</b> — nothing else in either matrix matters.
+<pre style="margin:.4rem 0"><code class="nohl">row 0 of A  = [1, 2, 3]
+col 0 of B  = [1, 0, 2]
+C[0,0] = 1×1 + 2×0 + 3×2 = 1 + 0 + 6 = 7</code></pre>
+</div></div>
+
+<div class="step"><div class="i">4</div><div>
+<b>Now C[1,2]</b> — row 1 of A, column 2 of B:
+<pre style="margin:.4rem 0"><code class="nohl">row 1 of A  = [4, 5, 6]
+col 2 of B  = [2, 1, 0]
+C[1,2] = 4×2 + 5×1 + 6×0 = 8 + 5 + 0 = 13</code></pre>
+</div></div>
+
+<div class="step"><div class="i">5</div><div>
+<b>All eight cells.</b>
+<pre style="margin:.4rem 0"><code class="nohl">C = [[ 7,  5,  4, 10],
+     [16, 11, 13, 22]]        shape (2, 4)  ✓</code></pre>
+</div></div>
+
+<p style="margin-bottom:0"><b>Notice the summation you met in Chapter 1:</b>
+<span class="math">C<sub>ij</sub> = <span class="op">Σ</span><sub>k</sub> A<sub>ik</sub>B<sub>kj</sub></span>
+is literally step 3 — loop <code>k</code> over the shared dimension, multiply the pair, keep a
+running total. The repeated index <code>k</code> is the one that vanishes.</p>
+</div>
+
+<pre><code># check every number above
+import torch
+A = torch.tensor([[1, 2, 3], [4, 5, 6]])
+B = torch.tensor([[1, 0, 2, 1], [0, 1, 1, 0], [2, 1, 0, 3]])
+C = A @ B
+print(C)                      # [[ 7,  5,  4, 10], [16, 11, 13, 22]]
+assert C.shape == (2, 4)
+assert C[0, 0] == (A[0, :] * B[:, 0]).sum() == 7
+assert C[1, 2] == (A[1, :] * B[:, 2]).sum() == 13</code></pre>
+
+<div class="mn">
+  <span class="k">Try it</span>
+  Change one number in row 1 of <b>A</b>. Exactly one <i>row</i> of <b>C</b> changes. Change one
+  number in column 2 of <b>B</b> and exactly one <i>column</i> of <b>C</b> changes. That
+  independence is why matmuls parallelise perfectly.
 </div>
 
 <h3>What a matmul <i>means</i> in a neural network</h3>
@@ -460,9 +524,9 @@ transformers at moderate context length. It starts to break down for MoE models 
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("02");</script>
 </body>
 </html>

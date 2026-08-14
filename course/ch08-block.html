@@ -6,7 +6,7 @@
 <title>Ch 8 — The Transformer Block</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -18,10 +18,7 @@ two-thirds of the parameters — is a per-token MLP. This chapter assembles both
 stacked 32, 80, or 120 times, and explains every design choice that has changed since 2017.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; residual stream<br><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; the attention sublayer</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; stack this and you have a model<br><a href="ch16-moe.html">Ch&nbsp;16</a> &mdash; MoE replaces exactly this chapter's MLP</div>
-<div class="mn orient"><span class="k">Why this chapter</span>Communicate, then compute. Repeat 32 times.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; residual stream<br><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; the attention sublayer<div class="sep"></div><span class="k">Leads to</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; stack this and you have a model<br><a href="ch16-moe.html">Ch&nbsp;16</a> &mdash; MoE replaces exactly this chapter's MLP<div class="sep"></div><span class="k">Why this chapter</span>Communicate, then compute. Repeat 32 times.</div>
 <h2>8.1 · The block, in four lines</h2>
 
 <pre><code>def block(x):
@@ -135,6 +132,75 @@ RMSNorm(x) = <span class="frac"><span class="n">x</span><span class="d">√(mean
 almost nothing; only re-scaling matters.</b> You get fewer parameters, one less reduction pass over the data,
 and ~7–15% faster layers at equal quality. Llama, Mistral, Qwen, Gemma, DeepSeek, and essentially every
 model since 2023 use it.</p>
+
+<div class="example">
+<span class="t">Worked example — both norms on the same 4 numbers</span>
+<p>One token, <code>d_model = 4</code>, vector <code>x = [3, 1, 4, 8]</code>, with
+<code>γ = 1</code> and <code>β = 0</code> so you can see the maths and not the parameters.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>LayerNorm — centre, then scale.</b>
+<pre style="margin:.4rem 0"><code class="nohl">mean  = (3 + 1 + 4 + 8) / 4 = 4
+x - μ = [-1, -3, 0, 4]
+var   = (1 + 9 + 0 + 16) / 4 = 6.5        (biased: divide by n)
+std   = sqrt(6.5) = 2.5495
+out   = [-0.392, -1.177, 0.000, 1.569]
+
+check: mean(out) = 0.000   std(out) = 1.000</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>RMSNorm — scale only, no centring.</b>
+<pre style="margin:.4rem 0"><code class="nohl">mean(x²) = (9 + 1 + 16 + 64) / 4 = 22.5
+rms      = sqrt(22.5) = 4.7434
+out      = x / rms = [0.632, 0.211, 0.843, 1.687]
+
+check: mean(out) = 0.843  (NOT 0 — it never centred)
+       rms(out)  = 1.000  (this is the invariant it enforces)</code></pre>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>What it saved.</b> RMSNorm skipped one full pass over the data (the mean), one subtraction
+per element, and drops <code>β</code> entirely — <code>d_model</code> fewer parameters per norm,
+two norms per block, in every layer.
+</div></div>
+
+<div class="step"><div class="i">4</div><div>
+<b>How different are the two outputs?</b> On <i>this</i> vector, quite different: cosine
+similarity is only <b>0.54</b>. That is because <code>[3,1,4,8]</code> has a mean of 4 — large
+relative to its spread — and centring matters most exactly when the mean is large.
+<p style="margin:.5rem 0 0">Real activations are not like that. At <code>d_model = 768</code>
+with roughly zero-mean activations, the median cosine similarity between LayerNorm and RMSNorm
+output is <b>0.9997</b> (measured over 2000 random vectors; worst case 0.994). Push the mean off
+zero by 2σ and it collapses to <b>0.45</b>.</p>
+</div></div>
+
+<p style="margin-bottom:0"><b>That is the empirical argument — and its precondition.</b>
+Zhang &amp; Sennrich found the <i>re-scaling</i> is what stabilises training while the
+<i>re-centring</i> contributes almost nothing, <b>because trained activations sit near zero
+mean</b>. Drop the centring and you lose nothing you were using. The toy vector above is a
+deliberate counter-example showing the regime where that assumption would break.</p>
+</div>
+
+<pre><code>import torch
+x = torch.tensor([3., 1., 4., 8.])
+
+mu, var = x.mean(), x.var(unbiased=False)
+ln = (x - mu) / torch.sqrt(var + 1e-5)
+rms = x * torch.rsqrt(x.pow(2).mean() + 1e-5)
+
+print(ln.round(decimals=3))    # [-0.392, -1.177,  0.000,  1.569]
+print(rms.round(decimals=3))   # [ 0.633,  0.211,  0.843,  1.687]
+print("LN   mean/std:", ln.mean().item(), ln.std(unbiased=False).item())
+print("RMS  mean/rms:", rms.mean().item(), rms.pow(2).mean().sqrt().item())
+print("cosine:", torch.nn.functional.cosine_similarity(ln, rms, dim=0).item())</code></pre>
+
+<div class="mn">
+  <span class="k">Try it</span>
+  Add a constant to every element of <code>x</code>. LayerNorm's output is <b>unchanged</b> —
+  it is shift-invariant. RMSNorm's output <b>moves</b>. That difference is exactly what the
+  ablation says does not matter in practice.
+</div>
 
 <h3>Pre-LN vs Post-LN — a change that mattered a lot</h3>
 
@@ -413,9 +479,9 @@ what sparse autoencoders were invented to untangle, and it's the frontier of int
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("08");</script>
 </body>
 </html>

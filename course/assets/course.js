@@ -95,13 +95,16 @@ function buildTopbar(currentId) {
   const bar = document.createElement("header");
   bar.className = "topbar";
   bar.innerHTML =
+    `<button class="sb-toggle" type="button" aria-label="Chapters">${ICON_MENU}</button>` +
     `<a class="home" href="index.html">Transformers <i>From Scratch</i></a>` +
     (ch ? `<div class="crumb">${part ? part.n + " &middot; " : ""}Ch ${ch.id}</div>` : "") +
     `<div class="spacer"></div>` +
-    `<div class="prog">${done}/${total}</div>` +
+    `<div class="prog" title="Chapters marked complete">${done}/${total}</div>` +
     `<button class="theme-toggle" type="button">${SUN}${MOON}</button>`;
   document.body.prepend(bar);
   bar.querySelector(".theme-toggle").onclick = Theme.toggle;
+  bar.querySelector(".sb-toggle").onclick =
+    () => document.body.classList.toggle("side-open");
   Theme.apply();
 }
 
@@ -246,13 +249,204 @@ function initQuizzes() {
   });
 }
 
+/* ------------------------------------------------------------- sidebar */
+
+const ICON_MENU = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>';
+
+function slug(s) {
+  return s.toLowerCase().replace(/[^\w\s·.-]/g, "").trim()
+          .replace(/[\s·.]+/g, "-").replace(/-+/g, "-").slice(0, 60);
+}
+
+/* Give every h2 a stable id so the section list can link to it. */
+function tagSections() {
+  const out = [];
+  document.querySelectorAll("main > h2").forEach(h => {
+    if (!h.id) h.id = "s-" + slug(h.textContent);
+    // strip the leading "5.3 · " so the sidebar stays narrow
+    const label = h.textContent.replace(/^\s*\d+(\.\d+)?\s*[·.]\s*/, "");
+    out.push({ id: h.id, label, el: h });
+  });
+  return out;
+}
+
+function buildSidebar(currentId) {
+  const sections = currentId ? tagSections() : [];
+
+  const aside = document.createElement("aside");
+  aside.className = "sidebar";
+  aside.setAttribute("aria-label", "Course navigation");
+
+  let html = `<div class="sb-search">
+      <input type="search" id="sbq" placeholder="Filter chapters…" aria-label="Filter chapters">
+    </div>`;
+
+  for (const p of PARTS) {
+    html += `<div class="sb-part" data-part="1"><div class="h">${p.n} &middot; ${p.t}</div>`;
+    for (const c of p.ch) {
+      const here = c.id === currentId;
+      html += `<a class="sb-ch ${isDone(c.id) ? "done" : ""} ${here ? "here" : ""}"
+                  href="${c.f}" data-t="${(c.id + " " + c.t + " " + c.s).toLowerCase()}">
+                 <span class="n">${c.id}</span><span>${c.t}</span></a>`;
+      if (here && sections.length) {
+        html += `<nav class="sb-sections">` +
+          sections.map(s => `<a class="sb-sec" href="#${s.id}">${s.label}</a>`).join("") +
+          `</nav>`;
+      }
+    }
+    html += `</div>`;
+  }
+  aside.innerHTML = html;
+  document.body.appendChild(aside);
+  document.body.classList.add("has-side");
+
+  const scrim = document.createElement("div");
+  scrim.className = "scrim";
+  scrim.onclick = () => document.body.classList.remove("side-open");
+  document.body.appendChild(scrim);
+
+  // keep the current chapter visible in a long list
+  const here = aside.querySelector(".sb-ch.here");
+  if (here && typeof here.scrollIntoView === "function") {
+    try { here.scrollIntoView({ block: "center" }); } catch (e) { /* non-fatal */ }
+  }
+
+  // type-to-filter
+  const q = aside.querySelector("#sbq");
+  q.addEventListener("input", () => {
+    const term = q.value.trim().toLowerCase();
+    aside.querySelectorAll(".sb-ch").forEach(a => {
+      a.style.display = !term || a.dataset.t.includes(term) ? "" : "none";
+    });
+    aside.querySelectorAll(".sb-part").forEach(p => {
+      const any = [...p.querySelectorAll(".sb-ch")].some(a => a.style.display !== "none");
+      p.style.display = any ? "" : "none";
+    });
+    if (term) aside.querySelectorAll(".sb-sections").forEach(n => n.style.display = "none");
+    else aside.querySelectorAll(".sb-sections").forEach(n => n.style.display = "");
+  });
+
+  return sections;
+}
+
+/* Highlight the section you are actually reading. */
+function initScrollspy(sections) {
+  if (!sections.length || typeof IntersectionObserver === "undefined") return;
+  const links = new Map();
+  document.querySelectorAll(".sb-sec").forEach(a =>
+    links.set(a.getAttribute("href").slice(1), a));
+
+  let active = null;
+  const setActive = id => {
+    if (id === active) return;
+    active = id;
+    links.forEach(a => a.classList.remove("active"));
+    const a = links.get(id);
+    if (a) a.classList.add("active");
+  };
+
+  const io = new IntersectionObserver(entries => {
+    // pick the heading nearest the top of the viewport that has passed it
+    const visible = sections
+      .map(s => ({ id: s.id, top: s.el.getBoundingClientRect().top }))
+      .filter(s => s.top < window.innerHeight * 0.4);
+    if (visible.length) setActive(visible[visible.length - 1].id);
+    else setActive(sections[0].id);
+  }, { rootMargin: "-10% 0px -60% 0px", threshold: [0, 1] });
+
+  sections.forEach(s => io.observe(s.el));
+  window.addEventListener("scroll", () => {
+    const visible = sections
+      .map(s => ({ id: s.id, top: s.el.getBoundingClientRect().top }))
+      .filter(s => s.top < window.innerHeight * 0.4);
+    setActive(visible.length ? visible[visible.length - 1].id : sections[0].id);
+  }, { passive: true });
+}
+
+/* Margin notes are position:absolute with no `top`, so they keep their static
+   position — but two notes placed close together resolve to overlapping spots.
+   Push any collision down until the column is clean. */
+function layoutMarginNotes() {
+  const notes = [...document.querySelectorAll(".mn")];
+  if (!notes.length) return;
+  // only applies when the margin is actually a column (not folded inline)
+  if (getComputedStyle(notes[0]).position !== "absolute") {
+    notes.forEach(n => (n.style.marginTop = ""));
+    return;
+  }
+  let prevBottom = -Infinity;
+  const GAP = 18;
+  for (const n of notes) {
+    n.style.marginTop = "";                       // measure unshifted
+    const top = n.offsetTop;
+    if (top < prevBottom + GAP) n.style.marginTop = (prevBottom + GAP - top) + "px";
+    prevBottom = n.offsetTop + (parseFloat(n.style.marginTop) || 0) + n.offsetHeight;
+  }
+}
+
+/* How far through this page you are. */
+function initReadingBar() {
+  const bar = document.createElement("div");
+  bar.className = "readbar";
+  document.body.appendChild(bar);
+  const update = () => {
+    const h = document.documentElement.scrollHeight - window.innerHeight;
+    bar.style.width = (h > 0 ? (window.scrollY / h) * 100 : 0) + "%";
+  };
+  window.addEventListener("scroll", update, { passive: true });
+  window.addEventListener("resize", update);
+  update();
+}
+
+/* Keyboard: ← / → move chapters, t toggles theme, / focuses the filter. */
+function initKeyboard(currentId) {
+  const i = CHAPTERS.findIndex(c => c.id === currentId);
+  document.addEventListener("keydown", e => {
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    if (e.key === "/" && !typing) {
+      e.preventDefault();
+      const q = document.getElementById("sbq");
+      if (q) { document.body.classList.add("side-open"); q.focus(); q.select(); }
+      return;
+    }
+    if (e.key === "Escape") {
+      document.body.classList.remove("side-open");
+      if (typing) e.target.blur();
+      return;
+    }
+    if (typing) return;
+    if (e.key === "t") { Theme.toggle(); return; }
+    if (i < 0) return;
+    if (e.key === "ArrowLeft"  && CHAPTERS[i - 1]) location.href = CHAPTERS[i - 1].f;
+    if (e.key === "ArrowRight" && CHAPTERS[i + 1]) location.href = CHAPTERS[i + 1].f;
+  });
+}
+
 /* ------------------------------------------------------------------ boot */
 
 function initChapter(id) {
-  buildLayout();
-  buildTopbar(id);
-  decorateCode();
-  initQuizzes();
-  buildChapterNav(id);
-  if (window.initViz) window.initViz();
+  // Each step is independent. A failure in one (an unsupported API in an old
+  // browser, say) must not silently take the quizzes and navigation with it.
+  const step = (name, fn) => {
+    try { return fn(); }
+    catch (e) { console.error(`[course] ${name} failed:`, e); return undefined; }
+  };
+
+  step("layout",   () => buildLayout());
+  step("topbar",   () => buildTopbar(id));
+  const sections = step("sidebar", () => buildSidebar(id)) || [];
+  step("code",     () => decorateCode());
+  step("quizzes",  () => initQuizzes());
+  step("chapnav",  () => buildChapterNav(id));
+  step("scrollspy",() => initScrollspy(sections));
+  step("readbar",  () => initReadingBar());
+  step("keyboard", () => initKeyboard(id));
+  step("viz",      () => window.initViz && window.initViz());
+  step("margins",  () => layoutMarginNotes());
+
+  // widgets and fonts change heights after first paint; re-flow the margin
+  window.addEventListener("load", layoutMarginNotes);
+  window.addEventListener("resize", layoutMarginNotes);
 }

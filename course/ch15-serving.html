@@ -6,7 +6,7 @@
 <title>Ch 15 — Serving at Scale</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -18,10 +18,7 @@ more throughput than any architectural change since GQA. If you ever deploy a mo
 that saves you money.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; prefill vs decode<br><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; the kernel<br><a href="ch11-decoding.html">Ch&nbsp;11</a> &mdash; sampling</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; where the frontier went next</div>
-<div class="mn orient"><span class="k">Why this chapter</span>Systems engineering that buys more throughput than any architectural change since GQA.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; prefill vs decode<br><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; the kernel<br><a href="ch11-decoding.html">Ch&nbsp;11</a> &mdash; sampling<div class="sep"></div><span class="k">Leads to</span><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; where the frontier went next<div class="sep"></div><span class="k">Why this chapter</span>Systems engineering that buys more throughput than any architectural change since GQA.</div>
 <h2>15.1 · PagedAttention — virtual memory for the KV cache</h2>
 
 <p>The naive approach pre-allocates a contiguous buffer of <code>max_length</code> per sequence. If a user's
@@ -304,9 +301,9 @@ breaks your latency SLA. Almost nobody measures this, and almost everyone should
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("15");</script>
 </body>
 </html>

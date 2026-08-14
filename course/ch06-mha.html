@@ -6,7 +6,7 @@
 <title>Ch 6 — Multi-Head Attention: The Reshape Dance</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -19,10 +19,7 @@ several attention operations in parallel, and the only genuinely tricky part is 
 This chapter draws every step.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; view and transpose, exactly<br><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; one head first</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; GQA changes how many K/V heads exist<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; this is the block's attention sublayer</div>
-<div class="mn orient"><span class="k">Why this chapter</span>Nothing is computed here — it is a reshape that turns one matmul into n parallel ones.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; view and transpose, exactly<br><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; one head first<div class="sep"></div><span class="k">Leads to</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; GQA changes how many K/V heads exist<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; this is the block's attention sublayer<div class="sep"></div><span class="k">Why this chapter</span>Nothing is computed here — it is a reshape that turns one matmul into n parallel ones.</div>
 <h2>6.1 · Why more than one head</h2>
 
 <p>A softmax row sums to 1. That is a <b>budget</b>: if a head spends 0.8 of its attention on the subject, it
@@ -55,6 +52,67 @@ subject–verb agreement.</p>
 "dance" is purely about <b>which numbers are adjacent</b> so that a batched matmul treats each head as an
 independent problem. That's all multi-head attention is: a reshape that turns one big matmul into
 <code>n_head</code> small parallel ones.</p>
+</div>
+
+<div class="example">
+<span class="t">Worked example — watch 12 numbers get partitioned into 3 heads</span>
+<p>One token, <code>d_model = 12</code>, <code>n_head = 3</code>, so <code>d_head = 4</code>.
+Small enough to track every value.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>After <code>W_q</code>, one token is a flat vector of 12.</b>
+<pre style="margin:.4rem 0"><code class="nohl">q = [10, 11, 12, 13,  20, 21, 22, 23,  30, 31, 32, 33]
+     └─────────────┘  └─────────────┘  └─────────────┘
+       features 0-3     features 4-7    features 8-11</code></pre>
+(The values are chosen so you can see where each one lands.)
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b><code>.view(B, T, 3, 4)</code> re-labels — it does not move anything.</b>
+<pre style="margin:.4rem 0"><code class="nohl">head 0 -> [10, 11, 12, 13]
+head 1 -> [20, 21, 22, 23]
+head 2 -> [30, 31, 32, 33]</code></pre>
+Head <i>h</i> gets features <code>h·4 … h·4+3</code>. The 12 features are
+<b>partitioned</b>, never duplicated — which is why parameter count is unchanged.
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>Each head now attends independently</b> over its own 4 dimensions. Head 0 never sees
+features 4–11. Three separate <code>(T, 4)</code> problems instead of one <code>(T, 12)</code>.
+</div></div>
+
+<div class="step"><div class="i">4</div><div>
+<b>Merging back — and the bug.</b> Say attention returns each head unchanged. The correct merge
+concatenates <i>this token's</i> three head-outputs:
+<pre style="margin:.4rem 0"><code class="nohl">correct:  [10,11,12,13, 20,21,22,23, 30,31,32,33]   <- what we started with</code></pre>
+Skip the transpose and <code>reshape</code> reads memory in <code>(head, token)</code> order
+instead, so with 2 tokens you get token 0's vector built partly from <b>token 1's</b> head
+outputs. Shapes stay valid; the model just quietly learns something worse.
+</div></div>
+</div>
+
+<pre><code># Prove the partition, and prove the bug is real
+import torch
+B, T, nh, hd = 1, 2, 3, 4
+q = torch.arange(B * T * nh * hd).float().view(B, T, nh * hd)
+#   token 0 = [0..11], token 1 = [12..23]
+
+heads = q.view(B, T, nh, hd).transpose(1, 2)     # (B, nh, T, hd)
+print(heads[0, 0, 0])      # head 0, token 0 -> [0., 1., 2., 3.]
+print(heads[0, 2, 0])      # head 2, token 0 -> [8., 9., 10., 11.]
+
+right = heads.transpose(1, 2).reshape(B, T, nh * hd)   # transpose FIRST
+wrong = heads.reshape(B, T, nh * hd)                   # forgot the transpose
+
+assert torch.equal(right, q), "correct merge is a perfect round-trip"
+assert not torch.equal(wrong, q)
+print("wrong[0,0] =", wrong[0, 0].tolist())
+#   [0,1,2,3, 12,13,14,15, 4,5,6,7]  <- token 1's numbers leaked into token 0</code></pre>
+
+<div class="mn">
+  <span class="k">Why it hides</span>
+  Both merges give shape <code>(B, T, C)</code>. Nothing raises. The model still trains — just
+  to a worse loss, with no error message pointing at the cause.
 </div>
 
 <h3>Step by step, with shapes</h3>
@@ -354,9 +412,9 @@ importantly, a <b>4× reduction in KV cache</b>. Chapter 13.</li>
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("06");</script>
 </body>
 </html>

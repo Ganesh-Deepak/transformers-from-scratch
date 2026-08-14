@@ -6,7 +6,7 @@
 <title>Transformers From Scratch</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 
@@ -193,8 +193,8 @@ mechanisms that have been stable for years.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
 <script>
 (function () {
   const wrap = document.getElementById("parts");
@@ -225,7 +225,10 @@ mechanisms that have been stable for years.</p>
 
   buildLayout();
   buildTopbar(null);
+  buildSidebar(null);
   decorateCode();
+  initReadingBar();
+  initKeyboard(null);
 })();
 </script>
 </body>

@@ -6,7 +6,7 @@
 <title>Ch 7 — Position: Sinusoidal → Learned → RoPE → ALiBi</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -18,10 +18,7 @@ Attention has a strange property: it does not know what order the tokens are in.
 what that something is — ending with RoPE, which essentially every model shipped since 2023 uses.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; position enters through the q-k dot product</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; MLA has to split RoPE off to work<br><a href="ch17-scaling.html">Ch&nbsp;17</a> &mdash; context extension is RoPE scaling</div>
-<div class="mn orient"><span class="k">Why this chapter</span>Attention cannot see order. Everything here is about telling it.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; position enters through the q-k dot product<div class="sep"></div><span class="k">Leads to</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; MLA has to split RoPE off to work<br><a href="ch17-scaling.html">Ch&nbsp;17</a> &mdash; context extension is RoPE scaling<div class="sep"></div><span class="k">Why this chapter</span>Attention cannot see order. Everything here is about telling it.</div>
 <h2>7.1 · Proving attention is position-blind</h2>
 
 <p>This isn't a hand-wave. Let <span class="math">P</span> be a permutation matrix that shuffles the token
@@ -361,9 +358,9 @@ around. Dimensions that wrap many times within the context can't distinguish dis
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("07");</script>
 </body>
 </html>

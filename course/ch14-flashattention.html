@@ -6,7 +6,7 @@
 <title>Ch 14 — FlashAttention and the Online Softmax</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -19,10 +19,7 @@ approximation, no sparsity, identical outputs up to floating-point rounding. It 
 arithmetic.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the T x T score matrix<br><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; why memory traffic dominates</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch15-serving.html">Ch&nbsp;15</a> &mdash; serving stacks assume this exists<br><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; it removed the memory wall, not the quadratic</div>
-<div class="mn orient"><span class="k">Why this chapter</span>Same maths, same output, 2-4x faster — because the bottleneck was never arithmetic.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the T x T score matrix<br><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; why memory traffic dominates<div class="sep"></div><span class="k">Leads to</span><a href="ch15-serving.html">Ch&nbsp;15</a> &mdash; serving stacks assume this exists<br><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; it removed the memory wall, not the quadratic<div class="sep"></div><span class="k">Why this chapter</span>Same maths, same output, 2-4x faster — because the bottleneck was never arithmetic.</div>
 <h2>14.1 · The insight: attention is IO-bound, not compute-bound</h2>
 
 <p>A GPU has a memory hierarchy, and the numbers are wildly asymmetric:</p>
@@ -363,9 +360,9 @@ if your "Flash" line has slope 2, you fell back to the math backend; check the d
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("14");</script>
 </body>
 </html>

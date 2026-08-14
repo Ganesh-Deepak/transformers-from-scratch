@@ -6,7 +6,7 @@
 <title>Ch 13 — MQA, GQA, and Multi-Head Latent Attention</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -18,10 +18,7 @@ sequence of answers — from a blunt 2019 hack, through the 2023 compromise that
 DeepSeek's 2024 low-rank scheme that is <em>both</em> smaller and better than what it replaced.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; heads<br><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; why cache size is the binding constraint<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE, for the MLA section</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; sparse attention is the next move<br><a href="ch22-capstone.html">Ch&nbsp;22</a> &mdash; the capstone uses GQA</div>
-<div class="mn orient"><span class="k">Why this chapter</span>From a blunt 2019 hack to a 2024 scheme that is both smaller and better.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; heads<br><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; why cache size is the binding constraint<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE, for the MLA section<div class="sep"></div><span class="k">Leads to</span><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; sparse attention is the next move<br><a href="ch22-capstone.html">Ch&nbsp;22</a> &mdash; the capstone uses GQA<div class="sep"></div><span class="k">Why this chapter</span>From a blunt 2019 hack to a 2024 scheme that is both smaller and better.</div>
 <h2>13.1 · The idea: share the K/V heads</h2>
 
 <p>Standard MHA gives every query head its own key head and value head. But the cache is proportional to
@@ -437,9 +434,9 @@ large part of the explanation — architecture choices show up directly on the i
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("13");</script>
 </body>
 </html>

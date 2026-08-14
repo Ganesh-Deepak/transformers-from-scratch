@@ -6,7 +6,7 @@
 <title>Ch 10 — Training a Transformer</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -18,10 +18,7 @@ the schedule, and the dozen practical details that separate a run that works fro
 4000 and never recovers.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; you need a model before you can train one</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch19-sft-rlhf.html">Ch&nbsp;19</a> &mdash; fine-tuning is this loop with different data<br><a href="ch22-capstone.html">Ch&nbsp;22</a> &mdash; the capstone trains for real</div>
-<div class="mn orient"><span class="k">Why this chapter</span>The loss, the optimizer, the schedule, and the bugs a good loss curve hides.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; you need a model before you can train one<div class="sep"></div><span class="k">Leads to</span><a href="ch19-sft-rlhf.html">Ch&nbsp;19</a> &mdash; fine-tuning is this loop with different data<br><a href="ch22-capstone.html">Ch&nbsp;22</a> &mdash; the capstone trains for real<div class="sep"></div><span class="k">Why this chapter</span>The loss, the optimizer, the schedule, and the bugs a good loss curve hides.</div>
 <h2>10.1 · The objective: predict the next token</h2>
 
 <p>That's the whole thing. There is no clever auxiliary loss in standard pretraining.</p>
@@ -531,9 +528,9 @@ Never trust a loss curve alone — always generate samples and always check loss
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("10");</script>
 </body>
 </html>

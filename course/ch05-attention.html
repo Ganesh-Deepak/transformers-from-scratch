@@ -6,7 +6,7 @@
 <title>Ch 5 — Attention From Scratch</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -18,10 +18,7 @@ attention rather than assert it — including <em>why</em> that <span class="mat
 there, which most tutorials skip.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; q @ k.T is a batched matmul<br><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; attention reads from the residual stream</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; one head becomes many<br><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; the T x T matrix is what FlashAttention refuses to write down</div>
-<div class="mn orient"><span class="k">Why this chapter</span>The core mechanism, derived rather than asserted.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; q @ k.T is a batched matmul<br><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; attention reads from the residual stream<div class="sep"></div><span class="k">Leads to</span><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; one head becomes many<br><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; the T x T matrix is what FlashAttention refuses to write down<div class="sep"></div><span class="k">Why this chapter</span>The core mechanism, derived rather than asserted.</div>
 <h2>5.1 · The problem attention was invented to solve</h2>
 
 <p>Before 2014, translation worked like this: an RNN encoder read the source sentence one word at a time,
@@ -545,9 +542,9 @@ lengths people actually use, which is why this stopped being a theoretical conce
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("05");</script>
 </body>
 </html>

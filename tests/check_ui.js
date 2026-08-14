@@ -141,9 +141,24 @@ for (const file of ["index.html", "ch01-tensors.html", "ch13-gqa-mla.html"]) {
   const pres = d.querySelectorAll("pre > code");
   ok(pres.length === 0 || d.querySelectorAll(".copy-btn").length === pres.length,
      "copy buttons on every code block", `${d.querySelectorAll(".copy-btn").length}/${pres.length}`);
+  // navigation
+  ok(!!d.querySelector(".sidebar"), "sidebar built");
+  ok(d.querySelectorAll(".sb-ch").length === 22, "all 22 chapters in sidebar",
+     `${d.querySelectorAll(".sb-ch").length}`);
+  ok(!!d.querySelector("#sbq"), "chapter filter present");
+  ok(!!d.querySelector(".readbar"), "reading-progress bar present");
+  ok(!!d.querySelector(".sb-toggle"), "drawer toggle present (narrow screens)");
+
   if (file !== "index.html") {
     ok(!!d.querySelector(".chapnav"), "chapter nav built");
     ok(d.querySelectorAll(".opt .mk").length > 0, "quiz markers built");
+    ok(!!d.querySelector(".sb-ch.here"), "current chapter marked in sidebar");
+    const secs = d.querySelectorAll(".sb-sec");
+    ok(secs.length > 0, "in-chapter section list built", `${secs.length} sections`);
+    // every section link must resolve to a real heading on the page
+    const bad = [...secs].filter(a => !d.getElementById(a.getAttribute("href").slice(1)));
+    ok(bad.length === 0, "every section link resolves",
+       bad.map(a => a.getAttribute("href")).join(" "));
   }
   dom.window.close();
 }

@@ -6,7 +6,7 @@
 <title>Ch 4 — Embeddings and the Residual Stream</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -18,10 +18,7 @@ useful mental model in this entire course — <em>the residual stream</em> — a
 from "a stack of mystery boxes" into something you can reason about.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch03-tokenization.html">Ch&nbsp;03</a> &mdash; you need token ids before you can look them up</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; every block reads and writes this stream<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; the stream is the model's spine</div>
-<div class="mn orient"><span class="k">Why this chapter</span>The residual stream is the single most useful mental model in this course.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch03-tokenization.html">Ch&nbsp;03</a> &mdash; you need token ids before you can look them up<div class="sep"></div><span class="k">Leads to</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; every block reads and writes this stream<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; the stream is the model's spine<div class="sep"></div><span class="k">Why this chapter</span>The residual stream is the single most useful mental model in this course.</div>
 <h2>4.1 · An embedding is a lookup, not a matmul</h2>
 
 <p><code>nn.Embedding(V, C)</code> holds a single weight matrix of shape <code>(V, C)</code>: one row per
@@ -354,9 +351,9 @@ problem, and it's much more convincing than reading about it.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("04");</script>
 </body>
 </html>

@@ -6,7 +6,7 @@
 <title>Ch 9 — Whole Architectures + End-to-End Shape Trace</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -17,10 +17,7 @@ You now have every component. This chapter assembles them three different ways �
 encoder–decoder — and then walks every single tensor from token id to loss, one shape at a time.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; the block<br><a href="ch03-tokenization.html">Ch&nbsp;03</a> &mdash; tokenizer<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch10-training.html">Ch&nbsp;10</a> &mdash; now train it<br><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; the KV cache changes this forward pass</div>
-<div class="mn orient"><span class="k">Why this chapter</span>Every component, assembled, with every tensor traced end to end.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; the block<br><a href="ch03-tokenization.html">Ch&nbsp;03</a> &mdash; tokenizer<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE<div class="sep"></div><span class="k">Leads to</span><a href="ch10-training.html">Ch&nbsp;10</a> &mdash; now train it<br><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; the KV cache changes this forward pass<div class="sep"></div><span class="k">Why this chapter</span>Every component, assembled, with every tensor traced end to end.</div>
 <h2>9.1 · The three families</h2>
 
 <div class="tw">
@@ -356,9 +353,9 @@ sequence — more than the 8B model's own weights.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("09");</script>
 </body>
 </html>

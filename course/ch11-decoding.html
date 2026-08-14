@@ -6,7 +6,7 @@
 <title>Ch 11 — Decoding and Sampling</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -18,10 +18,7 @@ algorithm with its own parameters — and those parameters change model behaviou
 realise. A "bad" model is quite often a well-trained model with a badly configured sampler.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; logits come out of the forward pass</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; this loop is quadratically wasteful — the cache fixes it<br><a href="ch15-serving.html">Ch&nbsp;15</a> &mdash; speculative decoding rewrites it again</div>
-<div class="mn orient"><span class="k">Why this chapter</span>The model gives a distribution. Turning it into text is a separate algorithm with its own bugs.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; logits come out of the forward pass<div class="sep"></div><span class="k">Leads to</span><a href="ch12-kvcache.html">Ch&nbsp;12</a> &mdash; this loop is quadratically wasteful — the cache fixes it<br><a href="ch15-serving.html">Ch&nbsp;15</a> &mdash; speculative decoding rewrites it again<div class="sep"></div><span class="k">Why this chapter</span>The model gives a distribution. Turning it into text is a separate algorithm with its own bugs.</div>
 <h2>11.1 · The generation loop</h2>
 
 <pre><code>@torch.no_grad()
@@ -315,9 +312,9 @@ trained to match — a genuinely counterintuitive result, and the reason nobody 
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("11");</script>
 </body>
 </html>

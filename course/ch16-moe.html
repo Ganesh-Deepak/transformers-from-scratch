@@ -6,7 +6,7 @@
 <title>Ch 16 — Mixture of Experts</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=2">
+<link rel="stylesheet" href="assets/style.css?v=4">
 </head>
 <body>
 <main>
@@ -18,10 +18,7 @@ passes through all of them. MoE breaks that link: keep a very large number of pa
 small slice per token. It is how a 671-billion-parameter model runs at the cost of a 37-billion one.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; MoE replaces the MLP<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; where the parameters live</div>
-<div class="mn orient"><span class="k">Leads to</span><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; every frontier model is now sparse</div>
-<div class="mn orient"><span class="k">Why this chapter</span>Decouple capacity from compute: 671B parameters that cost 37B to run.</div>
-
+<div class="mn orient"><span class="k">Builds on</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; MoE replaces the MLP<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; where the parameters live<div class="sep"></div><span class="k">Leads to</span><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; every frontier model is now sparse<div class="sep"></div><span class="k">Why this chapter</span>Decouple capacity from compute: 671B parameters that cost 37B to run.</div>
 <h2>16.1 · The idea</h2>
 
 <div class="box intuition">
@@ -295,9 +292,9 @@ expert. The "one expert for biology" mental model is wrong; think of experts as 
 
 </main>
 
-<script src="assets/chapters.js?v=2"></script>
-<script src="assets/course.js?v=2"></script>
-<script src="assets/viz.js?v=2"></script>
+<script src="assets/chapters.js?v=4"></script>
+<script src="assets/course.js?v=4"></script>
+<script src="assets/viz.js?v=4"></script>
 <script>initChapter("16");</script>
 </body>
 </html>
