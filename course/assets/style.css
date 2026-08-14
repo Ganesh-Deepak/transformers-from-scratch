@@ -9,10 +9,13 @@
            Cascadia Mono               (every shape annotation)
            Cambria Math                (mathematics)
 
-   Colour  The boldness is spent on the DIMENSION palette, because here colour
-           encodes which tensor axis you are looking at. Everything else is
-           quiet. The accent (verdigris) is deliberately excluded from the
-           dimension hues so it can never be mistaken for one.
+   Colour  WARM in both themes. Light is parchment (luminance 0.853), never
+           glaring white. Dark is a warm deep plum, not blue-black.
+           The boldness is spent on the DIMENSION palette, because here colour
+           encodes which tensor axis you are looking at. The teal accent is
+           deliberately excluded from those hues so it can never be mistaken
+           for one. Neither theme is an inversion of the other -- each was
+           picked on its own ground and WCAG-checked (tests/check_ui.js).
    ========================================================================= */
 
 /* ---------------------------------------------------------------- tokens */
@@ -38,49 +41,52 @@
   --breakout: var(--wide);   /* grows on large screens — see below */
   --rule: 1px;
 
-  /* -- light theme (default) -------------------------------------------- */
-  --paper:      #FAFAF9;
-  --surface:    #FFFFFF;
-  --surface-2:  #F2F3F1;
-  --ink:        #18202B;
-  --ink-2:      #46505E;   /* secondary text */
-  --ink-3:      #6E7885;   /* captions, margin notes */
-  --ink-4:      #9AA2AC;   /* faintest */
-  --line:       #DFE0DD;   /* hairlines */
-  --line-2:     #C6C8C4;   /* stronger hairlines */
+  /* -- light theme (default) — WARM PARCHMENT, never glaring white ------- */
+  /* paper luminance 0.853; pure white is 1.000 and is what makes long
+     reading sessions hurt. Every pair below is WCAG-checked (tests/check_ui.js). */
+  --paper:      #F4EDE2;   /* warm parchment */
+  --surface:    #FBF6EC;   /* raised card — lighter than paper, still warm */
+  --surface-2:  #EAE1D2;   /* recessed */
+  --ink:        #2B241D;   /* warm dark brown-black, not blue-black */
+  --ink-2:      #574C40;
+  --ink-3:      #877A6B;
+  --ink-4:      #AEA294;
+  --line:       #DFD4C1;
+  --line-2:     #C9BCA6;
 
-  --accent:     #0B6E62;   /* verdigris — links, interaction, progress */
-  --accent-2:   #08544B;   /* hover */
-  --accent-bg:  #E6F1EF;   /* tint */
+  --accent:     #0A6A62;   /* deep teal — links, interaction, progress */
+  --accent-2:   #075049;
+  --accent-bg:  #DDEBE7;
 
-  /* dimension family — semantic. matched weight, evenly spread, no verdigris */
-  --dim-1: #A8761C;   /* ochre   — Q / axis 0 / batch  */
-  --dim-2: #4A51B8;   /* indigo  — K / axis 1 / time   */
-  --dim-3: #A8484F;   /* clay    — V / axis 2 / feature*/
-  --dim-4: #5A7A2E;   /* moss    — O / output          */
-  --dim-1-bg: #F7EFDE;
-  --dim-2-bg: #EAEBF7;
-  --dim-3-bg: #F7EAEB;
-  --dim-4-bg: #EDF2E4;
+  /* dimension family — SEMANTIC: colour tells you which tensor axis.
+     Risograph-ish: vivid enough to be cheerful, muted enough to read on paper. */
+  --dim-1: #95580D;   /* marigold — Q / axis 0 / batch   */
+  --dim-2: #3A4FB5;   /* cobalt   — K / axis 1 / time    */
+  --dim-3: #AE3556;   /* raspberry— V / axis 2 / feature */
+  --dim-4: #46753A;   /* fern     — O / output           */
+  --dim-1-bg: #F6E9D4;
+  --dim-2-bg: #E4E6F5;
+  --dim-3-bg: #F6E3E7;
+  --dim-4-bg: #E6EEDD;
 
   /* semantic status — separate from accent */
-  --ok:    #2F6B3A;
-  --warn:  #8A5A0B;
-  --stop:  #A33028;
-  --ok-bg:   #E9F1E9;
-  --warn-bg: #F7EFDF;
-  --stop-bg: #F7EAE8;
+  --ok:    #35652F;
+  --warn:  #855309;
+  --stop:  #A32E25;
+  --ok-bg:   #E4EDDF;
+  --warn-bg: #F6EAD5;
+  --stop-bg: #F6E3E0;
 
   /* syntax */
-  --syn-comment: #7C8592;
-  --syn-key:     #8C3A78;
-  --syn-str:     #2F6B3A;
-  --syn-num:     #9A5A11;
-  --syn-fn:      #2A5B93;
-  --syn-builtin: #6A4BAF;
-  --syn-shape:   #0B6E62;
+  --syn-comment: #8A7D6E;
+  --syn-key:     #9B3070;
+  --syn-str:     #35652F;
+  --syn-num:     #95580D;
+  --syn-fn:      #2A5395;
+  --syn-builtin: #6A44A8;
+  --syn-shape:   #0A6A62;
 
-  --shadow: 0 1px 2px rgba(24,32,43,.05), 0 8px 24px -12px rgba(24,32,43,.14);
+  --shadow: 0 1px 2px rgba(43,36,29,.06), 0 8px 24px -12px rgba(43,36,29,.18);
 }
 
 /* -- dark theme: OS preference ------------------------------------------
@@ -90,75 +96,116 @@
    for `background` while working for `color`. This is unambiguous. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --paper:      #0D1219;
-    --surface:    #141B24;
-    --surface-2:  #1B232D;
-    --ink:        #DDE3EA;
-    --ink-2:      #A9B3BF;
-    --ink-3:      #7E8896;
-    --ink-4:      #5C6673;
-    --line:       #232C37;
-    --line-2:     #333E4B;
-
-    --accent:     #48BFAB;
-    --accent-2:   #6FD4C2;
-    --accent-bg:  #102C29;
-
-    --dim-1: #DDA43F;
-    --dim-2: #8E93E8;
-    --dim-3: #E0868C;
-    --dim-4: #9DBF63;
-    --dim-1-bg: #2B2415;
-    --dim-2-bg: #1E2036;
-    --dim-3-bg: #2E1D20;
-    --dim-4-bg: #222B18;
-
-    --ok:    #67B276;
-    --warn:  #D3A051;
-    --stop:  #E08079;
-    --ok-bg:   #16251A;
-    --warn-bg: #2A2214;
-    --stop-bg: #2C1B19;
-
-    --syn-comment: #6B7583;
-    --syn-key:     #E08AC4;
-    --syn-str:     #8FCB9B;
-    --syn-num:     #E3B37A;
-    --syn-fn:      #7FB4E8;
-    --syn-builtin: #B49BF0;
-    --syn-shape:   #48BFAB;
-
-    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+    --paper: #1C1722;
+    --surface: #262030;
+    --surface-2: #312A3C;
+    --ink: #F0E7DC;
+    --ink-2: #C0B4AC;
+    --ink-3: #95879B;
+    --ink-4: #6F6675;
+    --line: #342C3E;
+    --line-2: #473D53;
+    --accent: #54DBC4;
+    --accent-2: #7BE8D6;
+    --accent-bg: #16342F;
+    --dim-1: #F5BA55;
+    --dim-2: #9BADFA;
+    --dim-3: #F792AC;
+    --dim-4: #95D283;
+    --dim-1-bg: #33280F;
+    --dim-2-bg: #22254A;
+    --dim-3-bg: #3A1F2A;
+    --dim-4-bg: #22321B;
+    --ok: #84D07F;
+    --warn: #EDBA63;
+    --stop: #F78C81;
+    --ok-bg: #1B2E1B;
+    --warn-bg: #332714;
+    --stop-bg: #361E1C;
+    --syn-comment: #8A7F94;
+    --syn-key: #F79ACF;
+    --syn-str: #A0DDA3;
+    --syn-num: #F5C182;
+    --syn-fn: #8FBEF5;
+    --syn-builtin: #C3A8FA;
+    --syn-shape: #54DBC4;
+    --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 30px -14px rgba(0,0,0,.65);
   }
 }
 
 /* -- explicit toggle must win in BOTH directions ------------------------ */
 :root[data-theme="light"] {
-  --paper: #FAFAF9;   --surface: #FFFFFF;  --surface-2: #F2F3F1;
-  --ink: #18202B;     --ink-2: #46505E;    --ink-3: #6E7885;  --ink-4: #9AA2AC;
-  --line: #DFE0DD;    --line-2: #C6C8C4;
-  --accent: #0B6E62;  --accent-2: #08544B; --accent-bg: #E6F1EF;
-  --dim-1: #A8761C;   --dim-2: #4A51B8;    --dim-3: #A8484F;  --dim-4: #5A7A2E;
-  --dim-1-bg: #F7EFDE; --dim-2-bg: #EAEBF7; --dim-3-bg: #F7EAEB; --dim-4-bg: #EDF2E4;
-  --ok: #2F6B3A;      --warn: #8A5A0B;     --stop: #A33028;
-  --ok-bg: #E9F1E9;   --warn-bg: #F7EFDF;  --stop-bg: #F7EAE8;
-  --syn-comment: #7C8592; --syn-key: #8C3A78; --syn-str: #2F6B3A;
-  --syn-num: #9A5A11; --syn-fn: #2A5B93; --syn-builtin: #6A4BAF; --syn-shape: #0B6E62;
-  --shadow: 0 1px 2px rgba(24,32,43,.05), 0 8px 24px -12px rgba(24,32,43,.14);
+  --paper: #F4EDE2;
+  --surface: #FBF6EC;
+  --surface-2: #EAE1D2;
+  --ink: #2B241D;
+  --ink-2: #574C40;
+  --ink-3: #877A6B;
+  --ink-4: #AEA294;
+  --line: #DFD4C1;
+  --line-2: #C9BCA6;
+  --accent: #0A6A62;
+  --accent-2: #075049;
+  --accent-bg: #DDEBE7;
+  --dim-1: #95580D;
+  --dim-2: #3A4FB5;
+  --dim-3: #AE3556;
+  --dim-4: #46753A;
+  --dim-1-bg: #F6E9D4;
+  --dim-2-bg: #E4E6F5;
+  --dim-3-bg: #F6E3E7;
+  --dim-4-bg: #E6EEDD;
+  --ok: #35652F;
+  --warn: #855309;
+  --stop: #A32E25;
+  --ok-bg: #E4EDDF;
+  --warn-bg: #F6EAD5;
+  --stop-bg: #F6E3E0;
+  --syn-comment: #8A7D6E;
+  --syn-key: #9B3070;
+  --syn-str: #35652F;
+  --syn-num: #95580D;
+  --syn-fn: #2A5395;
+  --syn-builtin: #6A44A8;
+  --syn-shape: #0A6A62;
+  --shadow: 0 1px 2px rgba(43,36,29,.06), 0 8px 24px -12px rgba(43,36,29,.18);
 }
 
 :root[data-theme="dark"] {
-  --paper: #0D1219;   --surface: #141B24;  --surface-2: #1B232D;
-  --ink: #DDE3EA;     --ink-2: #A9B3BF;    --ink-3: #7E8896;  --ink-4: #5C6673;
-  --line: #232C37;    --line-2: #333E4B;
-  --accent: #48BFAB;  --accent-2: #6FD4C2; --accent-bg: #102C29;
-  --dim-1: #DDA43F;   --dim-2: #8E93E8;    --dim-3: #E0868C;  --dim-4: #9DBF63;
-  --dim-1-bg: #2B2415; --dim-2-bg: #1E2036; --dim-3-bg: #2E1D20; --dim-4-bg: #222B18;
-  --ok: #67B276;      --warn: #D3A051;     --stop: #E08079;
-  --ok-bg: #16251A;   --warn-bg: #2A2214;  --stop-bg: #2C1B19;
-  --syn-comment: #6B7583; --syn-key: #E08AC4; --syn-str: #8FCB9B;
-  --syn-num: #E3B37A; --syn-fn: #7FB4E8; --syn-builtin: #B49BF0; --syn-shape: #48BFAB;
-  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+  --paper: #1C1722;
+  --surface: #262030;
+  --surface-2: #312A3C;
+  --ink: #F0E7DC;
+  --ink-2: #C0B4AC;
+  --ink-3: #95879B;
+  --ink-4: #6F6675;
+  --line: #342C3E;
+  --line-2: #473D53;
+  --accent: #54DBC4;
+  --accent-2: #7BE8D6;
+  --accent-bg: #16342F;
+  --dim-1: #F5BA55;
+  --dim-2: #9BADFA;
+  --dim-3: #F792AC;
+  --dim-4: #95D283;
+  --dim-1-bg: #33280F;
+  --dim-2-bg: #22254A;
+  --dim-3-bg: #3A1F2A;
+  --dim-4-bg: #22321B;
+  --ok: #84D07F;
+  --warn: #EDBA63;
+  --stop: #F78C81;
+  --ok-bg: #1B2E1B;
+  --warn-bg: #332714;
+  --stop-bg: #361E1C;
+  --syn-comment: #8A7F94;
+  --syn-key: #F79ACF;
+  --syn-str: #A0DDA3;
+  --syn-num: #F5C182;
+  --syn-fn: #8FBEF5;
+  --syn-builtin: #C3A8FA;
+  --syn-shape: #54DBC4;
+  --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 30px -14px rgba(0,0,0,.65);
 }
 
 /* ------------------------------------------------------------------ base */
