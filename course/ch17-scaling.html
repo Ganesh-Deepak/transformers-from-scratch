@@ -56,6 +56,68 @@ and minimise over <code>N</code>. Because α ≈ β, the optimum has <code>N* �
 roughly constant at ~20. <b>Every 4× of compute should buy you 2× the parameters and 2× the data.</b></p>
 </div>
 
+<div class="example">
+<span class="t">Worked example — was GPT-3 the right size? (the fitted law says no)</span>
+<p>GPT-3 used <span class="math">C ≈ 3.14 × 10²³</span> FLOPs on 175 B parameters and 300 B
+tokens. Plug its budget into the Hoffmann fit and ask what it <i>should</i> have been.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>The compute-optimal split at that budget.</b> With <code>C = 6ND</code> and
+<code>D = 20N</code>: <span class="math">N* = √(C / 120)</span>.
+<pre style="margin:.4rem 0"><code class="nohl">N* = sqrt(3.14e23 / 120) = 51.2 B parameters
+D* = 3.14e23 / (6 × 51.2e9) = 1,023 B tokens</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Predicted loss, both ways.</b>
+<pre style="margin:.4rem 0"><code class="nohl">GPT-3 as built   N=175B  D=300B   ratio 1.7 tok/param   loss 2.0023
+compute-optimal  N=51B   D=1023B  ratio 20  tok/param   loss 1.9610</code></pre>
+A model <b>3.4× smaller</b>, trained on <b>3.4× more data</b> for the <b>same compute</b>, was
+predicted to be <b>better</b>. That is the Chinchilla result in one line — and it is why the
+field pivoted so hard in 2022.
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>The optimum is a ridge, not a peak.</b> Same formula across budgets:
+<pre style="margin:.4rem 0"><code class="nohl">C=1e21   N*=  2.9B   D*=   58B   loss 2.335
+C=1e22   N*=  9.1B   D*=  183B   loss 2.146
+C=1e23   N*= 28.9B   D*=  577B   loss 2.012
+C=1e25   N*=289B     D*= 5774B   loss 1.851</code></pre>
+Every 10× of compute buys ~3.2× the parameters <i>and</i> ~3.2× the data — both scale as
+<span class="math">√C</span>, which is why the ratio stays pinned at 20.
+</div></div>
+
+<div class="step"><div class="i">4</div><div>
+<b>And why nobody obeys it.</b> Llama-3-8B used <b>1875</b> tokens per parameter — 94× past
+"optimal":
+<pre style="margin:.4rem 0"><code class="nohl">Llama-3-8B   N=8B  D=15T   loss 1.9485</code></pre>
+<b>Better than GPT-3's predicted 2.0023, with 22× fewer parameters.</b> It cost far more to
+train per unit of quality — and it is far cheaper to <i>serve</i>, forever.
+</div></div>
+
+<p style="margin-bottom:0"><b>Read steps 2 and 4 together.</b> Chinchilla answers "best loss for
+a fixed <i>training</i> budget". Llama-3 answers "best model I can afford to <i>run</i>". Both
+are correct; they optimise different things, and the second one is what ships.</p>
+</div>
+
+<pre><code>import math
+E, A, B_, a, b = 1.69, 406.4, 410.7, 0.34, 0.28          # Hoffmann et al. 2022
+def loss(N, D): return E + A / N**a + B_ / D**b
+
+C = 3.14e23                                              # GPT-3's budget
+N_opt = math.sqrt(C / 120); D_opt = C / (6 * N_opt)
+print(round(loss(175e9, 300e9), 4))    # 2.0023  as built
+print(round(loss(N_opt, D_opt), 4))    # 1.9610  compute-optimal
+print(round(loss(8e9, 15e12), 4))      # 1.9485  Llama-3-8B
+assert loss(N_opt, D_opt) < loss(175e9, 300e9)</code></pre>
+
+<div class="mn">
+  <span class="k">Caveat</span>
+  These are <b>fitted predictions</b>, not measurements of those models. The constants come from
+  Hoffmann et al.'s sweep on their data mixture; a different corpus moves them. The
+  <i>direction</i> of the conclusion is robust, the third decimal place is not.
+</div>
+
 <h3>Why nobody actually trains Chinchilla-optimal any more</h3>
 
 <p>Chinchilla optimises <b>training</b> compute. But a deployed model's compute is dominated by

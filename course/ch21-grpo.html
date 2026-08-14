@@ -111,6 +111,58 @@ needed.</p>
 <span class="lbl">z-score the rewards within the group. That's the advantage.</span>
 </div>
 
+<div class="example">
+<span class="t">Worked example — three groups of 8, and why one of them is wasted compute</span>
+<p>Same prompt, 8 sampled answers, reward 1 for correct and 0 for wrong. No value model
+anywhere — the group is the baseline.</p>
+
+<div class="step"><div class="i">A</div><div>
+<b>A mixed group — the useful case.</b>
+<pre style="margin:.4rem 0"><code class="nohl">rewards     [1, 0, 1, 0, 1, 0, 0, 1]     mean 0.500   std 0.5000
+advantages  [+1, −1, +1, −1, +1, −1, −1, +1]</code></pre>
+Clean signal: the 4 correct rollouts get pushed up, the 4 wrong ones down, equally.
+</div></div>
+
+<div class="step"><div class="i">B</div><div>
+<b>All eight correct — and here is the problem.</b>
+<pre style="margin:.4rem 0"><code class="nohl">rewards     [1, 1, 1, 1, 1, 1, 1, 1]     mean 1.000   std 0.0000
+advantages  [ 0,  0,  0,  0,  0,  0,  0,  0]</code></pre>
+Every advantage is <b>exactly zero</b>. You paid for 8 full generations and the gradient
+contribution is <b>nothing</b>. An all-wrong group behaves identically.
+</div></div>
+
+<div class="step"><div class="i">C</div><div>
+<b>One lucky winner — the signal is asymmetric.</b>
+<pre style="margin:.4rem 0"><code class="nohl">rewards     [0, 0, 0, 1, 0, 0, 0, 0]     mean 0.125   std 0.3307
+advantages  [−0.378 ×7 ,  +2.645]</code></pre>
+The single success gets a <b>+2.645</b> push while each failure gets only −0.378. Rare correct
+answers are automatically weighted more heavily — no curriculum needed.
+</div></div>
+
+<p style="margin-bottom:0"><b>Group B is the entire motivation for DAPO's dynamic sampling.</b>
+Once a model is decent, a large fraction of groups come back all-correct (or, early on,
+all-wrong) — and every one of those is generation compute spent for a zero gradient. Filtering
+them out and resampling is why DAPO is faster, and it falls straight out of the arithmetic:
+<b>z-scoring a constant vector gives zero</b>.</p>
+</div>
+
+<pre><code>import torch
+def advantages(rewards):
+    r = torch.tensor(rewards, dtype=torch.float)
+    return (r - r.mean()) / (r.std(unbiased=False) + 1e-4)
+
+print(advantages([1,0,1,0,1,0,0,1]))   # ±1
+print(advantages([1]*8))               # all zeros  <- wasted group
+print(advantages([0,0,0,1,0,0,0,0]))   # +2.645 once, −0.378 seven times
+
+assert advantages([1]*8).abs().sum() < 1e-3   # no gradient signal at all</code></pre>
+
+<div class="mn">
+  <span class="k">Why no critic</span>
+  PPO trains a value model to answer "how good is average here?". Eight samples from the same
+  prompt answer it empirically — you trade a learned network for G× generation.
+</div>
+
 <pre><code>def grpo_step(policy, ref, prompts, reward_fn, G=8, beta=0.04, eps=0.2):
     for prompt in prompts:
         # 1. Sample a GROUP of completions from the current policy

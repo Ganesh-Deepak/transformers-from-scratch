@@ -102,6 +102,56 @@ normalised residual <span class="math">max(0, p<sub>target</sub> − p<sub>draft
 approximation with a quality knob — it is exact. That's why it can be turned on by default.</p>
 </div>
 
+<div class="example">
+<span class="t">Worked example — how much speculative decoding actually buys</span>
+<p>One number governs it: <span class="math">α</span>, the probability that a drafted token is
+accepted. Draft <span class="math">k</span> tokens, verify in one target pass.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>How many tokens survive?</b> Acceptance is sequential — the first rejection stops everything
+after it. So with <span class="math">k = 4</span>, <span class="math">α = 0.7</span>:
+<pre style="margin:.4rem 0"><code class="nohl">accept exactly 0:  0.3000     (first draft token rejected)
+accept exactly 1:  0.2100     = 0.7 × 0.3
+accept exactly 2:  0.1470
+accept exactly 3:  0.1029
+accept all 4:      0.2401     = 0.7⁴  (plus a free bonus token)</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Expected tokens per target forward pass.</b>
+<div class="mathblock" style="margin:.4rem 0;font-size:1em">
+E = <span class="frac"><span class="n">1 − α<sup>k+1</sup></span><span class="d">1 − α</span></span>
+</div>
+<pre style="margin:.4rem 0"><code class="nohl">α=0.7, k=4  ->  E = (1 − 0.7⁵) / 0.3 = 2.77 tokens</code></pre>
+You still pay one target pass, but advance 2.77 positions. <b>2.77× fewer target passes.</b>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>The full picture — and where it stops paying.</b>
+<pre style="margin:.4rem 0"><code class="nohl">  α      k=2     k=4     k=8
+0.3     1.39    1.43    1.43     <- bad draft: more k barely helps
+0.5     1.75    1.94    2.00
+0.7     2.19    2.77    3.20
+0.9     2.71    4.10    6.13     <- great draft: k pays off</code></pre>
+Look at the α=0.3 row: going from k=4 to k=8 gains <b>nothing</b>, because the draft almost never
+survives 4 tokens anyway — you just burn draft compute. <b>Tune k to your measured α</b>, not
+upward on principle.
+</div></div>
+
+<p style="margin-bottom:0"><b>Why α varies so much.</b> Predictable text — boilerplate code,
+summarising a document you supplied, structured output — accepts 80–90%. Creative prose accepts
+far less. This is also why n-gram/prompt-lookup drafting works so well for RAG and editing: when
+the answer largely copies the input, α is enormous and the draft costs nothing.</p>
+</div>
+
+<pre><code>def expected_tokens(alpha, k):
+    """Tokens advanced per target forward pass."""
+    return (1 - alpha**(k + 1)) / (1 - alpha)
+
+assert round(expected_tokens(0.7, 4), 2) == 2.77
+assert round(expected_tokens(0.9, 8), 2) == 6.13
+assert expected_tokens(0.3, 8) - expected_tokens(0.3, 4) < 0.01   # k buys nothing here</code></pre>
+
 <div class="tw">
 <table>
 <thead><tr><th>Draft source</th><th>Typical speedup</th><th>Note</th></tr></thead>

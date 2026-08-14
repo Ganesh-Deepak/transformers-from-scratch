@@ -65,6 +65,52 @@ a single sentence will touch dozens of different experts on its way through the 
 specialisation is real but far more granular and less interpretable than the name suggests.</p>
 </div>
 
+<div class="example">
+<span class="t">Worked example — route one token through 8 experts, top-2</span>
+<p>The router is a single <code>Linear(d_model, 8)</code>. That is the entire decision mechanism.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>Router logits for this token</b> (one number per expert):
+<pre style="margin:.4rem 0"><code class="nohl">expert    0      1      2      3      4      5      6      7
+logit    0.1    2.4   -0.3    1.9    0.5   -1.2    0.8    0.2</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Softmax them.</b>
+<pre style="margin:.4rem 0"><code class="nohl">p      0.0443 0.4418 0.0297 0.2680 0.0661 0.0121 0.0892 0.0490
+                ^^^^^^               ^^^^^^</code></pre>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>Take the top 2 and renormalise</b> so the surviving weights sum to 1:
+<pre style="margin:.4rem 0"><code class="nohl">chosen: expert 1 (0.4418) and expert 3 (0.2680)
+sum = 0.7098
+weights: 0.4418/0.7098 = 0.6225      0.2680/0.7098 = 0.3775
+                                     (0.6225 + 0.3775 = 1.0000 ✓)</code></pre>
+</div></div>
+
+<div class="step"><div class="i">4</div><div>
+<b>Compute, and combine.</b> Only two experts run:
+<pre style="margin:.4rem 0"><code class="nohl">out = 0.6225 × expert1(x) + 0.3775 × expert3(x)</code></pre>
+Experts 0, 2, 4, 5, 6, 7 are <b>not evaluated at all</b>. Their weights sit in memory doing
+nothing for this token — <b>25% of the experts, 100% of the memory</b>.
+</div></div>
+
+<p style="margin-bottom:0"><b>Three things this makes concrete.</b> (1) The routing decision is
+per <i>token</i>, and it is remade at <i>every layer</i> — the next token may pick a completely
+different pair. (2) The weights are <b>soft</b>: expert 1 contributes 1.6× more than expert 3,
+not equally. (3) Nothing here prevents expert 1 winning for <i>every</i> token — which is exactly
+the collapse the next section is about.</p>
+</div>
+
+<pre><code>import torch
+logits = torch.tensor([0.1, 2.4, -0.3, 1.9, 0.5, -1.2, 0.8, 0.2])
+p = logits.softmax(-1)
+w, idx = p.topk(2)                        # values 0.4418, 0.2680 at experts 1, 3
+w = w / w.sum()                           # 0.6225, 0.3775
+assert abs(w.sum() - 1.0) < 1e-6
+print(idx.tolist(), [round(v, 4) for v in w.tolist()])</code></pre>
+
 <h2>16.2 · The load-balancing problem</h2>
 
 <p>Left alone, routers collapse. An expert that happens to be slightly better early gets picked more, trains

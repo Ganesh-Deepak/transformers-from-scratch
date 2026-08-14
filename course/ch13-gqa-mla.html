@@ -107,6 +107,44 @@ read <i>is</i> reducing time. Fused kernels skip the materialisation entirely an
 head for each query in the group.</p>
 </div>
 
+<div class="example">
+<span class="t">Worked example — the same layer, five ways to store its cache</span>
+<p><code>n_head = 32</code>, <code>d_head = 128</code>, bf16. Counting values cached
+<b>per token, per layer</b> — the number the whole chapter is about.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>The formula is just a count of things.</b>
+<pre style="margin:.4rem 0"><code class="nohl">values = 2 (K and V) × n_kv_head × d_head</code></pre>
+Only <code>n_kv_head</code> is a free choice. Everything else is fixed by the architecture.
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Turn that one dial.</b>
+<pre style="margin:.4rem 0"><code class="nohl">                    values   bytes    vs MHA
+MHA   (32 kv)        8,192  16,384      1.0×
+GQA-8 ( 8 kv)        2,048   4,096      4.0×
+GQA-4 ( 4 kv)        1,024   2,048      8.0×
+MQA   ( 1 kv)          256     512     32.0×</code></pre>
+The reduction is exactly <code>n_head / n_kv_head</code> — no approximation, no subtlety. Query
+heads are untouched; all 32 still attend.
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>Now MLA, on DeepSeek-V3's real dimensions</b> (128 heads × 128 dim):
+<pre style="margin:.4rem 0"><code class="nohl">same-config MHA:  2 × 128 × 128 = 32,768 values
+MLA:              512 (latent) + 64 (shared RoPE key) = 576 values
+
+32,768 / 576 = 56.9× smaller</code></pre>
+And note <b>576 is not 2 × something × 128</b> — MLA has escaped the formula entirely. There is
+no "number of KV heads" any more; there is a compressed latent whose width you choose directly.
+</div></div>
+
+<p style="margin-bottom:0"><b>The conceptual jump.</b> GQA turns a dial that already existed —
+it stores <i>fewer heads</i>. MLA changes what is stored at all: not heads, but a low-rank
+summary from which every head's K and V are reconstructed on the fly. That is why it can land
+between GQA-4 and MQA on size while beating full MHA on quality.</p>
+</div>
+
 <h3>Why <code>g = 8</code> keeps appearing</h3>
 
 <p>Ainslie et al. found the quality/cache curve is <b>strongly non-linear</b>: going from MHA to 8 groups

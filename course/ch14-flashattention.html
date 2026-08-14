@@ -81,6 +81,67 @@ m<sub>new</sub> = max(m, x) &nbsp;&nbsp;&nbsp;&nbsp;
 
 <div data-viz="online" data-x="1.0,3.0,2.0,5.0,4.0,0.5,6.0,2.5"></div>
 
+<div class="example">
+<span class="t">Worked example — four numbers, one at a time, exact at the end</span>
+<p>Scores <code>[1, 3, 2, 5]</code>. We never hold them all at once — one arrives per step, and we
+keep only <span class="math">m</span> (running max) and <span class="math">ℓ</span> (running sum).</p>
+
+<div class="step"><div class="i">t0</div><div>
+<code>x = 1</code>. Nothing seen yet, so <span class="math">m: −∞ → 1.0</span>.
+<pre style="margin:.4rem 0"><code class="nohl">rescale = 0        (nothing banked yet)
+ℓ = 0×0 + e^(1−1) = 1.000000</code></pre>
+</div></div>
+
+<div class="step"><div class="i">t1</div><div>
+<code>x = 3</code> — <b>a new maximum.</b> Everything banked so far was measured against
+<span class="math">m = 1</span> and must be re-based:
+<pre style="margin:.4rem 0"><code class="nohl">m: 1.0 → 3.0
+rescale = e^(1−3) = 0.135335      ← shrink the old sum
+ℓ = 1.000000 × 0.135335 + e^(3−3) = 1.135335</code></pre>
+</div></div>
+
+<div class="step"><div class="i">t2</div><div>
+<code>x = 2</code> — below the max, so nothing needs re-basing:
+<pre style="margin:.4rem 0"><code class="nohl">m stays 3.0
+rescale = e^(3−3) = 1.000000      ← a no-op
+ℓ = 1.135335 × 1.0 + e^(2−3) = 1.503215</code></pre>
+</div></div>
+
+<div class="step"><div class="i">t3</div><div>
+<code>x = 5</code> — new maximum again:
+<pre style="margin:.4rem 0"><code class="nohl">m: 3.0 → 5.0
+rescale = e^(3−5) = 0.135335
+ℓ = 1.503215 × 0.135335 + e^(5−5) = 1.203438</code></pre>
+</div></div>
+
+<div class="step"><div class="i">=</div><div>
+<b>Against computing it all at once:</b>
+<pre style="margin:.4rem 0"><code class="nohl">streaming:  m + ln(ℓ) = 5 + ln(1.203438) = 5.185182
+one-shot:   logsumexp([1,3,2,5])         = 5.185183</code></pre>
+Six decimal places. The gap is float32 rounding, not approximation.
+</div></div>
+
+<p style="margin-bottom:0"><b>Why this is the whole theorem.</b> Every rescale multiplies the
+accumulated numerator <i>and</i> denominator by the same factor, so their ratio — the actual
+softmax weights <code>[0.0152, 0.1125, 0.0414, 0.8310]</code> — is untouched. That exactness is
+what lets FlashAttention be used for <b>training</b>: an approximate attention would compound into
+a different model, but this is the same function computed in a different order.</p>
+</div>
+
+<pre><code>import math, torch
+xs = [1.0, 3.0, 2.0, 5.0]
+
+m, l = float("-inf"), 0.0
+for x in xs:                                   # one value at a time
+    m_new = max(m, x)
+    corr  = math.exp(m - m_new) if m != float("-inf") else 0.0
+    l     = l * corr + math.exp(x - m_new)
+    m     = m_new
+
+streaming = m + math.log(l)
+one_shot  = torch.tensor(xs).logsumexp(0).item()
+assert abs(streaming - one_shot) < 1e-5        # 5.185182 vs 5.185183</code></pre>
+
 <p>The same correction applies to the accumulated <b>output</b>, which is what makes it useful for attention:</p>
 
 <div class="mathblock">

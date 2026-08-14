@@ -82,6 +82,67 @@ p<sub>i</sub> = softmax(z<sub>i</sub> / T)
 <p class="tiny">Note temperature divides <b>logits</b>, not probabilities. Dividing probabilities and
 renormalising is a different (and wrong) operation.</p>
 
+<div class="example">
+<span class="t">Worked example — one distribution, four samplers</span>
+<p>The model has produced logits for five candidate next tokens after
+<i>"the cat sat on the …"</i>. Everything below comes from these five numbers.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>The raw logits, and softmax at T = 1.</b>
+<pre style="margin:.4rem 0"><code class="nohl">token     mat    floor    rug     sky    idea
+logit     3.0     2.0     1.0     0.0    -1.0
+p(T=1)  0.636   0.234   0.086   0.032   0.012</code></pre>
+A one-unit logit gap is a ~2.7× probability ratio — <code>e¹</code>. Logit differences are
+multiplicative in probability space.
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Temperature reshapes before sampling.</b> Same logits, divided by T:
+<pre style="margin:.4rem 0"><code class="nohl">T=0.5   0.865   0.117   0.016   0.002   0.000    <- sharper, near-greedy
+T=1.0   0.636   0.234   0.086   0.032   0.012    <- the model's own belief
+T=2.0   0.429   0.260   0.158   0.096   0.058    <- flatter, "idea" now 5%</code></pre>
+Note T=2.0 gives <b>"idea"</b> — a nonsense continuation — a 1-in-17 chance. Every high
+temperature is buying diversity with exactly this kind of risk.
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>Top-k = 2:</b> keep the best two, drop the rest, renormalise.
+<pre style="margin:.4rem 0"><code class="nohl">keep {mat, floor} -> 0.636, 0.234  ->  renormalised: 0.731, 0.269</code></pre>
+"rug" is now impossible, even though the model gave it 8.6%.
+</div></div>
+
+<div class="step"><div class="i">4</div><div>
+<b>Top-p = 0.9:</b> keep the smallest set whose mass reaches 0.9.
+<pre style="margin:.4rem 0"><code class="nohl">cumulative:  0.636   0.871   0.957   0.988   1.000
+                              ^ crosses 0.9 here
+keeps 3 tokens: {mat, floor, rug}</code></pre>
+<b>This is the adaptivity.</b> Here it kept 3. If the model had been certain
+(<code>p = [0.98, …]</code>) it would keep <b>1</b>; if genuinely unsure it might keep 200.
+Top-k cannot do that — <code>k</code> is fixed before the model has spoken.
+</div></div>
+
+<p style="margin-bottom:0"><b>Read step 4 against step 3.</b> Top-k = 2 and top-p = 0.9 disagree
+about "rug" on this exact distribution. Neither is more correct; top-p is just letting the
+model's own confidence decide how many options survive.</p>
+</div>
+
+<pre><code>import torch
+logits = torch.tensor([3., 2., 1., 0., -1.])          # mat floor rug sky idea
+
+for T in (0.5, 1.0, 2.0):
+    print(T, [round(v, 3) for v in (logits / T).softmax(-1).tolist()])
+
+p = logits.softmax(-1)
+print("cumulative:", [round(v, 3) for v in p.cumsum(0).tolist()])
+print("top-p 0.9 keeps:", int(((p.cumsum(0) - p) < 0.9).sum()), "tokens")   # 3
+print("top-k 2:", [round(v, 3) for v in (p[:2] / p[:2].sum()).tolist()])    # 0.731, 0.269</code></pre>
+
+<div class="mn">
+  <span class="k">Sanity check</span>
+  Softmax output must sum to 1 <b>before</b> truncation and again <b>after</b> renormalising.
+  If a sampler ever leaves you with a row that doesn't, it is dropping probability mass.
+</div>
+
 <h3>Top-k — keep the k best</h3>
 <pre><code>v, ix = logits.topk(k, dim=-1)
 logits = torch.full_like(logits, float('-inf')).scatter_(-1, ix, v)

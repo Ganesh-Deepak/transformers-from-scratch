@@ -113,6 +113,41 @@ r_l = reward_model(rejected_ids, rejected_mask)    # (B,)
 loss = -F.logsigmoid(r_w - r_l).mean()
 </code></pre>
 
+<div class="example">
+<span class="t">Worked example — the reward-model loss on four pairs</span>
+<p>The loss depends on <b>one number</b>: the gap between the chosen and rejected reward.</p>
+<div class="tw" style="margin:.6rem 0">
+<table style="margin:0">
+<thead><tr><th class="num">r(chosen)</th><th class="num">r(rejected)</th><th class="num">gap</th><th class="num">P(chosen wins)</th><th class="num">loss</th><th>reading</th></tr></thead>
+<tbody>
+<tr><td class="num">2.0</td><td class="num">1.0</td><td class="num">+1.0</td><td class="num">0.7311</td><td class="num">0.3133</td><td>right order, not confident</td></tr>
+<tr><td class="num">5.0</td><td class="num">1.0</td><td class="num">+4.0</td><td class="num">0.9820</td><td class="num">0.0181</td><td>right order, confident — almost no gradient</td></tr>
+<tr><td class="num">1.0</td><td class="num">1.0</td><td class="num">0.0</td><td class="num">0.5000</td><td class="num"><b>0.6931</b></td><td>no opinion — exactly <span class="math">ln 2</span></td></tr>
+<tr><td class="num">1.0</td><td class="num">2.0</td><td class="num">−1.0</td><td class="num">0.2689</td><td class="num">1.3133</td><td><b>backwards</b> — largest gradient</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="step"><div class="i">!</div><div>
+<b>Now add 100 to both rewards in every row.</b> The gap is unchanged, so
+<b>every loss is identical</b>. The model cannot tell 2-vs-1 from 102-vs-101.
+</div></div>
+
+<p style="margin-bottom:0"><b>That is why a reward score is meaningless on its own.</b> Only
+differences are learned, so "this response scored 7.3" tells you nothing without something to
+compare against — and scores from two different reward models are not comparable at all. It is
+also why <span class="math">ln 2 = 0.6931</span> is your step-0 sanity check: an untrained
+reward model has no opinion, so the gap is 0. <b>Remember this row — DPO's loss lands on exactly
+the same number for exactly the same reason</b> (Chapter 20).</p>
+</div>
+
+<pre><code>import math
+for rw, rl in [(2,1), (5,1), (1,1), (1,2)]:
+    p = 1 / (1 + math.exp(-(rw - rl)))
+    print(rw, rl, round(p, 4), round(-math.log(p), 4))
+# shifting both by any constant changes nothing:
+assert abs((1/(1+math.exp(-(2-1)))) - (1/(1+math.exp(-(102-101))))) < 1e-12</code></pre>
+
 <div class="box math-note">
 <span class="t">Only differences are identified</span>
 <p style="margin-bottom:0">The loss depends solely on <code>r_w − r_l</code>, so adding a constant to every

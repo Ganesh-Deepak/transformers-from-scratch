@@ -54,6 +54,44 @@ Never write <code>log(softmax(x))</code> yourself — it overflows.</p>
 <p><b>Perplexity = exp(loss)</b>, and it means "the model is as uncertain as if it were choosing uniformly
 among this many options." Perplexity 20 ≈ "it has narrowed the next token down to about 20 candidates."</p>
 
+<div class="example">
+<span class="t">Worked example — reading a loss number three ways</span>
+<p>A loss on its own means very little. Convert it every time.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>Loss → perplexity:</b> <span class="math">ppl = e<sup>loss</sup></span>. "As uncertain as
+choosing uniformly among this many options."
+<pre style="margin:.4rem 0"><code class="nohl">loss  1.51  ->  ppl     4.5      narrowed to ~5 candidates
+loss  2.00  ->  ppl     7.4
+loss  4.36  ->  ppl    78.3
+loss 10.37  ->  ppl 31,888       ≈ the whole 32k vocabulary — i.e. no idea</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Loss → bits per byte:</b>
+<span class="math">bpb = loss / (ln 2 · bytes_per_token)</span>. This is the only number
+comparable <i>across</i> tokenizers.
+<pre style="margin:.4rem 0"><code class="nohl">                          loss   B/tok    bpb
+char run (V=65)           1.51    1.00   2.178
+BPE run  (V=2048)         4.36    3.29   1.912   <- 2.9× the loss, BETTER model
+good modern LLM           2.00    4.00   0.721</code></pre>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>Check your step 0 against ln(V).</b> An untrained model is uniform, so its loss is exactly
+<span class="math">ln V</span>:
+<pre style="margin:.4rem 0"><code class="nohl">ln(65)     =  4.174      character-level
+ln(32000)  = 10.374
+ln(50257)  = 10.825      GPT-2</code></pre>
+Start much <b>below</b> this and you have a label bug (Ch 9). Start <b>above</b> it and your
+initialisation is broken.
+</div></div>
+
+<p style="margin-bottom:0"><b>The habit:</b> never quote a loss without saying which tokenizer
+produced it, and compare runs on <code>bpb</code>. Row 2 of step 2 is the trap in one line — the
+model with nearly <b>triple</b> the loss is the better one.</p>
+</div>
+
 <div class="box gotcha">
 <span class="t">Loss is NOT comparable across tokenizers</span>
 <p>The table above assumes a ~32k BPE vocabulary. Change the tokenizer and every number moves, because

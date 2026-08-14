@@ -61,6 +61,51 @@ onehot = torch.zeros(1, V); onehot[0, 15496] = 1.0
 emb.weight[15496]              # (768,)    — one memory read
 </code></pre>
 
+<div class="example">
+<span class="t">Worked example — the same answer, two ways</span>
+<p>A toy table: vocabulary of 6, embedding dimension 4.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>The whole embedding matrix</b> <code>W</code>, shape <span class="shape"><b>6</b><span class="x">, </span><b>4</b></span>:
+<pre style="margin:.4rem 0"><code class="nohl">id 0 -> [0.0, 0.1, 0.2, 0.3]
+id 1 -> [0.4, 0.5, 0.6, 0.7]
+id 2 -> [0.8, 0.9, 1.0, 1.1]
+id 3 -> [1.2, 1.3, 1.4, 1.5]     <- we want this row
+id 4 -> [1.6, 1.7, 1.8, 1.9]
+id 5 -> [2.0, 2.1, 2.2, 2.3]</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>As a matmul.</b> One-hot for token 3 is <code>[0,0,0,1,0,0]</code>:
+<pre style="margin:.4rem 0"><code class="nohl">[0,0,0,1,0,0] @ W
+
+column 0:  0×0.0 + 0×0.4 + 0×0.8 + 1×1.2 + 0×1.6 + 0×2.0 = 1.2
+column 1:  0×0.1 + 0×0.5 + 0×0.9 + 1×1.3 + 0×1.7 + 0×2.1 = 1.3
+column 2:  ... = 1.4          column 3: ... = 1.5
+
+result = [1.2, 1.3, 1.4, 1.5]</code></pre>
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>As a lookup.</b> <code>W[3]</code> → <code>[1.2, 1.3, 1.4, 1.5]</code>. Identical, and it
+read four numbers instead of doing 24 multiplies.
+</div></div>
+
+<div class="step"><div class="i">4</div><div>
+<b>Count the waste.</b> 20 of the 24 multiplies were by zero — <b>83%</b>. Now scale to GPT-2:
+<pre style="margin:.4rem 0"><code class="nohl">matmul: 50,257 × 768 = 38,597,376 multiplies, 50,256 rows of them by zero
+lookup:                            768 memory reads
+
+50,257× more arithmetic for the same answer.</code></pre>
+</div></div>
+
+<p style="margin-bottom:0"><b>Two things follow from this.</b> (1) An embedding <i>is</i> a
+linear layer — which is why weight tying with the output projection is even coherent. (2) The
+gradient reaches <b>exactly one row</b> per token occurrence, because every other row was
+multiplied by zero. That sparsity is precisely the mechanism behind the under-trained "glitch
+tokens" of Chapter 3: a token seen once gets one gradient update, ever.</p>
+</div>
+
 <p>The one-hot view is conceptually useful (it explains why an embedding layer <i>is</i> a linear layer, and
 why gradients flow to exactly one row per token). The lookup view is what actually runs.</p>
 
