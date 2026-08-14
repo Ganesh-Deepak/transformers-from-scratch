@@ -1,7 +1,7 @@
 """
-A modern small transformer — Chapters 6-9, 12, 13.
+A modern small transformer — Chapters 6-9, 13, 15.
 
-Architecture (matches the Chapter 23 capstone spec):
+Architecture (matches the Chapter 26 capstone spec):
     RMSNorm (pre-norm)  ·  RoPE  ·  Grouped-Query Attention  ·  SwiGLU
     + KV cache for efficient generation
 
@@ -96,7 +96,7 @@ def apply_rope(q, k, cos, sin):
 
 
 class GroupedQueryAttention(nn.Module):
-    """Chapters 6 + 13, with the Chapter 13 KV cache."""
+    """Chapters 6 + 13, with the Chapter 15 KV cache."""
 
     def __init__(self, cfg: Config):
         super().__init__()
@@ -273,7 +273,7 @@ class Model(nn.Module):
 
 def sample(logits, temperature=1.0, top_k=0, top_p=1.0, min_p=0.0):
     """
-    Chapter 12. Order matters: temperature -> top-k -> top-p -> min-p.
+    Chapter 13. Order matters: temperature -> top-k -> top-p -> min-p.
     logits: (B, V)  ->  returns (B, 1)
     """
     if temperature <= 0:

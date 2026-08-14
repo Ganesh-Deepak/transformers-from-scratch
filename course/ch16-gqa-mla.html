@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch 14 — MQA, GQA, and Multi-Head Latent Attention</title>
+<title>Ch 16 — MQA, GQA, and Multi-Head Latent Attention</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
 <link rel="stylesheet" href="assets/style.css?v=9">
@@ -11,15 +11,15 @@
 <body>
 <main>
 
-<h1>14 · MQA, GQA, and Multi-Head Latent Attention</h1>
+<h1>16 · MQA, GQA, and Multi-Head Latent Attention</h1>
 <p class="lead">
-Chapter 13 established the problem: the KV cache limits how many users fit on a GPU. This chapter is the
+Chapter 15 established the problem: the KV cache limits how many users fit on a GPU. This chapter is the
 sequence of answers — from a blunt 2019 hack, through the 2023 compromise that everyone adopted, to
 DeepSeek's 2024 low-rank scheme that is <em>both</em> smaller and better than what it replaced.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; heads<br><a href="ch13-kvcache.html">Ch&nbsp;13</a> &mdash; why cache size is the binding constraint<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE, for the MLA section<div class="sep"></div><span class="k">Leads to</span><a href="ch19-frontier.html">Ch&nbsp;19</a> &mdash; sparse attention is the next move<br><a href="ch23-capstone.html">Ch&nbsp;23</a> &mdash; the capstone uses GQA<div class="sep"></div><span class="k">Why this chapter</span>From a blunt 2019 hack to a 2024 scheme that is both smaller and better.</div>
-<h2>14.1 · The idea: share the K/V heads</h2>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; heads<br><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; why cache size is the binding constraint<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE, for the MLA section<div class="sep"></div><span class="k">Leads to</span><a href="ch22-frontier.html">Ch&nbsp;22</a> &mdash; sparse attention is the next move<br><a href="ch26-capstone.html">Ch&nbsp;26</a> &mdash; the capstone uses GQA<div class="sep"></div><span class="k">Why this chapter</span>From a blunt 2019 hack to a 2024 scheme that is both smaller and better.</div>
+<h2>16.1 · The idea: share the K/V heads</h2>
 
 <p>Standard MHA gives every query head its own key head and value head. But the cache is proportional to
 <code>n_kv_head</code>, and there's no law saying it must equal <code>n_head</code>.</p>
@@ -33,12 +33,12 @@ DeepSeek's 2024 low-rank scheme that is <em>both</em> smaller and better than wh
 <tr><td><b>MHA</b></td><td class="num">n_head</td><td>1×</td><td>baseline</td><td>2017</td></tr>
 <tr><td><b>MQA</b></td><td class="num">1</td><td>1/n_head</td><td>measurable degradation, training instability</td><td>Shazeer 2019</td></tr>
 <tr><td><b>GQA</b></td><td class="num">n_head / g</td><td>1/g</td><td>≈ MHA at g = 8</td><td>Ainslie et al. 2023</td></tr>
-<tr><td><b>MLA</b></td><td class="num">— (low-rank)</td><td>see §14.4</td><td><b>better than MHA</b></td><td>DeepSeek-V2, 2024</td></tr>
+<tr><td><b>MLA</b></td><td class="num">— (low-rank)</td><td>see §16.4</td><td><b>better than MHA</b></td><td>DeepSeek-V2, 2024</td></tr>
 </tbody>
 </table>
 </div>
 
-<h2>14.2 · MQA — one KV head for everybody</h2>
+<h2>16.2 · MQA — one KV head for everybody</h2>
 
 <pre><code>self.q_proj  = nn.Linear(d_model, n_head * d_head, bias=False)   # (C, 4096)
 self.k_proj  = nn.Linear(d_model,      1 * d_head, bias=False)   # (C,  128)  ← tiny
@@ -51,7 +51,7 @@ self.v_proj  = nn.Linear(d_model,      1 * d_head, bias=False)   # (C,  128)
 be unstable to train. The problem is intuitive — heads specialise partly by having their <i>own</i> notion of
 what to match against, and MQA removes that.</p>
 
-<h2>14.3 · GQA — the compromise that won</h2>
+<h2>16.3 · GQA — the compromise that won</h2>
 
 <p>Group the query heads. Each group shares one K/V head.</p>
 
@@ -102,7 +102,7 @@ line first.</p>
 <span class="t">The expansion is a memory trick, not a FLOP saving</span>
 <p style="margin-bottom:0">After <code>repeat_interleave</code> you're doing exactly the same attention
 FLOPs as MHA. The win is entirely in what you <b>store and read</b>: the cache holds
-<code>n_kv_head</code> heads, not <code>n_head</code>. Since decode is memory-bound (Ch 13), reducing bytes
+<code>n_kv_head</code> heads, not <code>n_head</code>. Since decode is memory-bound (Ch 15), reducing bytes
 read <i>is</i> reducing time. Fused kernels skip the materialisation entirely and just re-read the same K
 head for each query in the group.</p>
 </div>
@@ -180,7 +180,7 @@ Llama-3 (all sizes), Mistral, Qwen2.5 and Gemma all landed on 8 or fewer.</p>
 </div>
 </div>
 
-<h2>14.4 · MLA — Multi-head Latent Attention</h2>
+<h2>16.4 · MLA — Multi-head Latent Attention</h2>
 
 <p>DeepSeek-V2 (2024) asked a different question. GQA reduces the cache by <i>deleting</i> heads. What if
 instead you <b>compress</b> the KV information into a low-rank latent, and decompress it on the fly?</p>
@@ -368,7 +368,7 @@ FlashAttention.</li>
 </div>
 </div>
 
-<h2>14.5 · What everyone actually ships</h2>
+<h2>16.5 · What everyone actually ships</h2>
 
 <div class="tw">
 <table>
@@ -380,7 +380,7 @@ FlashAttention.</li>
 <tr><td>Gemma 2 / 3</td><td>GQA</td><td>+ alternating local/global layers</td></tr>
 <tr><td>DeepSeek-V2 / V3 / R1</td><td><b>MLA</b></td><td>rank 512 + 64 decoupled RoPE</td></tr>
 <tr><td>Kimi K2 / K2.5</td><td>MLA</td><td>DeepSeek-lineage architecture</td></tr>
-<tr><td>DeepSeek-V3.2</td><td>MLA + <b>DSA sparse attention</b></td><td>Chapter 19</td></tr>
+<tr><td>DeepSeek-V3.2</td><td>MLA + <b>DSA sparse attention</b></td><td>Chapter 22</td></tr>
 </tbody>
 </table>
 </div>
@@ -391,13 +391,13 @@ FlashAttention.</li>
 MLA has proven itself at trillion-parameter scale in the DeepSeek and Kimi lineages, and published ablations
 consistently rank <b>MLA &gt; GQA &gt; MHA</b> on quality-per-cached-byte. The barrier to wider adoption is
 engineering, not evidence. Meanwhile the newest frontier isn't compressing the cache further — it's
-<b>not attending to most of it</b>, which is sparse attention (Chapter 19).</p>
+<b>not attending to most of it</b>, which is sparse attention (Chapter 22).</p>
 </div>
 
-<h2>14.6 · Exercises</h2>
+<h2>16.6 · Exercises</h2>
 
 <div class="exercise">
-<div class="eh"><span class="n">14.1</span><span class="ti">Implement GQA and prove it degrades to MHA and MQA</span><span class="lvl">essential</span></div>
+<div class="eh"><span class="n">16.1</span><span class="ti">Implement GQA and prove it degrades to MHA and MQA</span><span class="lvl">essential</span></div>
 <div class="eb">
 <p>Write a single <code>GroupedQueryAttention</code> class. Then assert:</p>
 <ol>
@@ -410,7 +410,7 @@ output changes. Then explain which query heads got the wrong keys.</li>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">14.2</span><span class="ti">Implement MLA</span><span class="lvl">hard</span></div>
+<div class="eh"><span class="n">16.2</span><span class="ti">Implement MLA</span><span class="lvl">hard</span></div>
 <div class="eb">
 <p>Implement MLA with <code>d_model=512, n_head=8, kv_lora_rank=64, qk_nope=32, qk_rope=16, v_head=32</code>.
 Verify:</p>
@@ -439,7 +439,7 @@ split has to exist.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">14.3</span><span class="ti">Cache economics across a real fleet</span><span class="lvl">thinking</span></div>
+<div class="eh"><span class="n">16.3</span><span class="ti">Cache economics across a real fleet</span><span class="lvl">thinking</span></div>
 <div class="eb">
 <p>You serve a 70B-class model at 32k context on 8×H100 (640 GB). Weights are 140 GB in bf16.
 For MHA (64 KV heads), GQA-8, and an MLA-style 576-value cache, compute the max concurrent users.
@@ -467,7 +467,7 @@ large part of the explanation — architecture choices show up directly on the i
 <li><a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 Technical Report</a></li>
 <li><a href="https://mccormickml.com/2025/04/26/inner-workings-of-mla/">Chris McCormick — The Inner Workings of MLA</a> — the clearest walkthrough of absorption.</li>
 <li><a href="https://github.com/deepseek-ai/FlashMLA">deepseek-ai/FlashMLA</a> — the production kernel.</li>
-<li>Companion notebook: <code>notebooks/14_gqa_mla.ipynb</code></li>
+<li>Companion notebook: <code>notebooks/16_gqa_mla.ipynb</code></li>
 </ul>
 
 </main>
@@ -475,6 +475,6 @@ large part of the explanation — architecture choices show up directly on the i
 <script src="assets/chapters.js?v=9"></script>
 <script src="assets/course.js?v=9"></script>
 <script src="assets/viz.js?v=9"></script>
-<script>initChapter("14");</script>
+<script>initChapter("16");</script>
 </body>
 </html>

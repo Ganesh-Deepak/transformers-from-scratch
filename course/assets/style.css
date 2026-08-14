@@ -356,6 +356,11 @@ body {
 }
 .sb-ch.here .n { color: var(--accent); }
 
+/* numbered in the outline, not written yet: listed but inert, never a link */
+.sb-ch.wip { color: var(--ink-4); cursor: default; }
+.sb-ch.wip:hover { background: none; color: var(--ink-4); }
+.sb-ch.wip .n::after { content: "\2026"; margin-left: .15em; }  /* ellipsis */
+
 /* the current chapter's own sections, nested */
 .sb-sections { margin: .15rem 0 .5rem; }
 .sb-sec {
@@ -1046,6 +1051,12 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
 }
 .ccard.done .num { color: var(--accent); }
 .ccard.done .num::after { content: " \00B7"; }
+
+/* placed in the outline, not written yet */
+.ccard.wip { color: var(--ink-4); cursor: default; }
+.ccard.wip:hover { background: none; padding-left: .3rem; }
+.ccard.wip .t { font-style: italic; }
+.ccard.wip .tag { font-style: italic; opacity: .8; }
 .ccard .txt { min-width: 0; }
 .ccard .txt .t { font-family: var(--display); font-weight: 700; font-size: .96rem; line-height: 1.35; }
 .ccard .txt .s { font-size: .84rem; line-height: 1.45; color: var(--ink-3); margin-top: .1rem; }

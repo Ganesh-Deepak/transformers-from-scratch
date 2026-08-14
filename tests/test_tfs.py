@@ -157,7 +157,7 @@ def test_param_count_matches_formula():
         assert cfg.n_params() == actual, f"formula {cfg.n_params()} != actual {actual}"
 
 
-# ==================================================== Ch 14 — GQA
+# ==================================================== Ch 16 — GQA
 
 def test_gqa_reduces_to_mha():
     """n_kv_head == n_head must be plain MHA."""
@@ -171,7 +171,7 @@ def test_gqa_reduces_to_mha():
 
 
 def test_gqa_cache_is_smaller():
-    """The cache holds n_kv_head heads, not n_head — Ch 14.3."""
+    """The cache holds n_kv_head heads, not n_head — Ch 16.3."""
     m = Model(CFG).eval()
     ids = torch.randint(0, CFG.vocab_size, (1, 10))
     with torch.no_grad():
@@ -182,7 +182,7 @@ def test_gqa_cache_is_smaller():
 
 
 def test_gqa_grouping_is_contiguous():
-    """repeat_interleave, not repeat — Ch 14.3's gotcha box."""
+    """repeat_interleave, not repeat — Ch 16.3's gotcha box."""
     x = torch.arange(3).view(1, 3, 1, 1).float()          # 3 "kv heads"
     got = x.repeat_interleave(2, dim=1).flatten().tolist()
     assert got == [0, 0, 1, 1, 2, 2], got
@@ -190,12 +190,12 @@ def test_gqa_grouping_is_contiguous():
     assert wrong == [0, 1, 2, 0, 1, 2]                     # the bug, for contrast
 
 
-# ==================================================== Ch 13 — KV cache
+# ==================================================== Ch 15 — KV cache
 
 def test_kv_cache_matches_no_cache():
     """
     THE critical test. Cached and uncached greedy generation must be
-    token-identical — Ch 13.2. Catches the RoPE-offset and is_causal bugs.
+    token-identical — Ch 15.2. Catches the RoPE-offset and is_causal bugs.
     """
     torch.manual_seed(0)
     m = Model(CFG).eval()
@@ -223,7 +223,7 @@ def test_incremental_forward_matches_full():
     assert torch.allclose(full, inc, atol=1e-4), (full - inc).abs().max().item()
 
 
-# ==================================================== Ch 12 — sampling
+# ==================================================== Ch 13 — sampling
 
 def test_temperature_zero_is_greedy():
     logits = torch.randn(4, 100)
@@ -246,10 +246,10 @@ def test_top_p_restricts_support():
     assert seen <= {0, 1}, seen        # top two hold >90% of the mass
 
 
-# ==================================================== Ch 15 — online softmax
+# ==================================================== Ch 17 — online softmax
 
 def test_online_softmax_is_exact():
-    """FlashAttention's core identity — Ch 15.3."""
+    """FlashAttention's core identity — Ch 17.3."""
     torch.manual_seed(0)
     for scale in [1.0, 50.0, 200.0]:
         xs = torch.randn(257) * scale
@@ -264,7 +264,7 @@ def test_online_softmax_is_exact():
 
 
 def test_tiled_attention_matches_naive():
-    """A pure-PyTorch FlashAttention must be numerically identical — Ch 15 Ex 2."""
+    """A pure-PyTorch FlashAttention must be numerically identical — Ch 17 Ex 2."""
     torch.manual_seed(0)
     N, d = 48, 16
     Q, K, V = torch.randn(N, d), torch.randn(N, d), torch.randn(N, d)
@@ -416,7 +416,7 @@ def test_char_tokenizer_roundtrip():
     assert tok.compression_ratio(text) == 1.0
 
 
-# ==================================================== Ch 21 — DPO
+# ==================================================== Ch 24 — DPO
 
 def test_dpo_loss_properties():
     from tfs.dpo import dpo_loss
@@ -437,7 +437,7 @@ def test_dpo_loss_properties():
 def test_dpo_partition_function_cancels():
     """
     Adding any prompt-level constant to BOTH sequences' log-probs must not
-    change the loss. That is the Z(x) cancellation of Ch 21.4, empirically.
+    change the loss. That is the Z(x) cancellation of Ch 24.4, empirically.
     """
     from tfs.dpo import dpo_loss
     pc, pr = torch.tensor([-3.0]), torch.tensor([-7.0])

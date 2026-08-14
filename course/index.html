@@ -75,7 +75,7 @@ haven’t noticed.</p>
 <p style="margin-bottom:0">People assume deep learning requires multivariable calculus. For
 <i>understanding</i> and <i>building</i> a transformer, it does not — the derivatives are computed
 for you by autograd. Where gradients matter to the argument (Chapter 4’s residual stream,
-Chapter 8’s pre-LN, Chapter 21’s DPO) the course shows the one line of calculus that matters and
+Chapter 8’s pre-LN, Chapter 24’s DPO) the course shows the one line of calculus that matters and
 explains what it means. You need to read it, not derive it.</p>
 </div>
 
@@ -110,7 +110,7 @@ the margin column tells you where an idea came from and where it goes next.</p>
 <tbody>
 <tr><td><b>Understand how LLMs work</b>, no code</td><td>Ch 1–11, skim the code blocks</td><td>~10 h</td></tr>
 <tr><td><b>Build one</b> end to end</td><td>Ch 1–11 + 23, all notebooks</td><td>~20 h</td></tr>
-<tr><td><b>The whole thing</b>, including why serving and alignment look the way they do</td><td>Ch 1–23</td><td>~30 h</td></tr>
+<tr><td><b>The whole thing</b>, including why serving and alignment look the way they do</td><td>Ch 1–26</td><td>~30 h</td></tr>
 </tbody>
 </table>
 </div>
@@ -182,7 +182,7 @@ logits        (B, T, V)                     # one distribution per position</cod
 FlashAttention versions, Chinchilla coefficients) come from primary papers and public model configs,
 checked <b>August 2026</b>. Every quantitative claim the course makes about its own code is backed by
 a test in <code>tests/test_tfs.py</code>. Where something is contested or open, the text says so
-rather than stating it flatly. Chapter 19 is deliberately dated and will age; Chapters 1–18 cover
+rather than stating it flatly. Chapter 22 is deliberately dated and will age; Chapters 1–21 cover
 mechanisms that have been stable for years.</p>
 </div>
 
@@ -204,7 +204,14 @@ mechanisms that have been stable for years.</p>
     d.innerHTML =
       `<div class="ph"><span class="pn">${p.n}</span><span class="pt">${p.t}</span>` +
       `<span class="pd">${p.d}</span></div><div class="clist">` +
-      p.ch.map(c => `
+      p.ch.map(c => c.wip
+        ? `
+        <div class="ccard wip">
+          <div class="num">${c.id}</div>
+          <div class="txt"><div class="t">${c.t}</div><div class="s">${c.s}</div></div>
+          <div class="tag">being written</div>
+        </div>`
+        : `
         <a class="ccard ${isDone(c.id) ? "done" : ""}" href="${c.f}">
           <div class="num">${c.id}</div>
           <div class="txt"><div class="t">${c.t}</div><div class="s">${c.s}</div></div>
@@ -213,10 +220,11 @@ mechanisms that have been stable for years.</p>
     wrap.appendChild(d);
   });
 
-  const done = CHAPTERS.filter(c => isDone(c.id)).length;
-  document.getElementById("pbar").style.width = (done / CHAPTERS.length * 100) + "%";
+  const live = CHAPTERS.filter(c => !c.wip);        // don't count unwritten chapters
+  const done = live.filter(c => isDone(c.id)).length;
+  document.getElementById("pbar").style.width = (done / live.length * 100) + "%";
   document.getElementById("pnote").textContent = Store.available()
-    ? `${done} of ${CHAPTERS.length} chapters complete. Progress is saved in this browser.`
+    ? `${done} of ${live.length} chapters complete. Progress is saved in this browser.`
     : "Progress can’t be saved — browser storage is blocked on file:// URLs. Run serve.py instead.";
 
   document.getElementById("reset").onclick = () => {

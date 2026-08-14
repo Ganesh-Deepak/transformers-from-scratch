@@ -48,33 +48,39 @@ const PARTS = [
         s: "Every gradient by hand: softmax, cross-entropy, RMSNorm, attention — checked against autograd", tag: "100 min" },
       { id: "11", f: "ch11-training.html", t: "Training a Transformer",
         s: "Cross-entropy, teacher forcing, AdamW, warmup+cosine, and the tricks that matter", tag: "80 min" },
+      { id: "12", f: "ch12-precision.html", wip: true, t: "Numbers: fp32, fp16, bf16, fp8",
+        s: "What a float actually is, why fp16 training NaNs, loss scaling, and where fp32 survives", tag: "85 min" },
     ]
   },
   {
     n: "Part IV", t: "Making It Fast",
     d: "Where most real-world engineering effort actually goes",
     ch: [
-      { id: "12", f: "ch12-decoding.html", t: "Decoding and Sampling",
+      { id: "13", f: "ch13-decoding.html", t: "Decoding and Sampling",
         s: "Greedy, temperature, top-k, top-p, min-p, beam — and what each does to the distribution", tag: "55 min" },
-      { id: "13", f: "ch13-kvcache.html", t: "The KV Cache and the Memory Wall",
+      { id: "14", f: "ch14-gpu.html", wip: true, t: "The GPU: Memory, Tensor Cores, and the Roofline",
+        s: "Why d_head is 64 or 128, why HBM is the bottleneck, and how to predict which it is", tag: "90 min" },
+      { id: "15", f: "ch15-kvcache.html", t: "The KV Cache and the Memory Wall",
         s: "Prefill vs decode, why generation is memory-bound, and the arithmetic that proves it", tag: "65 min" },
-      { id: "14", f: "ch14-gqa-mla.html", t: "MQA, GQA, and Multi-Head Latent Attention",
+      { id: "16", f: "ch16-gqa-mla.html", t: "MQA, GQA, and Multi-Head Latent Attention",
         s: "Shrinking the cache: from 1 KV head to DeepSeek's 512-dim latent", tag: "80 min" },
-      { id: "15", f: "ch15-flashattention.html", t: "FlashAttention and the Online Softmax",
+      { id: "17", f: "ch17-flashattention.html", t: "FlashAttention and the Online Softmax",
         s: "The IO-aware algorithm, derived — plus FA2, FA3, FA4 (2026)", tag: "80 min" },
-      { id: "16", f: "ch16-serving.html", t: "Serving at Scale",
+      { id: "18", f: "ch18-serving.html", t: "Serving at Scale",
         s: "PagedAttention, continuous batching, speculative decoding, quantization", tag: "60 min" },
     ]
   },
   {
     n: "Part V", t: "Making It Big",
-    d: "Sparsity, scale, and the 2026 frontier",
+    d: "More GPUs, sparser models, and the 2026 frontier",
     ch: [
-      { id: "17", f: "ch17-moe.html", t: "Mixture of Experts",
+      { id: "19", f: "ch19-distributed.html", wip: true, t: "Distributed Training: DP, TP, PP, ZeRO",
+        s: "What each split costs in bytes on the wire, and why the 4-D mesh is shaped the way it is", tag: "90 min" },
+      { id: "20", f: "ch20-moe.html", t: "Mixture of Experts",
         s: "Routing, top-k, load balancing, shared experts, and why 671B can run like 37B", tag: "70 min" },
-      { id: "18", f: "ch18-scaling.html", t: "Scaling Laws and Long Context",
+      { id: "21", f: "ch21-scaling.html", t: "Scaling Laws and Long Context",
         s: "Kaplan vs Chinchilla, compute-optimal training, RoPE scaling, YaRN, sliding windows", tag: "65 min" },
-      { id: "19", f: "ch19-frontier.html", t: "The 2026 Frontier",
+      { id: "22", f: "ch22-frontier.html", t: "The 2026 Frontier",
         s: "DeepSeek Sparse Attention, Mamba-2 hybrids, and what is actually shipping today", tag: "60 min" },
     ]
   },
@@ -82,11 +88,11 @@ const PARTS = [
     n: "Part VI", t: "Making It Useful",
     d: "Turning a text predictor into an assistant",
     ch: [
-      { id: "20", f: "ch20-sft-rlhf.html", t: "SFT, RLHF, and PPO",
+      { id: "23", f: "ch23-sft-rlhf.html", t: "SFT, RLHF, and PPO",
         s: "The three-stage pipeline, reward models, and why RL entered the picture at all", tag: "70 min" },
-      { id: "21", f: "ch21-dpo.html", t: "DPO From First Principles",
+      { id: "24", f: "ch24-dpo.html", t: "DPO From First Principles",
         s: "Bradley-Terry → the KL-constrained optimum → the DPO loss, derived line by line", tag: "85 min" },
-      { id: "22", f: "ch22-grpo.html", t: "DPO Variants, GRPO, and RLVR",
+      { id: "25", f: "ch25-grpo.html", t: "DPO Variants, GRPO, and RLVR",
         s: "IPO, KTO, ORPO, SimPO, then the reasoning stack: GRPO, DAPO, verifiable rewards", tag: "70 min" },
     ]
   },
@@ -94,7 +100,7 @@ const PARTS = [
     n: "Part VII", t: "Capstone",
     d: "Put every piece together",
     ch: [
-      { id: "23", f: "ch23-capstone.html", t: "Build a Modern LLM End to End",
+      { id: "26", f: "ch26-capstone.html", t: "Build a Modern LLM End to End",
         s: "RMSNorm + RoPE + GQA + SwiGLU + KV cache, trained, then DPO-aligned", tag: "4-8 hrs" },
     ]
   },

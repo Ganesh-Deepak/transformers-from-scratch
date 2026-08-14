@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch 20 — SFT, RLHF, and PPO</title>
+<title>Ch 23 — SFT, RLHF, and PPO</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
 <link rel="stylesheet" href="assets/style.css?v=9">
@@ -11,15 +11,15 @@
 <body>
 <main>
 
-<h1>20 · SFT, RLHF, and PPO</h1>
+<h1>23 · SFT, RLHF, and PPO</h1>
 <p class="lead">
 A pretrained model is a text predictor, not an assistant. Ask it a question and it may well produce five more
 questions — because that's what documents containing questions look like. This part of the course is about
 closing the gap between "models the internet" and "does what you asked."
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; SFT is the training loop with different data<div class="sep"></div><span class="k">Leads to</span><a href="ch21-dpo.html">Ch&nbsp;21</a> &mdash; DPO removes most of this machinery<br><a href="ch22-grpo.html">Ch&nbsp;22</a> &mdash; and RLVR removes the reward model too<div class="sep"></div><span class="k">Why this chapter</span>A pretrained model predicts text. It does not answer questions. This is the gap.</div>
-<h2>20.1 · The pipeline</h2>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; SFT is the training loop with different data<div class="sep"></div><span class="k">Leads to</span><a href="ch24-dpo.html">Ch&nbsp;24</a> &mdash; DPO removes most of this machinery<br><a href="ch25-grpo.html">Ch&nbsp;25</a> &mdash; and RLVR removes the reward model too<div class="sep"></div><span class="k">Why this chapter</span>A pretrained model predicts text. It does not answer questions. This is the gap.</div>
+<h2>23.1 · The pipeline</h2>
 
 <div class="tw">
 <table>
@@ -32,7 +32,7 @@ closing the gap between "models the internet" and "does what you asked."
 </table>
 </div>
 
-<h2>20.2 · Supervised fine-tuning</h2>
+<h2>23.2 · Supervised fine-tuning</h2>
 
 <p>Mechanically, SFT is <b>identical to pretraining</b> — same loss, same optimizer. Two differences:</p>
 
@@ -74,7 +74,7 @@ But we <b>can</b> reliably say which of two responses is better. Preference opti
 for turning that comparison signal into a gradient.</p>
 </div>
 
-<h2>20.3 · The reward model</h2>
+<h2>23.3 · The reward model</h2>
 
 <p>Take a pretrained LM, replace the LM head with a scalar head, and train it to score responses.</p>
 
@@ -138,7 +138,7 @@ differences are learned, so "this response scored 7.3" tells you nothing without
 compare against — and scores from two different reward models are not comparable at all. It is
 also why <span class="math">ln 2 = 0.6931</span> is your step-0 sanity check: an untrained
 reward model has no opinion, so the gap is 0. <b>Remember this row — DPO's loss lands on exactly
-the same number for exactly the same reason</b> (Chapter 21).</p>
+the same number for exactly the same reason</b> (Chapter 24).</p>
 </div>
 
 <pre><code>import math
@@ -153,10 +153,10 @@ assert abs((1/(1+math.exp(-(2-1)))) - (1/(1+math.exp(-(102-101))))) < 1e-12</cod
 <p style="margin-bottom:0">The loss depends solely on <code>r_w − r_l</code>, so adding a constant to every
 reward changes nothing. The absolute scale is meaningless — a reward of 3.7 tells you nothing on its own.
 This is why reward models are evaluated by <b>ranking accuracy</b> on held-out pairs, never by their raw
-outputs. <b>Remember this fact; it is what makes DPO work in Chapter 21.</b></p>
+outputs. <b>Remember this fact; it is what makes DPO work in Chapter 24.</b></p>
 </div>
 
-<h2>20.4 · PPO</h2>
+<h2>23.4 · PPO</h2>
 
 <p>Now optimise the policy against that reward. The objective:</p>
 
@@ -247,7 +247,7 @@ genuinely difficult to get working, and that difficulty is the entire reason DPO
 </div>
 </div>
 
-<h2>20.5 · The data</h2>
+<h2>23.5 · The data</h2>
 
 <pre><code>{
   "prompt":   "Explain why the sky is blue to a 6-year-old.",
@@ -265,7 +265,7 @@ data is about calibration and fit, not correctness.</p>
 <li><b>AI feedback (RLAIF / Constitutional AI)</b> — a strong model judges. Far cheaper and now dominant in
 practice; the risk is inheriting the judge's biases.</li>
 <li><b>Verifiable signals</b> — for maths and code, check the answer. No preference model needed at all.
-That's Chapter 22.</li>
+That's Chapter 25.</li>
 </ul>
 
 <div class="box math-note">
@@ -277,10 +277,10 @@ and started bulleting everything, that's not a bug in your training code; it's i
 the reward model, or using length-controlled evaluation, is now standard practice.</p>
 </div>
 
-<h2>20.6 · Exercises</h2>
+<h2>23.6 · Exercises</h2>
 
 <div class="exercise">
-<div class="eh"><span class="n">20.1</span><span class="ti">SFT with correct masking</span><span class="lvl">essential</span></div>
+<div class="eh"><span class="n">23.1</span><span class="ti">SFT with correct masking</span><span class="lvl">essential</span></div>
 <div class="eb">
 <p>Fine-tune a small model on 500 instruction pairs. Implement prompt masking, then <b>verify</b> it by
 decoding one example and printing which tokens have <code>label == -100</code>. Train once with masking and
@@ -293,7 +293,7 @@ slowly on the part you care about. This is a five-minute experiment that permane
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">20.2</span><span class="ti">Train a reward model and find its biases</span><span class="lvl">code</span></div>
+<div class="eh"><span class="n">23.2</span><span class="ti">Train a reward model and find its biases</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>Train a Bradley-Terry reward model on a public preference dataset. Then probe it:</p>
 <ol>
@@ -311,7 +311,7 @@ baseline from the reward and re-evaluate.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">20.3</span><span class="ti">Induce reward hacking on purpose</span><span class="lvl">thinking</span></div>
+<div class="eh"><span class="n">23.3</span><span class="ti">Induce reward hacking on purpose</span><span class="lvl">thinking</span></div>
 <div class="eb">
 <p>Using your reward model, run best-of-N sampling with N ∈ {1, 4, 16, 64, 256} and plot (a) mean reward
 and (b) your own quality rating of a sample of outputs, against N.</p>
@@ -330,7 +330,7 @@ takes no RL machinery at all to reproduce.</p>
 <li><a href="https://arxiv.org/abs/2212.08073">Bai et al. 2022 — Constitutional AI</a> (RLAIF)</li>
 <li><a href="https://huggingface.co/docs/trl">HuggingFace TRL</a> — production implementations of SFT, RM, PPO, DPO, GRPO.</li>
 <li><a href="https://rlhfbook.com/">Nathan Lambert — RLHF Book</a> — free, current, and the best single reference on this material.</li>
-<li>Companion notebook: <code>notebooks/20_sft_rlhf.ipynb</code></li>
+<li>Companion notebook: <code>notebooks/23_sft_rlhf.ipynb</code></li>
 </ul>
 
 </main>
@@ -338,6 +338,6 @@ takes no RL machinery at all to reproduce.</p>
 <script src="assets/chapters.js?v=9"></script>
 <script src="assets/course.js?v=9"></script>
 <script src="assets/viz.js?v=9"></script>
-<script>initChapter("20");</script>
+<script>initChapter("23");</script>
 </body>
 </html>

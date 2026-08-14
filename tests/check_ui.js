@@ -126,9 +126,59 @@ for (const theme of ["light", "dark"]) {
      "accent excluded from dimension hues");
 }
 
+/* --------------------------------------------------------------------------
+   Manifest integrity.
+
+   These exist because the previous version only compared the sidebar's chapter
+   COUNT against the manifest — it read its expectation from the same file it
+   was testing, so it happily passed while three manifest entries pointed at
+   files that did not exist, and while `id` and filename had drifted apart
+   during a renumber. A test whose expected value comes from the thing under
+   test proves nothing.
+   -------------------------------------------------------------------------- */
+console.log("\n=== MANIFEST INTEGRITY ==========================");
+{
+  const src = fs.readFileSync(path.join(ROOT, "assets", "chapters.js"), "utf8");
+  const entries = [...src.matchAll(/id:\s*"(\d+)",\s*f:\s*"([^"]+)"(,\s*wip:\s*true)?/g)]
+    .map(m => ({ id: m[1], file: m[2], wip: !!m[3] }));
+
+  ok(entries.length > 0, "manifest parses", `${entries.length} entries`);
+
+  const seq = entries.every((e, i) => e.id === String(i + 1).padStart(2, "0"));
+  ok(seq, "ids run 01..NN with no gaps or repeats",
+     entries.map(e => e.id).join(","));
+
+  const mismatched = entries.filter(e => e.file.slice(2, 4) !== e.id);
+  ok(mismatched.length === 0, "every id matches its filename",
+     mismatched.map(e => `${e.id}->${e.file}`).join(" "));
+
+  const missing = entries.filter(e => !e.wip && !fs.existsSync(path.join(ROOT, e.file)));
+  ok(missing.length === 0, "every linked chapter file exists",
+     missing.map(e => e.file).join(" "));
+
+  const wip = entries.filter(e => e.wip);
+  if (wip.length) {
+    console.log(`  NOTE  ${wip.length} chapter(s) marked wip (listed, not linked): ` +
+                wip.map(e => e.id).join(", "));
+    const stale = wip.filter(e => fs.existsSync(path.join(ROOT, e.file)));
+    ok(stale.length === 0, "no wip flag left on a chapter that now exists",
+       stale.map(e => e.file).join(" "));
+  }
+
+  // every local href across the whole course must resolve
+  const dead = [];
+  for (const f of fs.readdirSync(ROOT).filter(f => f.endsWith(".html"))) {
+    const html = fs.readFileSync(path.join(ROOT, f), "utf8");
+    for (const m of html.matchAll(/href="([^"#:]+\.html)(?:#[^"]*)?"/g)) {
+      if (!fs.existsSync(path.join(ROOT, m[1]))) dead.push(`${f} -> ${m[1]}`);
+    }
+  }
+  ok(dead.length === 0, "every chapter-to-chapter link resolves", dead.join(" "));
+}
+
 (async () => {
 console.log("\n=== PAGE STRUCTURE ==============================");
-for (const file of ["index.html", "ch01-tensors.html", "ch14-gqa-mla.html", "ch10-backprop.html"]) {
+for (const file of ["index.html", "ch01-tensors.html", "ch16-gqa-mla.html", "ch10-backprop.html"]) {
   const { dom, errors, ready } = load(file, "dark");
   await ready;
   const d = dom.window.document;
@@ -148,6 +198,10 @@ for (const file of ["index.html", "ch01-tensors.html", "ch14-gqa-mla.html", "ch1
   const nChapters = (manifest.match(/id:\s*"\d+"/g) || []).length;
   ok(d.querySelectorAll(".sb-ch").length === nChapters,
      `all ${nChapters} chapters in sidebar`, `${d.querySelectorAll(".sb-ch").length}`);
+  // a wip chapter must be listed but must NOT be clickable
+  const wipLinks = [...d.querySelectorAll("a.sb-ch.wip")];
+  ok(wipLinks.length === 0, "no wip chapter is rendered as a link",
+     wipLinks.map(a => a.getAttribute("href")).join(" "));
   ok(!!d.querySelector("#sbq"), "chapter filter present");
   ok(!!d.querySelector(".readbar"), "reading-progress bar present");
   ok(!!d.querySelector(".sb-toggle"), "drawer toggle present (narrow screens)");

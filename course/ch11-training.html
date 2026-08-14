@@ -18,7 +18,7 @@ the schedule, and the dozen practical details that separate a run that works fro
 4000 and never recovers.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; you need a model before you can train one<div class="sep"></div><span class="k">Leads to</span><a href="ch20-sft-rlhf.html">Ch&nbsp;20</a> &mdash; fine-tuning is this loop with different data<br><a href="ch23-capstone.html">Ch&nbsp;23</a> &mdash; the capstone trains for real<div class="sep"></div><span class="k">Why this chapter</span>The loss, the optimizer, the schedule, and the bugs a good loss curve hides.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; you need a model before you can train one<div class="sep"></div><span class="k">Leads to</span><a href="ch23-sft-rlhf.html">Ch&nbsp;23</a> &mdash; fine-tuning is this loop with different data<br><a href="ch26-capstone.html">Ch&nbsp;26</a> &mdash; the capstone trains for real<div class="sep"></div><span class="k">Why this chapter</span>The loss, the optimizer, the schedule, and the bugs a good loss curve hides.</div>
 <h2>11.1 · The objective: predict the next token</h2>
 
 <p>That's the whole thing. There is no clever auxiliary loss in standard pretraining.</p>
@@ -444,7 +444,7 @@ errors, broken masks, frozen parameters, and detached graphs.</p>
 </div>
 <p style="margin-bottom:0"><b>Target: val ≈ 1.51 (≈2.18 bits/byte), reached around step 1250.</b> Past
 that the model overfits — Tiny Shakespeare has ~1 M characters against 2.4 M parameters, i.e.
-<b>0.42 tokens per parameter</b> where Chapter 18 says you want ~20. Note the val curve goes
+<b>0.42 tokens per parameter</b> where Chapter 21 says you want ~20. Note the val curve goes
 <i>flat</i> while train keeps falling; that divergence is the signal, not any single number.</p>
 </div>
 

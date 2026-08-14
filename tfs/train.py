@@ -156,11 +156,11 @@ def train(cfg: Config, train_data, val_data, steps=3000, B=16, T=128,
     log(f"model: {n:,} parameters  ({n / 1e6:.2f} M)")
     log(f"expected initial loss = ln({cfg.vocab_size}) = {math.log(cfg.vocab_size):.3f}")
 
-    # Ch 18: a rough tokens-per-parameter check. Far below ~20 means you will
+    # Ch 21: a rough tokens-per-parameter check. Far below ~20 means you will
     # overfit long before you converge.
     tok_per_param = len(train_data) / n
     log(f"train tokens/param = {tok_per_param:.2f}"
-        + ("   <- VERY LOW: expect overfitting (see Ch 18)" if tok_per_param < 5 else ""))
+        + ("   <- VERY LOW: expect overfitting (see Ch 21)" if tok_per_param < 5 else ""))
 
     opt = make_optimizer(model, lr)
     history = []

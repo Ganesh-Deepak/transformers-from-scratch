@@ -1,9 +1,9 @@
 """
-DPO — Chapter 21.
+DPO — Chapter 24.
 
     L = -log sigmoid( beta * [ (logp_c - logp_c_ref) - (logp_r - logp_r_ref) ] )
 
-Three details that decide whether this works (Ch 21.5):
+Three details that decide whether this works (Ch 24.5):
   1. SUM log-probs over the response, do not average. (Averaging is SimPO.)
   2. Mask the prompt — only response tokens count.
   3. The reference model is frozen and evaluated under no_grad.
@@ -44,7 +44,7 @@ def dpo_loss(policy_chosen_logps: torch.Tensor,
     All inputs are (B,) summed log-probs.
 
     Returns (loss, chosen_rewards, rejected_rewards, accuracy).
-    The "rewards" are the implicit reward beta*log(pi/pi_ref) from Ch 21.3 —
+    The "rewards" are the implicit reward beta*log(pi/pi_ref) from Ch 24.3 —
     log them, they are the most informative diagnostic you have.
     """
     pi_logratios = policy_chosen_logps - policy_rejected_logps
@@ -62,7 +62,7 @@ def dpo_loss(policy_chosen_logps: torch.Tensor,
 def simpo_loss(policy_chosen_logps, policy_rejected_logps,
                chosen_lens, rejected_lens, beta: float = 2.0, gamma: float = 0.5):
     """
-    SimPO — Ch 22.1. Length-normalised, reference-free, with an explicit margin.
+    SimPO — Ch 25.1. Length-normalised, reference-free, with an explicit margin.
     logps are summed; we divide by length here to get the average.
     """
     logits = (beta * policy_chosen_logps / chosen_lens
@@ -78,7 +78,7 @@ def build_dpo_batch(tokenizer, prompt: str, chosen: str, rejected: str, device=N
         r = tokenizer.encode(response)
         ids = torch.tensor(p + r, device=device)
         labels = ids.clone()
-        labels[: len(p)] = -100                   # Ch 20.2 — mask the prompt
+        labels[: len(p)] = -100                   # Ch 23.2 — mask the prompt
         return ids, labels
 
     return pack(chosen), pack(rejected)
@@ -87,7 +87,7 @@ def build_dpo_batch(tokenizer, prompt: str, chosen: str, rejected: str, device=N
 @torch.no_grad()
 def precompute_reference_logps(ref_model, batches):
     """
-    Ch 21.5: the reference never changes, so compute its log-probs ONCE for the
+    Ch 24.5: the reference never changes, so compute its log-probs ONCE for the
     whole dataset. Halves memory and time versus running it every step.
     """
     ref_model.eval()

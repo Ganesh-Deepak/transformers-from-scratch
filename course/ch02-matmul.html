@@ -18,7 +18,7 @@ without thinking, and you know what broadcasting will do before you run it, the 
 bookkeeping. This chapter makes that automatic.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; shapes, strides, reshape vs transpose<div class="sep"></div><span class="k">Leads to</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; attention is two matmuls and a softmax<br><a href="ch13-kvcache.html">Ch&nbsp;13</a> &mdash; the FLOP counting returns as the memory wall<div class="sep"></div><span class="k">Why this chapter</span>A matmul consumes one dimension. Find the vanishing axis and you can read any equation in any paper.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; shapes, strides, reshape vs transpose<div class="sep"></div><span class="k">Leads to</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; attention is two matmuls and a softmax<br><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; the FLOP counting returns as the memory wall<div class="sep"></div><span class="k">Why this chapter</span>A matmul consumes one dimension. Find the vanishing axis and you can read any equation in any paper.</div>
 <div class="box intuition">
 <span class="t">The one idea in this chapter</span>
 <p style="margin-bottom:0">A matmul <b>consumes</b> one dimension. <code>(m, k) @ (k, n) → (m, n)</code>:
@@ -359,7 +359,7 @@ FLOPs per token ≈ 2 N &nbsp;&nbsp;(forward) &nbsp;&nbsp;·&nbsp;&nbsp; ≈ 6 N
 </div>
 
 <p>So training on <code>D</code> tokens costs about <b>6ND</b> FLOPs. That single formula is the basis of
-every scaling-law calculation in Chapter 18, and it's worth being able to derive:</p>
+every scaling-law calculation in Chapter 21, and it's worth being able to derive:</p>
 
 <ul>
 <li>Forward: each weight is used in exactly one multiply-accumulate per token → <b>2N</b>.</li>
@@ -372,7 +372,7 @@ every scaling-law calculation in Chapter 18, and it's worth being able to derive
 <p style="margin-bottom:0">Attention's <code>T×T</code> score matrix costs FLOPs that don't scale with
 parameter count — roughly <code>12 · n_layer · d_model · T²</code> per sequence. For short contexts this is a
 few percent and everyone ignores it. At <code>T = 128k</code> it can dominate. That crossover is exactly why
-sparse attention (Chapter 19) exists.</p>
+sparse attention (Chapter 22) exists.</p>
 </div>
 
 <div class="quiz" data-title="Checkpoint 2 — einsum &amp; FLOPs">
@@ -463,7 +463,7 @@ for f in (matmul_loops, matmul_broadcast, matmul_einsum):
 <p style="margin-bottom:0">Expect roughly: loops ≈ 4 s, broadcast ≈ 20 ms, einsum ≈ 1 ms, <code>@</code> ≈ 0.5 ms.
 The broadcast version is instructive but note it <i>materialises</i> an <code>(m,k,n)</code> intermediate —
 256³ = 16.7M floats = 67 MB. That "materialising a big intermediate" problem is exactly what FlashAttention
-solves in Chapter 15, at a much larger scale.</p>
+solves in Chapter 17, at a much larger scale.</p>
 </div></details>
 </div></div>
 

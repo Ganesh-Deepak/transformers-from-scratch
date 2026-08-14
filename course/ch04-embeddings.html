@@ -342,7 +342,7 @@ Then time both for <code>V=50000</code>. What's the speed ratio, and where does 
 <p style="margin-bottom:0">They match exactly. The lookup is typically 100–1000× faster because the matmul
 does <code>V×C</code> multiply-adds (49,999 of every 50,000 by zero) plus materialises a
 <code>(B, T, V)</code> one-hot tensor, while the lookup does <code>C</code> memory reads. It's the same
-computation with completely different <i>arithmetic intensity</i> — a theme that returns in Chapter 13.</p>
+computation with completely different <i>arithmetic intensity</i> — a theme that returns in Chapter 15.</p>
 </div></details>
 </div></div>
 

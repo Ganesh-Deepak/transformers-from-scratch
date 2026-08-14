@@ -18,7 +18,7 @@ a transformer by hand — softmax, cross-entropy, RMSNorm, attention — and che
 autograd. After this you can implement a backward pass, debug a wrong one, and read a CUDA kernel.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the forward attention you are about to differentiate<br><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; RMSNorm and the residual<br><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; where these gradients get used<div class="sep"></div><span class="k">Leads to</span><a href="ch15-flashattention.html">Ch&nbsp;15</a> &mdash; why the backward pass can recompute tiles<div class="sep"></div><span class="k">Why this chapter</span>The layer under "autograd handles it". Nothing here is optional if you want to work below the framework.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the forward attention you are about to differentiate<br><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; RMSNorm and the residual<br><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; where these gradients get used<div class="sep"></div><span class="k">Leads to</span><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; why the backward pass can recompute tiles<div class="sep"></div><span class="k">Why this chapter</span>The layer under "autograd handles it". Nothing here is optional if you want to work below the framework.</div>
 
 <div class="box intuition">
 <span class="t">The one idea in this chapter</span>
@@ -277,7 +277,7 @@ dK = dSᵀ @ Q / √d</code></pre>
     return dQ, dK, dV</code></pre>
 
 <div class="box intuition">
-<span class="t">Now Chapter 15 makes sense at the kernel level</span>
+<span class="t">Now Chapter 17 makes sense at the kernel level</span>
 <p style="margin-bottom:0">Look at what step 2 needs: <b><code>P</code> and a row sum.</b> No
 <span class="math">(T,T)</span> Jacobian is ever constructed — the softmax backward is elementwise plus
 one reduction. That is <i>exactly</i> why FlashAttention can throw <code>P</code> away in the forward

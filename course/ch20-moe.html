@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch 17 — Mixture of Experts</title>
+<title>Ch 20 — Mixture of Experts</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
 <link rel="stylesheet" href="assets/style.css?v=9">
@@ -11,15 +11,15 @@
 <body>
 <main>
 
-<h1>17 · Mixture of Experts</h1>
+<h1>20 · Mixture of Experts</h1>
 <p class="lead">
 Chapter 8 established that two-thirds of a transformer's parameters live in the MLP, and that every token
 passes through all of them. MoE breaks that link: keep a very large number of parameters, but use only a
 small slice per token. It is how a 671-billion-parameter model runs at the cost of a 37-billion one.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; MoE replaces the MLP<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; where the parameters live<div class="sep"></div><span class="k">Leads to</span><a href="ch19-frontier.html">Ch&nbsp;19</a> &mdash; every frontier model is now sparse<div class="sep"></div><span class="k">Why this chapter</span>Decouple capacity from compute: 671B parameters that cost 37B to run.</div>
-<h2>17.1 · The idea</h2>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; MoE replaces the MLP<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; where the parameters live<div class="sep"></div><span class="k">Leads to</span><a href="ch22-frontier.html">Ch&nbsp;22</a> &mdash; every frontier model is now sparse<div class="sep"></div><span class="k">Why this chapter</span>Decouple capacity from compute: 671B parameters that cost 37B to run.</div>
+<h2>20.1 · The idea</h2>
 
 <div class="box intuition">
 <span class="t">Decouple capacity from compute</span>
@@ -111,7 +111,7 @@ w = w / w.sum()                           # 0.6225, 0.3775
 assert abs(w.sum() - 1.0) < 1e-6
 print(idx.tolist(), [round(v, 4) for v in w.tolist()])</code></pre>
 
-<h2>17.2 · The load-balancing problem</h2>
+<h2>20.2 · The load-balancing problem</h2>
 
 <p>Left alone, routers collapse. An expert that happens to be slightly better early gets picked more, trains
 more, gets better, gets picked more. You end up with 4 experts doing all the work and 252 dead ones — all
@@ -158,7 +158,7 @@ spread quickly.</p>
 capacity factor of 1.0 drops a lot; 1.25 is a common compromise. Modern "dropless" implementations
 (MegaBlocks) use block-sparse kernels to avoid the issue altogether.</p>
 
-<h2>17.3 · DeepSeekMoE: fine-grained + shared experts</h2>
+<h2>20.3 · DeepSeekMoE: fine-grained + shared experts</h2>
 
 <p>Two refinements that are now widely copied:</p>
 
@@ -183,7 +183,7 @@ for e in top_8_of_256_routed:
     out = out + weight[e] * expert[e](x)     # plus 8 routed experts
 </code></pre>
 
-<h2>17.4 · What real MoE models look like</h2>
+<h2>20.4 · What real MoE models look like</h2>
 
 <div class="tw">
 <table>
@@ -252,7 +252,7 @@ local-inference enthusiasts mostly don't.</p>
 </div>
 </div>
 
-<h2>17.5 · Practical notes</h2>
+<h2>20.5 · Practical notes</h2>
 
 <ul>
 <li><b>Not every layer is MoE.</b> DeepSeek-V3 keeps its first 3 layers dense; Llama 4 alternates. Early
@@ -266,10 +266,10 @@ entire training run.</li>
 They address orthogonal costs.</li>
 </ul>
 
-<h2>17.6 · Exercises</h2>
+<h2>20.6 · Exercises</h2>
 
 <div class="exercise">
-<div class="eh"><span class="n">17.1</span><span class="ti">Build an MoE layer and watch it collapse</span><span class="lvl">essential</span></div>
+<div class="eh"><span class="n">20.1</span><span class="ti">Build an MoE layer and watch it collapse</span><span class="lvl">essential</span></div>
 <div class="eb">
 <p>Implement <code>MoELayer</code> with 8 experts, top-2. Train a small model on Tiny Shakespeare
 <b>without</b> any load-balancing loss, logging the token count per expert every 100 steps.</p>
@@ -289,7 +289,7 @@ makes.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">17.2</span><span class="ti">Do the MoE arithmetic</span><span class="lvl">thinking</span></div>
+<div class="eh"><span class="n">20.2</span><span class="ti">Do the MoE arithmetic</span><span class="lvl">thinking</span></div>
 <div class="eb">
 <p>For a model with <code>d_model=4096</code>, <code>d_ff=14336</code>, 32 layers, SwiGLU:</p>
 <ol>
@@ -312,7 +312,7 @@ the 8× memory bill is why it's a datacentre technique.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">17.3</span><span class="ti">Do experts actually specialise?</span><span class="lvl">exploration</span></div>
+<div class="eh"><span class="n">20.3</span><span class="ti">Do experts actually specialise?</span><span class="lvl">exploration</span></div>
 <div class="eb">
 <p>Load Mixtral-8x7B (or any small open MoE). Feed it text from several domains — Python, French,
 mathematics, poetry — and record the router's expert choices at each layer. Build a heatmap of
@@ -333,7 +333,7 @@ expert. The "one expert for biology" mental model is wrong; think of experts as 
 <li><a href="https://arxiv.org/abs/2401.06066">Dai et al. 2024 — DeepSeekMoE</a> (fine-grained + shared experts)</li>
 <li><a href="https://arxiv.org/abs/2408.15664">Wang et al. 2024 — Auxiliary-Loss-Free Load Balancing</a></li>
 <li><a href="https://arxiv.org/abs/2211.15841">Gale et al. 2022 — MegaBlocks</a> (dropless MoE kernels)</li>
-<li>Companion notebook: <code>notebooks/17_moe.ipynb</code></li>
+<li>Companion notebook: <code>notebooks/20_moe.ipynb</code></li>
 </ul>
 
 </main>
@@ -341,6 +341,6 @@ expert. The "one expert for biology" mental model is wrong; think of experts as 
 <script src="assets/chapters.js?v=9"></script>
 <script src="assets/course.js?v=9"></script>
 <script src="assets/viz.js?v=9"></script>
-<script>initChapter("17");</script>
+<script>initChapter("20");</script>
 </body>
 </html>

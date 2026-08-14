@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch 21 — DPO From First Principles</title>
+<title>Ch 24 — DPO From First Principles</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
 <link rel="stylesheet" href="assets/style.css?v=9">
@@ -11,14 +11,14 @@
 <body>
 <main>
 
-<h1>21 · DPO From First Principles</h1>
+<h1>24 · DPO From First Principles</h1>
 <p class="lead">
 Direct Preference Optimization replaces four models, a generation loop, and PPO's hyperparameter thicket
 with <em>a single loss function you can write in six lines</em>. It is not a heuristic or an approximation —
 it is derived from exactly the same objective PPO optimises. This chapter does the derivation completely.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch20-sft-rlhf.html">Ch&nbsp;20</a> &mdash; Bradley-Terry and the KL-constrained objective<div class="sep"></div><span class="k">Leads to</span><a href="ch22-grpo.html">Ch&nbsp;22</a> &mdash; the variants, and what replaced it for reasoning<div class="sep"></div><span class="k">Why this chapter</span>Your language model is secretly a reward model. Eight lines of algebra prove it.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch23-sft-rlhf.html">Ch&nbsp;23</a> &mdash; Bradley-Terry and the KL-constrained objective<div class="sep"></div><span class="k">Leads to</span><a href="ch25-grpo.html">Ch&nbsp;25</a> &mdash; the variants, and what replaced it for reasoning<div class="sep"></div><span class="k">Why this chapter</span>Your language model is secretly a reward model. Eight lines of algebra prove it.</div>
 <div class="box intuition">
 <span class="t">The claim</span>
 <p style="margin-bottom:0">Rafailov et al. (2023) proved that <b>your language model is secretly a reward
@@ -27,9 +27,9 @@ equation. Invert it, substitute into the Bradley-Terry likelihood, and the rewar
 a supervised classification loss on preference pairs.</p>
 </div>
 
-<h2>21.1 · Setup: the objective we are actually solving</h2>
+<h2>24.1 · Setup: the objective we are actually solving</h2>
 
-<p>From Chapter 20, RLHF maximises:</p>
+<p>From Chapter 23, RLHF maximises:</p>
 
 <div class="mathblock">
 max<sub>π</sub> &nbsp; E<sub>x∼D, y∼π(·|x)</sub><big>[</big> r(x,y) <big>]</big> − β · KL<big>(</big>π(·|x) ‖ π<sub>ref</sub>(·|x)<big>)</big>
@@ -44,7 +44,7 @@ max<sub>π</sub> &nbsp; E<sub>x∼D, y∼π(·|x)</sub><big>[</big> r(x,y) <big>
   <span class="chip"><b>y<sub>w</sub>, y<sub>l</sub></b> <span>chosen / rejected</span></span>
 </div>
 
-<h2>21.2 · Step 1 — the optimal policy has a closed form</h2>
+<h2>24.2 · Step 1 — the optimal policy has a closed form</h2>
 
 <p>Expand the KL and work with a single prompt <span class="math">x</span>:</p>
 
@@ -94,7 +94,7 @@ argmax reward. This result is standard in the KL-regularised RL literature — i
 does next is.</p>
 </div>
 
-<h2>21.3 · Step 2 — invert it</h2>
+<h2>24.3 · Step 2 — invert it</h2>
 
 <p>Solve the same equation for <span class="math">r</span>. Take logs of both sides and rearrange:</p>
 
@@ -114,9 +114,9 @@ r<sub>θ</sub>(x,y) = β log <span class="frac"><span class="n">π<sub>θ</sub>(
 <p>…except <span class="math">Z(x)</span> requires summing over every possible completion. Intractable.
 This looks like a dead end.</p>
 
-<h2>21.4 · Step 3 — the partition function cancels</h2>
+<h2>24.4 · Step 3 — the partition function cancels</h2>
 
-<p>Here is the trick. Recall from Chapter 20 that Bradley-Terry depends only on the <b>difference</b> of
+<p>Here is the trick. Recall from Chapter 23 that Bradley-Terry depends only on the <b>difference</b> of
 two rewards:</p>
 
 <div class="mathblock">
@@ -142,7 +142,7 @@ identically in both and <b>cancels exactly</b>. No approximation, no bound, no s
 gone.</p>
 </div>
 
-<h2>21.5 · The DPO loss</h2>
+<h2>24.5 · The DPO loss</h2>
 
 <p>Plug that difference into the Bradley-Terry negative log-likelihood:</p>
 
@@ -190,7 +190,7 @@ def sequence_logp(model, ids, labels):
 <ol style="margin-bottom:0">
 <li><b>Sum log-probs, don't average.</b> The derivation is about
 <span class="math">log π(y|x) = Σ<sub>t</sub> log π(y<sub>t</sub>|x, y<sub>&lt;t</sub>)</span> — a sum.
-Averaging by length changes the objective (that variant is <a href="#">SimPO</a>, Chapter 22, and it is a
+Averaging by length changes the objective (that variant is <a href="#">SimPO</a>, Chapter 25, and it is a
 deliberate different choice, not a bug fix).</li>
 <li><b>Mask the prompt.</b> Only response tokens count, exactly as in SFT.</li>
 <li><b><code>π<sub>ref</sub></code> must be frozen and in eval mode.</b> Compute its log-probs under
@@ -199,7 +199,7 @@ memory and time, since the reference never changes.</li>
 </ol>
 </div>
 
-<h2>21.6 · What the gradient does</h2>
+<h2>24.6 · What the gradient does</h2>
 
 <p>Differentiating the loss gives:</p>
 
@@ -266,7 +266,7 @@ curriculum needed.</p>
 </div>
 </div>
 
-<h2>21.7 · DPO vs PPO — the honest comparison</h2>
+<h2>24.7 · DPO vs PPO — the honest comparison</h2>
 
 <div class="tw">
 <table>
@@ -294,12 +294,12 @@ al. 2024</a>) find PPO retains an edge on the hardest tasks for exactly this rea
 model or judge, retrain, repeat — recovering much of the on-policy benefit while keeping DPO's simplicity.</p>
 </div>
 
-<h2>21.8 · Exercises</h2>
+<h2>24.8 · Exercises</h2>
 
 <div class="exercise">
-<div class="eh"><span class="n">21.1</span><span class="ti">Derive it yourself</span><span class="lvl">essential — do this on paper</span></div>
+<div class="eh"><span class="n">24.1</span><span class="ti">Derive it yourself</span><span class="lvl">essential — do this on paper</span></div>
 <div class="eb">
-<p>Without looking back at §21.2–20.4, derive the DPO loss from the KL-constrained objective. You should be
+<p>Without looking back at §24.2–20.4, derive the DPO loss from the KL-constrained objective. You should be
 able to produce, in order:</p>
 <ol>
 <li>The closed-form optimal policy <span class="math">π*</span>, including where <span class="math">Z(x)</span> comes from.</li>
@@ -312,7 +312,7 @@ people using it. It's about eight lines of algebra and it's worth the twenty min
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">21.2</span><span class="ti">Implement DPO and run it</span><span class="lvl">code</span></div>
+<div class="eh"><span class="n">24.2</span><span class="ti">Implement DPO and run it</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>SFT a small model, then DPO it on a preference dataset. Log per step: loss, mean chosen reward, mean
 rejected reward, reward margin, ranking accuracy, and <b>absolute</b> chosen/rejected log-probs.</p>
@@ -331,7 +331,7 @@ common DPO failure.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">21.3</span><span class="ti">Verify the implicit reward is a real reward model</span><span class="lvl">thinking</span></div>
+<div class="eh"><span class="n">24.3</span><span class="ti">Verify the implicit reward is a real reward model</span><span class="lvl">thinking</span></div>
 <div class="eb">
 <p>After DPO, compute <code>r̂(x,y) = β·(log π_θ(y|x) − log π_ref(y|x))</code> on a <b>held-out</b>
 preference set and measure its pairwise ranking accuracy — exactly as you would evaluate an explicit reward
@@ -350,7 +350,7 @@ you can use a DPO'd model as a reranker for free, with no separate reward model 
 <li><a href="https://arxiv.org/abs/2404.10719">Xu et al. 2024 — Is DPO Superior to PPO for LLM Alignment?</a> — the careful head-to-head.</li>
 <li><a href="https://arxiv.org/abs/2410.08847">Razin et al. 2024 — Unintentional Unalignment (likelihood displacement)</a></li>
 <li><a href="https://huggingface.co/docs/trl/dpo_trainer">TRL DPOTrainer</a> — the reference implementation.</li>
-<li>Companion notebook: <code>notebooks/21_dpo.ipynb</code></li>
+<li>Companion notebook: <code>notebooks/24_dpo.ipynb</code></li>
 </ul>
 
 </main>
@@ -358,6 +358,6 @@ you can use a DPO'd model as a reranker for free, with no separate reward model 
 <script src="assets/chapters.js?v=9"></script>
 <script src="assets/course.js?v=9"></script>
 <script src="assets/viz.js?v=9"></script>
-<script>initChapter("21");</script>
+<script>initChapter("24");</script>
 </body>
 </html>

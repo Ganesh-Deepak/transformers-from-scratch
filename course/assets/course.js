@@ -112,7 +112,10 @@ function buildTopbar(currentId) {
 function buildChapterNav(currentId) {
   const i = CHAPTERS.findIndex(c => c.id === currentId);
   if (i < 0) return;
-  const prev = CHAPTERS[i - 1], next = CHAPTERS[i + 1];
+  // Skip over chapters that are numbered but not written yet, so prev/next
+  // always lands on a page that exists.
+  const live = d => { let j = i + d; while (CHAPTERS[j] && CHAPTERS[j].wip) j += d; return CHAPTERS[j]; };
+  const prev = live(-1), next = live(1);
   const main = document.querySelector("main");
 
   const row = document.createElement("div");
@@ -317,8 +320,15 @@ function buildSidebar(currentId) {
     html += `<div class="sb-part" data-part="1"><div class="h">${p.n} &middot; ${p.t}</div>`;
     for (const c of p.ch) {
       const here = c.id === currentId;
-      html += `<a class="sb-ch ${isDone(c.id) ? "done" : ""} ${here ? "here" : ""}"
-                  href="${c.f}" data-t="${(c.id + " " + c.t + " " + c.s).toLowerCase()}">
+      const dt = `data-t="${(c.id + " " + c.t + " " + c.s).toLowerCase()}"`;
+      // A chapter marked `wip` is numbered and listed but not written yet.
+      // Render it as inert text, never a link, so the outline stays honest and
+      // the sidebar can never serve a 404. Remove `wip` to switch it on.
+      html += c.wip
+        ? `<span class="sb-ch wip" ${dt} title="Not written yet">
+             <span class="n">${c.id}</span><span>${c.t}</span></span>`
+        : `<a class="sb-ch ${isDone(c.id) ? "done" : ""} ${here ? "here" : ""}"
+                  href="${c.f}" ${dt}>
                  <span class="n">${c.id}</span><span>${c.t}</span></a>`;
       if (here && sections.length) {
         html += `<nav class="sb-sections">` +

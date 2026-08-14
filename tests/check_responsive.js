@@ -32,7 +32,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "tfs-resp-"));
 // the bug class we care about (content wider than its viewport); they do NOT
 // prove true 320px behaviour. Verify a real 320px device separately.
 const WIDTHS = [320, 390, 430, 768, 1024, 1440, 1920];
-const PAGES = ["index.html", "ch01-tensors.html", "ch05-attention.html", "ch14-gqa-mla.html"];
+const PAGES = ["index.html", "ch01-tensors.html", "ch05-attention.html", "ch16-gqa-mla.html"];
 
 const PROBE = `
 (function(){

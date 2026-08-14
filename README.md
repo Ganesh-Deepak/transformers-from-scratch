@@ -213,8 +213,8 @@ Chinchilla coefficients, MoE configs) were taken from primary papers and public 
 configs and checked in **August 2026**. Where a claim is contested or an open research
 question, the course flags it rather than stating it flatly. Every chapter ends with sources.
 
-**Chapter 19 is deliberately dated** — it covers the moving frontier (DeepSeek Sparse
-Attention, Mamba-2 hybrids, FlashAttention-4) and will age. Chapters 1–18 cover mechanisms
+**Chapter 22 is deliberately dated** — it covers the moving frontier (DeepSeek Sparse
+Attention, Mamba-2 hybrids, FlashAttention-4) and will age. Chapters 1–21 cover mechanisms
 that have been stable for years.
 
 ---

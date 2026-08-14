@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch 15 — FlashAttention and the Online Softmax</title>
+<title>Ch 17 — FlashAttention and the Online Softmax</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
 <link rel="stylesheet" href="assets/style.css?v=9">
@@ -11,7 +11,7 @@
 <body>
 <main>
 
-<h1>15 · FlashAttention and the Online Softmax</h1>
+<h1>17 · FlashAttention and the Online Softmax</h1>
 <p class="lead">
 FlashAttention computes <em>exactly</em> the same function as the attention you wrote in Chapter 5 — no
 approximation, no sparsity, identical outputs up to floating-point rounding. It is 2–4× faster and uses
@@ -19,8 +19,8 @@ approximation, no sparsity, identical outputs up to floating-point rounding. It 
 arithmetic.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the T x T score matrix<br><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; why memory traffic dominates<div class="sep"></div><span class="k">Leads to</span><a href="ch16-serving.html">Ch&nbsp;16</a> &mdash; serving stacks assume this exists<br><a href="ch19-frontier.html">Ch&nbsp;19</a> &mdash; it removed the memory wall, not the quadratic<div class="sep"></div><span class="k">Why this chapter</span>Same maths, same output, 2-4x faster — because the bottleneck was never arithmetic.</div>
-<h2>15.1 · The insight: attention is IO-bound, not compute-bound</h2>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the T x T score matrix<br><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; why memory traffic dominates<div class="sep"></div><span class="k">Leads to</span><a href="ch18-serving.html">Ch&nbsp;18</a> &mdash; serving stacks assume this exists<br><a href="ch22-frontier.html">Ch&nbsp;22</a> &mdash; it removed the memory wall, not the quadratic<div class="sep"></div><span class="k">Why this chapter</span>Same maths, same output, 2-4x faster — because the bottleneck was never arithmetic.</div>
+<h2>17.1 · The insight: attention is IO-bound, not compute-bound</h2>
 
 <p>A GPU has a memory hierarchy, and the numbers are wildly asymmetric:</p>
 
@@ -48,7 +48,7 @@ twice, only to throw it away. The <b>output</b> is only <code>N×d</code>. Nearl
 a temporary result that nobody wants. Dao et al.'s question was: <b>can we never write it down at all?</b></p>
 </div>
 
-<h2>15.2 · The obstacle: softmax needs the whole row</h2>
+<h2>17.2 · The obstacle: softmax needs the whole row</h2>
 
 <p>The obvious plan is to process K and V in tiles that fit in SRAM. But softmax has a global denominator:</p>
 
@@ -62,7 +62,7 @@ for <code>x &gt; 88</code> in fp32. Every real softmax subtracts the max.)</p>
 
 <p>So how do you compute a softmax over data you're seeing in pieces?</p>
 
-<h2>15.3 · The online softmax</h2>
+<h2>17.3 · The online softmax</h2>
 
 <p>You maintain a <b>running max</b> and a <b>running sum</b>, and when the max changes you retroactively
 <b>rescale</b> everything you've accumulated so far. Milakov &amp; Gimelshein (2018) worked this out; Dao
@@ -157,7 +157,7 @@ not an approximation. That's why FlashAttention can be used for <b>training</b>,
 approximation would compound into a materially different model.</p>
 </div>
 
-<h2>15.4 · The algorithm</h2>
+<h2>17.4 · The algorithm</h2>
 
 <pre><code># FlashAttention, forward pass (simplified, one head)
 #   Q: (N, d)   K, V: (N, d)   →   O: (N, d)
@@ -259,7 +259,7 @@ around 1/25 — so FlashAttention does roughly <b>25× fewer HBM accesses</b> at
 </div>
 </div>
 
-<h2>15.5 · The version history</h2>
+<h2>17.5 · The version history</h2>
 
 <div class="tw">
 <table>
@@ -290,7 +290,7 @@ writing CUDA.</li>
 <p class="tiny" style="margin:.8em 0 0">FA4 requires Hopper or Blackwell. On older GPUs you're on FA2.</p>
 </div>
 
-<h2>15.6 · Using it</h2>
+<h2>17.6 · Using it</h2>
 
 <pre><code># Almost always the right answer — PyTorch picks the best available backend.
 import torch.nn.functional as F
@@ -317,22 +317,22 @@ FlashAttention. Measure <code>torch.cuda.max_memory_allocated()</code> at T=1k, 
 linearly, the fallback quadratically.</p>
 </div>
 
-<h2>15.7 · What it does <i>not</i> solve</h2>
+<h2>17.7 · What it does <i>not</i> solve</h2>
 
 <ul>
 <li><b>FLOPs are still O(N²).</b> FlashAttention removes the memory wall, not the quadratic. At 1M tokens
-you still need genuine sparsity (Chapter 19).</li>
+you still need genuine sparsity (Chapter 22).</li>
 <li><b>The KV cache is untouched.</b> Flash speeds up computing attention; it doesn't shrink what you store.
-That's GQA/MLA's job (Chapter 14). The two are complementary and always used together.</li>
+That's GQA/MLA's job (Chapter 16). The two are complementary and always used together.</li>
 <li><b>Decode gets much less benefit.</b> With a single query row there's no large intermediate to avoid.
 Decode-optimised variants (FlashDecoding, and DeepSeek's FlashMLA) split the <i>key</i> dimension across SMs
 instead — a different parallelisation for a different regime.</li>
 </ul>
 
-<h2>15.8 · Exercises</h2>
+<h2>17.8 · Exercises</h2>
 
 <div class="exercise">
-<div class="eh"><span class="n">15.1</span><span class="ti">Implement the online softmax</span><span class="lvl">essential</span></div>
+<div class="eh"><span class="n">17.1</span><span class="ti">Implement the online softmax</span><span class="lvl">essential</span></div>
 <div class="eb">
 <p>Write <code>online_softmax_sum(xs, chunk_size)</code> that processes <code>xs</code> in chunks,
 maintaining running max and sum. Assert it matches <code>torch.logsumexp</code> to <code>1e-6</code> for
@@ -356,9 +356,9 @@ and watch it return <code>inf</code>. That failure is why the running max isn't 
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">15.2</span><span class="ti">Write FlashAttention in PyTorch</span><span class="lvl">hard</span></div>
+<div class="eh"><span class="n">17.2</span><span class="ti">Write FlashAttention in PyTorch</span><span class="lvl">hard</span></div>
 <div class="eb">
-<p>Implement the tiled algorithm from §15.4 in pure PyTorch (no CUDA). It will be <b>slower</b> than the
+<p>Implement the tiled algorithm from §17.4 in pure PyTorch (no CUDA). It will be <b>slower</b> than the
 naive version — Python loops, no SRAM control — but it must be <b>numerically identical</b>.</p>
 <pre><code>def flash_attention(Q, K, V, Br=32, Bc=32, causal=True):
     N, d = Q.shape
@@ -396,7 +396,7 @@ than bidirectional, not the same speed.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">15.3</span><span class="ti">Measure the memory scaling</span><span class="lvl">code</span></div>
+<div class="eh"><span class="n">17.3</span><span class="ti">Measure the memory scaling</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>For <code>T ∈ {512, 1024, 2048, 4096, 8192}</code>, measure peak memory and wall time for
 (a) your naive attention and (b) <code>F.scaled_dot_product_attention</code>. Plot both on log-log axes and
@@ -404,7 +404,7 @@ fit the slopes.</p>
 <details class="reveal"><summary>Expected</summary><div>
 <p style="margin-bottom:0">Naive: memory slope ≈ 2 (quadratic). Flash: slope ≈ 1 (linear). The naive version
 will OOM somewhere around T=8k–16k on a consumer GPU while Flash keeps going. <b>The slope is the proof</b> —
-if your "Flash" line has slope 2, you fell back to the math backend; check the dtype (§15.6).</p>
+if your "Flash" line has slope 2, you fell back to the math backend; check the dtype (§17.6).</p>
 </div></details>
 </div></div>
 
@@ -416,7 +416,7 @@ if your "Flash" line has slope 2, you fell back to the math backend; check the d
 <li><a href="https://www.together.ai/blog/flashattention-4">Together AI — FlashAttention-4</a> (2026)</li>
 <li><a href="https://arxiv.org/abs/1805.02867">Milakov &amp; Gimelshein 2018 — Online normalizer calculation for softmax</a> — the algorithmic core.</li>
 <li><a href="https://pytorch.org/blog/flexattention/">PyTorch — FlexAttention</a></li>
-<li>Companion notebook: <code>notebooks/15_flashattention.ipynb</code></li>
+<li>Companion notebook: <code>notebooks/17_flashattention.ipynb</code></li>
 </ul>
 
 </main>
@@ -424,6 +424,6 @@ if your "Flash" line has slope 2, you fell back to the math backend; check the d
 <script src="assets/chapters.js?v=9"></script>
 <script src="assets/course.js?v=9"></script>
 <script src="assets/viz.js?v=9"></script>
-<script>initChapter("15");</script>
+<script>initChapter("17");</script>
 </body>
 </html>
