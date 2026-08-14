@@ -17,8 +17,19 @@
            the topbar, the rules under headings. That is what carries the
            printed-manual look, so the accent is free to be a link colour.
              light  #E7D8BC kraft stock, cream cards lifted on hard shadows
-             dark   #1B1411 espresso, warm cream ink — a darkroom, not an
-                    inversion. Each theme was picked on its own ground.
+             dark   #14100F near-NEUTRAL deep ground, warm cream ink.
+                    The ground is deliberately almost achromatic (chroma 5)
+                    so the terracotta stamp (chroma 128) and the four
+                    dimension hues can pop off it. The first attempt made
+                    every layer brown — ground, cards, borders and stamp all
+                    within 21 chroma of each other — and the result read as
+                    rusted and faded: the masthead sat at 1.10:1 against the
+                    paper and was effectively invisible. On a dark ground the
+                    saturation has to live in the STRUCTURE, not the field.
+           Surface separation in dark is tuned by L*, not contrast ratio:
+           near black, the +0.05 in the WCAG formula swamps small steps, so
+           a ratio of 1.09 and 1.25 look identical. Cards lift by dL* 8.5,
+           matching the light theme's 9.5.
            Violet accent is excluded from the four dimension hues so it can
            never be mistaken for one — colour here encodes WHICH TENSOR AXIS
            you are looking at, and that meaning is spent nowhere else.
@@ -134,43 +145,43 @@
    for `background` while working for `color`. This is unambiguous. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --paper: #1B1411;
-    --surface: #251C18;
-    --surface-2: #33261E;
-    --ink: #F3E5CD;
-    --ink-2: #CBB89B;
-    --ink-3: #A38C74;
-    --ink-4: #7C6A57;
-    --line: #3B2C23;
-    --line-2: #6B4B3A;
-    --stamp: #2A1B15;
-    --stamp-ink: #F3E5CD;
-    --dot: rgba(243, 229, 205, .05);
-    --shadow-hue: rgba(0, 0, 0, .55);
-    --accent: #C79BFF;
-    --accent-2: #DCBEFF;
-    --accent-bg: #2B1E3C;
-    --dim-1: #F79B4B;
-    --dim-2: #7FB2FF;
-    --dim-3: #F58ABF;
-    --dim-4: #A8CF54;
-    --dim-1-bg: #34220F;
-    --dim-2-bg: #16243D;
-    --dim-3-bg: #331A28;
-    --dim-4-bg: #232E12;
+    --paper: #14100F;
+    --surface: #282120;
+    --surface-2: #3A312B;
+    --ink: #F9F0E4;
+    --ink-2: #DBCBB8;
+    --ink-3: #AC998B;
+    --ink-4: #82736A;
+    --line: #3A312B;
+    --line-2: #AD8468;
+    --stamp: #B34B33;
+    --stamp-ink: #FFF1E0;
+    --dot: rgba(249, 240, 228, .075);
+    --shadow-hue: rgba(0, 0, 0, .72);
+    --accent: #CBA4FF;
+    --accent-2: #E2CAFF;
+    --accent-bg: #32234E;
+    --dim-1: #FF9A3C;
+    --dim-2: #6FB4FF;
+    --dim-3: #FF7BC0;
+    --dim-4: #A8E05F;
+    --dim-1-bg: #4A2B12;
+    --dim-2-bg: #1B3159;
+    --dim-3-bg: #4A2135;
+    --dim-4-bg: #2C4117;
     --ok: #8CD46A;
-    --warn: #F0BC55;
-    --stop: #FF8A72;
-    --ok-bg: #1E2C14;
-    --warn-bg: #33260F;
-    --stop-bg: #331812;
-    --syn-comment: #96806B;
-    --syn-key: #F79AD2;
-    --syn-str: #A8CF54;
-    --syn-num: #F0BC55;
-    --syn-fn: #7FB2FF;
-    --syn-builtin: #C79BFF;
-    --syn-shape: #5CD9C4;
+    --warn: #F5C059;
+    --stop: #FF8E76;
+    --ok-bg: #22461F;
+    --warn-bg: #463514;
+    --stop-bg: #4C231A;
+    --syn-comment: #9C8878;
+    --syn-key: #FF9AD4;
+    --syn-str: #A8E05F;
+    --syn-num: #F5C059;
+    --syn-fn: #6FB4FF;
+    --syn-builtin: #CBA4FF;
+    --syn-shape: #4FE0C6;
   }
 }
 
@@ -216,43 +227,43 @@
 }
 
 :root[data-theme="dark"] {
-  --paper: #1B1411;
-  --surface: #251C18;
-  --surface-2: #33261E;
-  --ink: #F3E5CD;
-  --ink-2: #CBB89B;
-  --ink-3: #A38C74;
-  --ink-4: #7C6A57;
-  --line: #3B2C23;
-  --line-2: #6B4B3A;
-  --stamp: #2A1B15;
-  --stamp-ink: #F3E5CD;
-  --dot: rgba(243, 229, 205, .05);
-  --shadow-hue: rgba(0, 0, 0, .55);
-  --accent: #C79BFF;
-  --accent-2: #DCBEFF;
-  --accent-bg: #2B1E3C;
-  --dim-1: #F79B4B;
-  --dim-2: #7FB2FF;
-  --dim-3: #F58ABF;
-  --dim-4: #A8CF54;
-  --dim-1-bg: #34220F;
-  --dim-2-bg: #16243D;
-  --dim-3-bg: #331A28;
-  --dim-4-bg: #232E12;
+  --paper: #14100F;
+  --surface: #282120;
+  --surface-2: #3A312B;
+  --ink: #F9F0E4;
+  --ink-2: #DBCBB8;
+  --ink-3: #AC998B;
+  --ink-4: #82736A;
+  --line: #3A312B;
+  --line-2: #AD8468;
+  --stamp: #B34B33;
+  --stamp-ink: #FFF1E0;
+  --dot: rgba(249, 240, 228, .075);
+  --shadow-hue: rgba(0, 0, 0, .72);
+  --accent: #CBA4FF;
+  --accent-2: #E2CAFF;
+  --accent-bg: #32234E;
+  --dim-1: #FF9A3C;
+  --dim-2: #6FB4FF;
+  --dim-3: #FF7BC0;
+  --dim-4: #A8E05F;
+  --dim-1-bg: #4A2B12;
+  --dim-2-bg: #1B3159;
+  --dim-3-bg: #4A2135;
+  --dim-4-bg: #2C4117;
   --ok: #8CD46A;
-  --warn: #F0BC55;
-  --stop: #FF8A72;
-  --ok-bg: #1E2C14;
-  --warn-bg: #33260F;
-  --stop-bg: #331812;
-  --syn-comment: #96806B;
-  --syn-key: #F79AD2;
-  --syn-str: #A8CF54;
-  --syn-num: #F0BC55;
-  --syn-fn: #7FB2FF;
-  --syn-builtin: #C79BFF;
-  --syn-shape: #5CD9C4;
+  --warn: #F5C059;
+  --stop: #FF8E76;
+  --ok-bg: #22461F;
+  --warn-bg: #463514;
+  --stop-bg: #4C231A;
+  --syn-comment: #9C8878;
+  --syn-key: #FF9AD4;
+  --syn-str: #A8E05F;
+  --syn-num: #F5C059;
+  --syn-fn: #6FB4FF;
+  --syn-builtin: #CBA4FF;
+  --syn-shape: #4FE0C6;
 }
 
 /* ------------------------------------------------------------------ base */
@@ -570,10 +581,6 @@ main > * { max-width: min(var(--measure), 100%); }
   letter-spacing: .14em; text-transform: uppercase;
   color: var(--stamp); margin-bottom: .3rem;
 }
-:root[data-theme="dark"] .mn .k { color: var(--ink-4); }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) .mn .k { color: var(--ink-4); }
-}
 /* divider between fused sections of one margin note */
 .mn .sep {
   height: 0; border-top: var(--rule) solid var(--line);
@@ -717,7 +724,6 @@ pre .sh { color: var(--syn-shape); font-style: normal; font-weight: 700; }
 }
 pre:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
 .copy-btn:hover { color: var(--stamp-ink); background: var(--stamp); border-color: var(--stamp); }
-:root[data-theme="dark"] .copy-btn:hover { color: var(--accent); background: var(--accent-bg); border-color: var(--accent); }
 
 /* ---------------------------------------------------------------- math */
 
@@ -839,8 +845,6 @@ th {
   border-bottom: 0;
   white-space: nowrap;
 }
-:root[data-theme="dark"] th { color: var(--ink-2); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme]) th { color: var(--ink-2); } }
 tbody tr:hover { background: var(--surface-2); }
 td code { font-size: .82em; }
 td.num, th.num { text-align: right; font-family: var(--mono); }
@@ -956,10 +960,6 @@ button.btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
   border-radius: var(--radius);
   padding: .32rem .6rem;
   margin: -.2rem 0 1.1rem; width: fit-content;
-}
-:root[data-theme="dark"] .quiz > .qt { color: var(--dim-1); background: var(--dim-1-bg); }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) .quiz > .qt { color: var(--dim-1); background: var(--dim-1-bg); }
 }
 .qitem { margin-bottom: 1.6rem; }
 .qitem:last-child { margin-bottom: 0; }
@@ -1204,10 +1204,6 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
   letter-spacing: .17em; text-transform: uppercase;
   color: var(--stamp-ink); background: var(--stamp);
   border-radius: var(--radius); padding: .22rem .5rem;
-}
-:root[data-theme="dark"] .part > .ph .pn { color: var(--accent); background: var(--accent-bg); }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) .part > .ph .pn { color: var(--accent); background: var(--accent-bg); }
 }
 .part > .ph .pt { font-family: var(--display); font-size: 1.2rem; font-weight: 700; letter-spacing: -.025em; }
 .part > .ph .pd { margin-left: auto; font-family: var(--label); font-size: .7rem; font-weight: 500; color: var(--ink-3); }
