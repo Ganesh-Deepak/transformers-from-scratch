@@ -171,8 +171,8 @@ class BPETokenizer:
 
 class CharTokenizer:
     """
-    Character-level tokenizer. Not used by real models, but it is what Chapter 10
-    Exercise 10.1 uses: with vocab ~65 a tiny model reaches val loss ~1.5 on
+    Character-level tokenizer. Not used by real models, but it is what Chapter 11
+    Exercise 11.1 uses: with vocab ~65 a tiny model reaches val loss ~1.5 on
     Shakespeare, and the samples look far better than BPE at the same compute
     (each token is one character, so the model never emits a broken word-fragment).
     """

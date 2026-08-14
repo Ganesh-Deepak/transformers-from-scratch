@@ -1,5 +1,5 @@
 """
-Training loop — Chapter 10.
+Training loop — Chapter 11.
 
     python -m tfs.train                      # trains a ~3M model on Tiny Shakespeare
     python -m tfs.train --steps 2000 --d_model 256
@@ -73,7 +73,7 @@ def make_dataset(text: str, tok: BPETokenizer, val_frac: float = 0.1):
 
 def get_batch(data: torch.Tensor, B: int, T: int, device="cpu"):
     """
-    Chapter 10.5 — packed sampling, no padding.
+    Chapter 11.5 — packed sampling, no padding.
 
     Returns ONE tensor (B, T). Do NOT also shift it here.
 
@@ -88,7 +88,7 @@ def get_batch(data: torch.Tensor, B: int, T: int, device="cpu"):
     return torch.stack([data[i:i + T] for i in ix]).to(device)
 
 
-# ------------------------------------------------------- lr schedule (Ch 10.3)
+# ------------------------------------------------------- lr schedule (Ch 11.3)
 
 def lr_at(step, base_lr, warmup, total, min_ratio=0.1):
     if step < warmup:
@@ -102,7 +102,7 @@ def lr_at(step, base_lr, warmup, total, min_ratio=0.1):
 # ------------------------------------------------------------- optimizer
 
 def make_optimizer(model, lr, weight_decay=0.1, betas=(0.9, 0.95)):
-    """Ch 10.2 — decay 2-D weights only; never biases or norm gains."""
+    """Ch 11.2 — decay 2-D weights only; never biases or norm gains."""
     decay, no_decay = [], []
     for p in model.parameters():
         if not p.requires_grad:
@@ -156,11 +156,11 @@ def train(cfg: Config, train_data, val_data, steps=3000, B=16, T=128,
     log(f"model: {n:,} parameters  ({n / 1e6:.2f} M)")
     log(f"expected initial loss = ln({cfg.vocab_size}) = {math.log(cfg.vocab_size):.3f}")
 
-    # Ch 17: a rough tokens-per-parameter check. Far below ~20 means you will
+    # Ch 18: a rough tokens-per-parameter check. Far below ~20 means you will
     # overfit long before you converge.
     tok_per_param = len(train_data) / n
     log(f"train tokens/param = {tok_per_param:.2f}"
-        + ("   <- VERY LOW: expect overfitting (see Ch 17)" if tok_per_param < 5 else ""))
+        + ("   <- VERY LOW: expect overfitting (see Ch 18)" if tok_per_param < 5 else ""))
 
     opt = make_optimizer(model, lr)
     history = []
@@ -219,7 +219,7 @@ def main():
     ap.add_argument("--save", type=str, default="")
     ap.add_argument("--char", action="store_true",
                     help="character-level tokenizer instead of BPE. This is what "
-                         "Chapter 10 Exercise 10.1 uses; target val loss ~1.5.")
+                         "Chapter 11 Exercise 11.1 uses; target val loss ~1.5.")
     args = ap.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):

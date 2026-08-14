@@ -3,23 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch 21 — DPO Variants, GRPO, and RLVR</title>
+<title>Ch 22 — DPO Variants, GRPO, and RLVR</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=7">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 <main>
 
-<h1>21 · DPO Variants, GRPO, and RLVR</h1>
+<h1>22 · DPO Variants, GRPO, and RLVR</h1>
 <p class="lead">
 DPO opened a design space, and the field explored it thoroughly. Then reasoning models arrived and changed
 the question entirely: when you can <em>verify</em> whether an answer is correct, you don't need preferences
 at all. This chapter covers both branches.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch20-dpo.html">Ch&nbsp;20</a> &mdash; DPO<br><a href="ch19-sft-rlhf.html">Ch&nbsp;19</a> &mdash; PPO<div class="sep"></div><span class="k">Leads to</span><a href="ch22-capstone.html">Ch&nbsp;22</a> &mdash; align your own model<div class="sep"></div><span class="k">Why this chapter</span>When you can verify an answer, you do not need preferences at all.</div>
-<h2>21.1 · The DPO family</h2>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch21-dpo.html">Ch&nbsp;21</a> &mdash; DPO<br><a href="ch20-sft-rlhf.html">Ch&nbsp;20</a> &mdash; PPO<div class="sep"></div><span class="k">Leads to</span><a href="ch23-capstone.html">Ch&nbsp;23</a> &mdash; align your own model<div class="sep"></div><span class="k">Why this chapter</span>When you can verify an answer, you do not need preferences at all.</div>
+<h2>22.1 · The DPO family</h2>
 
 <p>Every variant below changes one specific thing about the DPO loss. Knowing <i>which</i> thing tells you
 when to reach for it.</p>
@@ -71,7 +71,7 @@ Simpler and often stronger than DPO on benchmarks.</p>
 </table>
 </div>
 
-<h2>21.2 · RLVR — reinforcement learning with verifiable rewards</h2>
+<h2>22.2 · RLVR — reinforcement learning with verifiable rewards</h2>
 
 <div class="box intuition">
 <span class="t">The shift</span>
@@ -89,14 +89,14 @@ usual way, needs no preference data, and is exactly correct by construction.</p>
     return r
 </code></pre>
 
-<p>This removes the whole reward-model failure surface from Chapter 19 — no length bias, no format bias, no
+<p>This removes the whole reward-model failure surface from Chapter 20 — no length bias, no format bias, no
 annotator noise ceiling. The catch is scope: it only works where correctness is checkable. Maths, code,
 formal logic, structured extraction — yes. "Write a moving poem" — no.</p>
 
-<h2>21.3 · GRPO — Group Relative Policy Optimization</h2>
+<h2>22.3 · GRPO — Group Relative Policy Optimization</h2>
 
 <p>DeepSeek's algorithm, introduced in DeepSeekMath and used to train R1. It removes PPO's <b>value model</b>
-— the fourth model from Chapter 19 — by a simple observation.</p>
+— the fourth model from Chapter 20 — by a simple observation.</p>
 
 <div class="box intuition">
 <span class="t">The idea</span>
@@ -247,7 +247,7 @@ simply wrong.</li>
     <div class="opt">RLVR doesn't use RL</div>
     <div class="opt">Verifiable tasks are easier</div>
   </div>
-  <div class="expl"><b>The reward is exact, not approximated.</b> Chapter 19's hacking arises because the
+  <div class="expl"><b>The reward is exact, not approximated.</b> Chapter 20's hacking arises because the
   reward model is a finite-sample fit to human preference. A unit test has no such gap. Caveat: RLVR has its
   <i>own</i> hacking modes — models that special-case the visible tests, or produce right answers via wrong
   reasoning — so "less prone", not immune.</div>
@@ -268,7 +268,7 @@ simply wrong.</li>
 </div>
 </div>
 
-<h2>21.4 · How to choose</h2>
+<h2>22.4 · How to choose</h2>
 
 <div class="tw">
 <table>
@@ -293,10 +293,10 @@ capabilities are trained by different mechanisms, and the verifiable-reward stag
 capability gains of the last two years have come from.</p>
 </div>
 
-<h2>21.5 · Exercises</h2>
+<h2>22.5 · Exercises</h2>
 
 <div class="exercise">
-<div class="eh"><span class="n">21.1</span><span class="ti">Implement four losses, compare on one dataset</span><span class="lvl">code</span></div>
+<div class="eh"><span class="n">22.1</span><span class="ti">Implement four losses, compare on one dataset</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>Implement DPO, IPO, SimPO and ORPO as four loss functions with a shared training harness. Run all four
 on the same SFT checkpoint and preference data with matched compute. Report: ranking accuracy on held-out
@@ -310,7 +310,7 @@ which is why length-controlled evaluation exists. Always report both.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">21.2</span><span class="ti">GRPO on a verifiable task</span><span class="lvl">the interesting one</span></div>
+<div class="eh"><span class="n">22.2</span><span class="ti">GRPO on a verifiable task</span><span class="lvl">the interesting one</span></div>
 <div class="eb">
 <p>Take a small instruct model and train it with GRPO on GSM8K-style arithmetic. Reward: +1 correct answer,
 +0.1 correct <code>&lt;think&gt;…&lt;/think&gt;</code> format. Use G=8, β=0.04.</p>
@@ -329,7 +329,7 @@ decent — either all-correct or all-wrong. That's a large fraction of your gene
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">21.3</span><span class="ti">Hack your own reward function</span><span class="lvl">thinking</span></div>
+<div class="eh"><span class="n">22.3</span><span class="ti">Hack your own reward function</span><span class="lvl">thinking</span></div>
 <div class="eb">
 <p>Write a code-generation reward that runs 3 visible unit tests. Train with GRPO. Then evaluate on 20
 <b>held-out</b> tests the model never saw.</p>
@@ -349,14 +349,14 @@ testing, penalising hardcoded literals — are the same ones you'd use against a
 <li><a href="https://arxiv.org/abs/2503.14476">Yu et al. 2025 — DAPO</a></li>
 <li><a href="https://arxiv.org/abs/2310.12036">Azar et al. 2023 — IPO</a> · <a href="https://arxiv.org/abs/2402.01306">Ethayarajh et al. 2024 — KTO</a> · <a href="https://arxiv.org/abs/2403.07691">Hong et al. 2024 — ORPO</a> · <a href="https://arxiv.org/abs/2405.14734">Meng et al. 2024 — SimPO</a></li>
 <li><a href="https://www.turingpost.com/p/reasoning-rl-in-2026">Turing Post — Reasoning RL in 2026</a></li>
-<li>Companion notebook: <code>notebooks/21_grpo.ipynb</code></li>
+<li>Companion notebook: <code>notebooks/22_grpo.ipynb</code></li>
 </ul>
 
 </main>
 
-<script src="assets/chapters.js?v=7"></script>
-<script src="assets/course.js?v=7"></script>
-<script src="assets/viz.js?v=7"></script>
-<script>initChapter("21");</script>
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
+<script src="assets/viz.js?v=9"></script>
+<script>initChapter("22");</script>
 </body>
 </html>

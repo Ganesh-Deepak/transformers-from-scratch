@@ -6,7 +6,7 @@
 <title>Ch 4 — Embeddings and the Residual Stream</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=7">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 <main>
@@ -342,7 +342,7 @@ Then time both for <code>V=50000</code>. What's the speed ratio, and where does 
 <p style="margin-bottom:0">They match exactly. The lookup is typically 100–1000× faster because the matmul
 does <code>V×C</code> multiply-adds (49,999 of every 50,000 by zero) plus materialises a
 <code>(B, T, V)</code> one-hot tensor, while the lookup does <code>C</code> memory reads. It's the same
-computation with completely different <i>arithmetic intensity</i> — a theme that returns in Chapter 12.</p>
+computation with completely different <i>arithmetic intensity</i> — a theme that returns in Chapter 13.</p>
 </div></details>
 </div></div>
 
@@ -396,9 +396,9 @@ problem, and it's much more convincing than reading about it.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=7"></script>
-<script src="assets/course.js?v=7"></script>
-<script src="assets/viz.js?v=7"></script>
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
+<script src="assets/viz.js?v=9"></script>
 <script>initChapter("04");</script>
 </body>
 </html>

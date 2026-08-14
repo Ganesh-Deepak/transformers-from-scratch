@@ -6,7 +6,7 @@
 <title>Ch 8 — The Transformer Block</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=7">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 <main>
@@ -18,7 +18,7 @@ two-thirds of the parameters — is a per-token MLP. This chapter assembles both
 stacked 32, 80, or 120 times, and explains every design choice that has changed since 2017.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; residual stream<br><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; the attention sublayer<div class="sep"></div><span class="k">Leads to</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; stack this and you have a model<br><a href="ch16-moe.html">Ch&nbsp;16</a> &mdash; MoE replaces exactly this chapter's MLP<div class="sep"></div><span class="k">Why this chapter</span>Communicate, then compute. Repeat 32 times.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; residual stream<br><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; the attention sublayer<div class="sep"></div><span class="k">Leads to</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; stack this and you have a model<br><a href="ch17-moe.html">Ch&nbsp;17</a> &mdash; MoE replaces exactly this chapter's MLP<div class="sep"></div><span class="k">Why this chapter</span>Communicate, then compute. Repeat 32 times.</div>
 <h2>8.1 · The block, in four lines</h2>
 
 <pre><code>def block(x):
@@ -347,7 +347,7 @@ quote, and it's an honest summary of the state of activation-function research.<
   </div>
   <div class="expl"><b>≈ 4.3B.</b> Three matrices of 4096×11008 = 45.09M each → 135.3M per layer ×
   32 layers = <b>4.33B</b>. Out of 6.7B total, that's <b>65%</b> of the model in the MLPs — confirming the
-  "two-thirds" rule of thumb. This is also why MoE (Chapter 16) targets the MLP and not attention.</div>
+  "two-thirds" rule of thumb. This is also why MoE (Chapter 17) targets the MLP and not attention.</div>
 </div>
 </div>
 
@@ -479,9 +479,9 @@ what sparse autoencoders were invented to untangle, and it's the frontier of int
 
 </main>
 
-<script src="assets/chapters.js?v=7"></script>
-<script src="assets/course.js?v=7"></script>
-<script src="assets/viz.js?v=7"></script>
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
+<script src="assets/viz.js?v=9"></script>
 <script>initChapter("08");</script>
 </body>
 </html>

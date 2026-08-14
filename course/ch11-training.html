@@ -3,23 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch 10 — Training a Transformer</title>
+<title>Ch 11 — Training a Transformer</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=7">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 <main>
 
-<h1>10 · Training a Transformer</h1>
+<h1>11 · Training a Transformer</h1>
 <p class="lead">
 You have a model that maps tokens to logits. Now make it good. This chapter covers the loss, the optimizer,
 the schedule, and the dozen practical details that separate a run that works from one that spikes at step
 4000 and never recovers.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; you need a model before you can train one<div class="sep"></div><span class="k">Leads to</span><a href="ch19-sft-rlhf.html">Ch&nbsp;19</a> &mdash; fine-tuning is this loop with different data<br><a href="ch22-capstone.html">Ch&nbsp;22</a> &mdash; the capstone trains for real<div class="sep"></div><span class="k">Why this chapter</span>The loss, the optimizer, the schedule, and the bugs a good loss curve hides.</div>
-<h2>10.1 · The objective: predict the next token</h2>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; you need a model before you can train one<div class="sep"></div><span class="k">Leads to</span><a href="ch20-sft-rlhf.html">Ch&nbsp;20</a> &mdash; fine-tuning is this loop with different data<br><a href="ch23-capstone.html">Ch&nbsp;23</a> &mdash; the capstone trains for real<div class="sep"></div><span class="k">Why this chapter</span>The loss, the optimizer, the schedule, and the bugs a good loss curve hides.</div>
+<h2>11.1 · The objective: predict the next token</h2>
 
 <p>That's the whole thing. There is no clever auxiliary loss in standard pretraining.</p>
 
@@ -118,7 +118,7 @@ flawed) output, a distribution it never trained on. This is one reason long gene
 why RL-based post-training (Part VI) helps — it trains on the model's own rollouts.</p>
 </div>
 
-<h2>10.2 · The optimizer: AdamW</h2>
+<h2>11.2 · The optimizer: AdamW</h2>
 
 <p>Plain SGD does not train transformers well. Adam does, and AdamW is the correction that made it right.</p>
 
@@ -188,7 +188,7 @@ scale, which is the strongest evidence so far that it isn't just a small-model e
 but worth knowing about.</p>
 </div>
 
-<h2>10.3 · The learning-rate schedule</h2>
+<h2>11.3 · The learning-rate schedule</h2>
 
 <p>A constant learning rate is leaving a lot on the table. The standard is <b>linear warmup → cosine
 decay</b>:</p>
@@ -238,7 +238,7 @@ training and only decays over the last ~10%. You can stop at any point, decay br
 which makes continued pretraining and mid-run data changes far more practical.</p>
 </div>
 
-<h2>10.4 · The training loop, complete</h2>
+<h2>11.4 · The training loop, complete</h2>
 
 <pre><code>model = GPT(cfg).to(device)
 model = torch.compile(model)                    # 1.3-2× speedup, one line
@@ -296,7 +296,7 @@ all — you just did 8× the work for one micro-batch's gradient.</li>
 </ol>
 </div>
 
-<h2>10.5 · Data: packing</h2>
+<h2>11.5 · Data: packing</h2>
 
 <p>Documents have different lengths. Padding each to <code>T</code> wastes compute on <code>&lt;pad&gt;</code>
 tokens — sometimes 50% of it. The standard fix is to <b>concatenate everything and slice</b>:</p>
@@ -359,7 +359,7 @@ FlashAttention's varlen API and PyTorch FlexAttention).</p>
 </div>
 </div>
 
-<h2>10.6 · Debugging a training run</h2>
+<h2>11.6 · Debugging a training run</h2>
 
 <div class="box gotcha">
 <span class="t">Case study: a real bug this course shipped, and what caught it</span>
@@ -418,10 +418,10 @@ errors, broken masks, frozen parameters, and detached graphs.</p>
 </table>
 </div>
 
-<h2>10.7 · Exercises</h2>
+<h2>11.7 · Exercises</h2>
 
 <div class="exercise">
-<div class="eh"><span class="n">10.1</span><span class="ti">Train a real language model</span><span class="lvl">the main event</span></div>
+<div class="eh"><span class="n">11.1</span><span class="ti">Train a real language model</span><span class="lvl">the main event</span></div>
 <div class="eb">
 <p>Train the GPT from Chapter 9 on the Tiny Shakespeare dataset (~1 MB, downloaded automatically).</p>
 <pre><code class="nohl">python -m tfs.train --char --steps 2500 --d_model 192 --n_layer 6 --batch 32 --lr 1e-3</code></pre>
@@ -444,7 +444,7 @@ errors, broken masks, frozen parameters, and detached graphs.</p>
 </div>
 <p style="margin-bottom:0"><b>Target: val ≈ 1.51 (≈2.18 bits/byte), reached around step 1250.</b> Past
 that the model overfits — Tiny Shakespeare has ~1 M characters against 2.4 M parameters, i.e.
-<b>0.42 tokens per parameter</b> where Chapter 17 says you want ~20. Note the val curve goes
+<b>0.42 tokens per parameter</b> where Chapter 18 says you want ~20. Note the val curve goes
 <i>flat</i> while train keeps falling; that divergence is the signal, not any single number.</p>
 </div>
 
@@ -509,12 +509,12 @@ plausible and semantically empty. And it still degrades —
 </ul>
 <p style="margin-bottom:0">That gap between <b>form</b> and <b>meaning</b> at small scale is the genuinely
 instructive thing here. Also note: if your output looks like the <i>character soup</i> in the case-study
-box in §10.6 rather than this, you have a bug, not an under-trained model.</p>
+box in §11.6 rather than this, you have a bug, not an under-trained model.</p>
 </div></details>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">10.2</span><span class="ti">Ablate the schedule</span><span class="lvl">code</span></div>
+<div class="eh"><span class="n">11.2</span><span class="ti">Ablate the schedule</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>Train the same model 4 ways for the same number of steps: (a) constant LR, (b) cosine without warmup,
 (c) warmup + cosine, (d) warmup + cosine at 10× the LR. Plot all four loss curves on one chart.</p>
@@ -527,7 +527,7 @@ is why nobody skips it.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">10.3</span><span class="ti">Plant a bug, then find it</span><span class="lvl">essential</span></div>
+<div class="eh"><span class="n">11.3</span><span class="ti">Plant a bug, then find it</span><span class="lvl">essential</span></div>
 <div class="eb">
 <p>Introduce each bug below one at a time, run 200 steps, and record the loss-curve signature. Build
 yourself a lookup table so you can diagnose these by sight later.</p>
@@ -561,14 +561,14 @@ Never trust a loss curve alone — always generate samples and always check loss
 <li><a href="https://github.com/google-research/tuning_playbook">Google — Deep Learning Tuning Playbook</a> — the best practical guide to hyperparameters that exists.</li>
 <li><a href="https://kellerjordan.github.io/posts/muon/">Keller Jordan — Muon optimizer</a></li>
 <li><a href="https://arxiv.org/abs/2404.06395">Hu et al. 2024 — MiniCPM</a> (the WSD schedule)</li>
-<li>Companion notebook: <code>notebooks/10_training.ipynb</code></li>
+<li>Companion notebook: <code>notebooks/11_training.ipynb</code></li>
 </ul>
 
 </main>
 
-<script src="assets/chapters.js?v=7"></script>
-<script src="assets/course.js?v=7"></script>
-<script src="assets/viz.js?v=7"></script>
-<script>initChapter("10");</script>
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
+<script src="assets/viz.js?v=9"></script>
+<script>initChapter("11");</script>
 </body>
 </html>

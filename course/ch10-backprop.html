@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch 23 — The Backward Pass, Derived</title>
+<title>Ch 10 — The Backward Pass, Derived</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=7">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 <main>
 
-<h1>23 · The Backward Pass, Derived</h1>
+<h1>10 · The Backward Pass, Derived</h1>
 <p class="lead">
 Everything so far said "autograd handles it". That is a hole. This chapter derives every gradient in
 a transformer by hand — softmax, cross-entropy, RMSNorm, attention — and checks each one against
 autograd. After this you can implement a backward pass, debug a wrong one, and read a CUDA kernel.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the forward attention you are about to differentiate<br><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; RMSNorm and the residual<br><a href="ch10-training.html">Ch&nbsp;10</a> &mdash; where these gradients get used<div class="sep"></div><span class="k">Leads to</span><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; why the backward pass can recompute tiles<div class="sep"></div><span class="k">Why this chapter</span>The layer under "autograd handles it". Nothing here is optional if you want to work below the framework.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the forward attention you are about to differentiate<br><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; RMSNorm and the residual<br><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; where these gradients get used<div class="sep"></div><span class="k">Leads to</span><a href="ch15-flashattention.html">Ch&nbsp;15</a> &mdash; why the backward pass can recompute tiles<div class="sep"></div><span class="k">Why this chapter</span>The layer under "autograd handles it". Nothing here is optional if you want to work below the framework.</div>
 
 <div class="box intuition">
 <span class="t">The one idea in this chapter</span>
@@ -28,7 +28,7 @@ autograd. After this you can implement a backward pass, debug a wrong one, and r
 question. The chain rule stitches them together. There is no global magic.</p>
 </div>
 
-<h2>23.1 · The only rule</h2>
+<h2>10.1 · The only rule</h2>
 
 <p>Write the network as a chain of functions. The loss is a scalar at the end:</p>
 
@@ -71,7 +71,7 @@ contract the indices that gives those shapes — <b>which is often enough to der
 must multiply by something <code>(n,k)</code>, and the only candidate is <code>B<sup>T</sup></code>.
 The formula is forced.</p>
 
-<h2>23.2 · Softmax: the dense Jacobian</h2>
+<h2>10.2 · Softmax: the dense Jacobian</h2>
 
 <p>Softmax is the first genuinely interesting one, because <b>every output depends on every input</b>.
 So its derivative is not a vector but a full <span class="math">(n, n)</span> Jacobian.</p>
@@ -140,7 +140,7 @@ s = x.softmax(0); g = torch.tensor([0.3, -1.2, 0.7])
 s.backward(g)
 assert torch.allclose(x.grad, softmax_backward(s.detach(), g), atol=1e-6)</code></pre>
 
-<h2>23.3 · Cross-entropy + softmax: why it collapses to <code>p − y</code></h2>
+<h2>10.3 · Cross-entropy + softmax: why it collapses to <code>p − y</code></h2>
 
 <p>Here is the most satisfying result in the chapter. Softmax alone has that dense Jacobian. Compose it
 with cross-entropy and almost everything cancels.</p>
@@ -191,7 +191,7 @@ form. Feed it probabilities and you apply softmax twice — the loss still decre
 works, while the gradients are wrong.</p>
 </div>
 
-<h2>23.4 · RMSNorm: where the gradient gets a correction term</h2>
+<h2>10.4 · RMSNorm: where the gradient gets a correction term</h2>
 
 <p>Forward (dropping <span class="math">γ</span> for clarity):
 <span class="math">y = x / r</span> where <span class="math">r = √(mean(x²))</span>.</p>
@@ -234,7 +234,7 @@ gamma = torch.ones(4); g = torch.tensor([1., 0., 0., 0.])
 assert torch.allclose(x.grad, rmsnorm_backward(x.detach(), g, gamma), atol=1e-6)
 assert abs(torch.dot(x.grad, x.detach())) < 1e-5          # orthogonal</code></pre>
 
-<h2>23.5 · Attention backward, all three gradients</h2>
+<h2>10.5 · Attention backward, all three gradients</h2>
 
 <p>Now assemble. Forward:
 <span class="math">S = QK<sup>T</sup>/√d</span>,
@@ -252,7 +252,7 @@ dP = dO @ Vᵀ           (T,d)(d,T)  -> (T,T) ✓</code></pre>
 </div></div>
 
 <div class="step"><div class="i">2</div><div>
-<b>Through the softmax</b>, row by row, using §23.2's VJP:
+<b>Through the softmax</b>, row by row, using §10.2's VJP:
 <pre style="margin:.4rem 0"><code class="nohl">dS = P ⊙ (dP − rowsum(dP ⊙ P))</code></pre>
 </div></div>
 
@@ -277,7 +277,7 @@ dK = dSᵀ @ Q / √d</code></pre>
     return dQ, dK, dV</code></pre>
 
 <div class="box intuition">
-<span class="t">Now Chapter 14 makes sense at the kernel level</span>
+<span class="t">Now Chapter 15 makes sense at the kernel level</span>
 <p style="margin-bottom:0">Look at what step 2 needs: <b><code>P</code> and a row sum.</b> No
 <span class="math">(T,T)</span> Jacobian is ever constructed — the softmax backward is elementwise plus
 one reduction. That is <i>exactly</i> why FlashAttention can throw <code>P</code> away in the forward
@@ -286,7 +286,7 @@ corresponding tile of <code>P</code> and a running row statistic. Without this s
 recomputation trick would be impossible.</p>
 </div>
 
-<h2>23.6 · The residual connection, quantified</h2>
+<h2>10.6 · The residual connection, quantified</h2>
 
 <p>Chapter 4 asserted that <span class="math">y = x + f(x)</span> gives
 <span class="math">∂y/∂x = 1 + f′(x)</span>. Here is what that does over depth.</p>
@@ -355,10 +355,10 @@ Verified: <code>f(x)=0.3x²</code> at <code>x=2</code> gives <code>f′=1.2</cod
 </div>
 </div>
 
-<h2>23.7 · Exercises</h2>
+<h2>10.7 · Exercises</h2>
 
 <div class="exercise">
-<div class="eh"><span class="n">23.1</span><span class="ti">Write backward for every layer, check against autograd</span><span class="lvl">essential</span></div>
+<div class="eh"><span class="n">10.1</span><span class="ti">Write backward for every layer, check against autograd</span><span class="lvl">essential</span></div>
 <div class="eb">
 <p>Implement <code>softmax_backward</code>, <code>rmsnorm_backward</code>, <code>attention_backward</code>
 and a linear layer's backward. Verify each against autograd on random inputs:</p>
@@ -376,7 +376,7 @@ hide a genuinely wrong formula behind a loose tolerance.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">23.2</span><span class="ti">Gradient checking from first principles</span><span class="lvl">essential</span></div>
+<div class="eh"><span class="n">10.2</span><span class="ti">Gradient checking from first principles</span><span class="lvl">essential</span></div>
 <div class="eb">
 <p>Before autograd existed, this is how everyone verified a backward pass. Central differences:</p>
 <div class="mathblock" style="margin:.6rem 0;font-size:1em">
@@ -405,7 +405,7 @@ wrong.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">23.3</span><span class="ti">Measure the residual's effect on gradient flow</span><span class="lvl">code</span></div>
+<div class="eh"><span class="n">10.3</span><span class="ti">Measure the residual's effect on gradient flow</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>Build a 40-layer stack of <code>x -&gt; tanh(Wx)</code> with and without a residual connection. Do one
 backward pass and plot <code>grad.norm()</code> per layer on a log axis.</p>
@@ -418,7 +418,7 @@ convincing than any prose about it.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">23.4</span><span class="ti">Break cross-entropy on purpose</span><span class="lvl">thinking</span></div>
+<div class="eh"><span class="n">10.4</span><span class="ti">Break cross-entropy on purpose</span><span class="lvl">thinking</span></div>
 <div class="eb">
 <p>Compute the loss two ways and compare both the value <i>and</i> the gradient:</p>
 <pre><code>logits = torch.randn(4, 10, requires_grad=True)
@@ -452,14 +452,14 @@ the difference between a number and <code>inf</code>.</li>
 <li><a href="https://www.youtube.com/watch?v=VMj-3S1tku0">Karpathy — building micrograd</a> — autograd from nothing, in 100 lines.</li>
 <li><a href="https://arxiv.org/abs/2205.14135">Dao et al. 2022 — FlashAttention</a>, Appendix B, for the tiled backward pass.</li>
 <li><a href="https://arxiv.org/abs/1502.01852">He et al. 2015</a> — where the variance argument behind initialisation is made.</li>
-<li>Companion notebook: <code>notebooks/23_backprop.ipynb</code></li>
+<li>Companion notebook: <code>notebooks/10_backprop.ipynb</code></li>
 </ul>
 
 </main>
 
-<script src="assets/chapters.js?v=7"></script>
-<script src="assets/course.js?v=7"></script>
-<script src="assets/viz.js?v=7"></script>
-<script>initChapter("23");</script>
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
+<script src="assets/viz.js?v=9"></script>
+<script>initChapter("10");</script>
 </body>
 </html>

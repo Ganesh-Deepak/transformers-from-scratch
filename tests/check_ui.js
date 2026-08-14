@@ -128,7 +128,7 @@ for (const theme of ["light", "dark"]) {
 
 (async () => {
 console.log("\n=== PAGE STRUCTURE ==============================");
-for (const file of ["index.html", "ch01-tensors.html", "ch13-gqa-mla.html", "ch23-backprop.html"]) {
+for (const file of ["index.html", "ch01-tensors.html", "ch14-gqa-mla.html", "ch10-backprop.html"]) {
   const { dom, errors, ready } = load(file, "dark");
   await ready;
   const d = dom.window.document;

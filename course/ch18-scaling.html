@@ -3,23 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch 17 — Scaling Laws and Long Context</title>
+<title>Ch 18 — Scaling Laws and Long Context</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=7">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 <main>
 
-<h1>17 · Scaling Laws and Long Context</h1>
+<h1>18 · Scaling Laws and Long Context</h1>
 <p class="lead">
 Two questions that determine how models get built: <em>given a compute budget, how big should the model
 be?</em> and <em>how do you make a model trained at 4k tokens work at 128k?</em> Both have surprisingly
 clean quantitative answers.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; the 6ND rule<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE frequencies<div class="sep"></div><span class="k">Leads to</span><a href="ch18-frontier.html">Ch&nbsp;18</a> &mdash; long context is why sparse attention exists<div class="sep"></div><span class="k">Why this chapter</span>How big, trained on how much — and why 'supports 1M tokens' is a claim about a config file.</div>
-<h2>17.1 · Scaling laws</h2>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; the 6ND rule<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE frequencies<div class="sep"></div><span class="k">Leads to</span><a href="ch19-frontier.html">Ch&nbsp;19</a> &mdash; long context is why sparse attention exists<div class="sep"></div><span class="k">Why this chapter</span>How big, trained on how much — and why 'supports 1M tokens' is a claim about a config file.</div>
+<h2>18.1 · Scaling laws</h2>
 
 <p>Kaplan et al. (2020) found something remarkable: test loss follows a smooth <b>power law</b> in model
 size, dataset size, and compute — over seven orders of magnitude, with no visible discontinuity.</p>
@@ -179,7 +179,7 @@ almost never jumps.</p>
 </div>
 </div>
 
-<h2>17.2 · Long context</h2>
+<h2>18.2 · Long context</h2>
 
 <p>A model trained at 4k tokens degrades badly at 32k (Chapter 7). RoPE's rotation angles go far outside the
 range it saw. Three families of fix:</p>
@@ -231,7 +231,7 @@ collapses.</b> StreamingLLM's fix (Xiao et al. 2023) is trivial and effective: a
 tokens plus the sliding window. That one change enables stable generation over millions of tokens.</p>
 </div>
 
-<h2>17.3 · Measuring long context honestly</h2>
+<h2>18.3 · Measuring long context honestly</h2>
 
 <div class="box warn">
 <span class="t">"Supports 1M tokens" is a claim about the config file</span>
@@ -285,10 +285,10 @@ most important retrieved chunks at the edges — it measurably improves answers.
 </div>
 </div>
 
-<h2>17.4 · Exercises</h2>
+<h2>18.4 · Exercises</h2>
 
 <div class="exercise">
-<div class="eh"><span class="n">17.1</span><span class="ti">Fit your own scaling law</span><span class="lvl">code</span></div>
+<div class="eh"><span class="n">18.1</span><span class="ti">Fit your own scaling law</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>Train tiny models at 5 sizes (roughly 0.1M, 0.3M, 1M, 3M, 10M non-embedding params) on Tiny Shakespeare
 for a fixed number of tokens each. Plot final loss vs N on log-log axes and fit a power law.</p>
@@ -306,9 +306,9 @@ parameters are.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">17.2</span><span class="ti">Extend a model's context</span><span class="lvl">hard</span></div>
+<div class="eh"><span class="n">18.2</span><span class="ti">Extend a model's context</span><span class="lvl">hard</span></div>
 <div class="eb">
-<p>Take your Chapter 10 model trained at <code>max_T=128</code>. Evaluate perplexity at sequence lengths
+<p>Take your Chapter 11 model trained at <code>max_T=128</code>. Evaluate perplexity at sequence lengths
 128, 256, 512, 1024 with: (a) no change, (b) position interpolation, (c) NTK-aware base scaling, (d) YaRN.
 Plot perplexity vs length for all four.</p>
 <details class="reveal"><summary>Expected shape</summary><div>
@@ -320,7 +320,7 @@ key observation and the reason the field moved past PI.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">17.3</span><span class="ti">Run your own needle test</span><span class="lvl">applied</span></div>
+<div class="eh"><span class="n">18.3</span><span class="ti">Run your own needle test</span><span class="lvl">applied</span></div>
 <div class="eb">
 <p>Build a needle-in-a-haystack harness: insert <code>"The secret code is 7391."</code> at depth
 <code>d ∈ {0%, 10%, …, 100%}</code> into filler text of length <code>L ∈ {1k, 2k, 4k, 8k, 16k}</code>, then
@@ -342,14 +342,14 @@ basis for choosing a model.</p>
 <li><a href="https://arxiv.org/abs/2309.17453">Xiao et al. 2023 — StreamingLLM / attention sinks</a></li>
 <li><a href="https://arxiv.org/abs/2404.06654">Hsieh et al. 2024 — RULER</a> · <a href="https://arxiv.org/abs/2307.03172">Liu et al. 2023 — Lost in the Middle</a></li>
 <li><a href="https://arxiv.org/abs/2304.15004">Schaeffer et al. 2023 — Are Emergent Abilities a Mirage?</a></li>
-<li>Companion notebook: <code>notebooks/17_scaling.ipynb</code></li>
+<li>Companion notebook: <code>notebooks/18_scaling.ipynb</code></li>
 </ul>
 
 </main>
 
-<script src="assets/chapters.js?v=7"></script>
-<script src="assets/course.js?v=7"></script>
-<script src="assets/viz.js?v=7"></script>
-<script>initChapter("17");</script>
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
+<script src="assets/viz.js?v=9"></script>
+<script>initChapter("18");</script>
 </body>
 </html>

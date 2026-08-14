@@ -3,31 +3,31 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch 18 — The 2026 Frontier</title>
+<title>Ch 19 — The 2026 Frontier</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=7">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 <main>
 
-<h1>18 · The 2026 Frontier</h1>
+<h1>19 · The 2026 Frontier</h1>
 <p class="lead">
 Everything so far is settled engineering. This chapter is the moving edge: what changed in the last two
 years, what is actually shipping in production today, and which of it is likely to still matter in three
 years. Read it with more scepticism than the rest of the course.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; MLA<br><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; FlashAttention<br><a href="ch16-moe.html">Ch&nbsp;16</a> &mdash; MoE<br><a href="ch17-scaling.html">Ch&nbsp;17</a> &mdash; long context<div class="sep"></div><span class="k">Leads to</span><a href="ch22-capstone.html">Ch&nbsp;22</a> &mdash; the capstone is a small version of this<div class="sep"></div><span class="k">Why this chapter</span>The moving edge. Read this one with more scepticism than the rest.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch14-gqa-mla.html">Ch&nbsp;14</a> &mdash; MLA<br><a href="ch15-flashattention.html">Ch&nbsp;15</a> &mdash; FlashAttention<br><a href="ch17-moe.html">Ch&nbsp;17</a> &mdash; MoE<br><a href="ch18-scaling.html">Ch&nbsp;18</a> &mdash; long context<div class="sep"></div><span class="k">Leads to</span><a href="ch23-capstone.html">Ch&nbsp;23</a> &mdash; the capstone is a small version of this<div class="sep"></div><span class="k">Why this chapter</span>The moving edge. Read this one with more scepticism than the rest.</div>
 <div class="box warn">
 <span class="t">Dated content</span>
-<p style="margin-bottom:0">Written <b>August 2026</b>. Chapters 1–17 will age well — the mechanisms are
+<p style="margin-bottom:0">Written <b>August 2026</b>. Chapters 1–18 will age well — the mechanisms are
 stable. This chapter will not. Treat it as a snapshot and a map of where to look, not as durable fact.</p>
 </div>
 
-<h2>18.1 · Sparse attention: not attending to everything</h2>
+<h2>19.1 · Sparse attention: not attending to everything</h2>
 
-<p>FlashAttention removed the memory wall but left the FLOPs quadratic (Chapter 14). At 128k+ tokens that
+<p>FlashAttention removed the memory wall but left the FLOPs quadratic (Chapter 15). At 128k+ tokens that
 quadratic finally dominates. The 2025–2026 answer is to make attention <b>genuinely sparse</b> — compute
 only the scores that matter.</p>
 
@@ -62,7 +62,7 @@ decided per query at runtime. That difference, plus hardware-aware kernels that 
 patterns actually fast, is what finally made sparsity competitive.</p>
 </div>
 
-<h2>18.2 · Hybrid architectures: attention + state space</h2>
+<h2>19.2 · Hybrid architectures: attention + state space</h2>
 
 <p>The other attack on the quadratic is to replace most attention layers with something linear.</p>
 
@@ -118,7 +118,7 @@ attention-based, typically with MoE and increasingly with sparse attention. Hybr
 efficiency argument at long context; they have not yet won the frontier.</p>
 </div>
 
-<h2>18.3 · Other things that are actually shipping</h2>
+<h2>19.3 · Other things that are actually shipping</h2>
 
 <h3>Multi-token prediction (MTP)</h3>
 <p>Train the model to predict the next <code>n</code> tokens, not just one, using extra lightweight heads.
@@ -128,7 +128,7 @@ speculative decoding — DeepSeek-V3 reports ~1.8× decoding speedup from its MT
 <h3>Test-time compute</h3>
 <p>The largest capability shift since instruction tuning. Instead of scaling training, spend more compute at
 <b>inference</b>: generate long chains of reasoning, sample many candidates, verify, and select. o1-style and
-R1-style reasoning models are trained with RL to use this budget well (Chapter 21). The scaling curve here —
+R1-style reasoning models are trained with RL to use this budget well (Chapter 22). The scaling curve here —
 accuracy versus tokens-of-thinking — is a genuinely new axis, and it is currently steeper than the
 pretraining curve on reasoning benchmarks.</p>
 
@@ -142,7 +142,7 @@ at what granularity.</p>
 <p>The move to 128k–256k vocabularies (Chapter 3) continues, driven by long-context economics and
 multilingual coverage.</p>
 
-<h2>18.4 · What has <i>not</i> changed since 2017</h2>
+<h2>19.4 · What has <i>not</i> changed since 2017</h2>
 
 <p>Worth stating plainly, because the pace of announcements obscures it:</p>
 
@@ -174,7 +174,7 @@ you need to answer (1) and (2) from the abstract alone.</p>
     <div class="opt">It uses a fixed sliding window</div>
     <div class="opt">It removes attention from most layers</div>
   </div>
-  <div class="expl"><b>Index cheaply, attend selectively.</b> Option A is MLA (Ch 13) — DeepSeek-V3.2 uses
+  <div class="expl"><b>Index cheaply, attend selectively.</b> Option A is MLA (Ch 14) — DeepSeek-V3.2 uses
   both, and they're complementary: MLA shrinks what you store, DSA shrinks what you look at. Option C is
   the older fixed-pattern approach that lost on quality; option D describes hybrids.</div>
 </div>
@@ -192,13 +192,13 @@ you need to answer (1) and (2) from the abstract alone.</p>
 </div>
 </div>
 
-<h2>18.5 · Exercises</h2>
+<h2>19.5 · Exercises</h2>
 
 <div class="exercise">
-<div class="eh"><span class="n">18.1</span><span class="ti">Implement top-k sparse attention</span><span class="lvl">code</span></div>
+<div class="eh"><span class="n">19.1</span><span class="ti">Implement top-k sparse attention</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>Add a DSA-style path to your attention: compute full scores, keep only the top-k per query, mask the rest
-to −∞, and softmax. Then, on your Chapter 10 model, measure perplexity as a function of
+to −∞, and softmax. Then, on your Chapter 11 model, measure perplexity as a function of
 <code>k ∈ {8, 16, 32, 64, all}</code> at T=128.</p>
 <ol>
 <li>At what <code>k</code> does perplexity become indistinguishable from dense?</li>
@@ -217,7 +217,7 @@ the attention it replaces.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">18.2</span><span class="ti">Attention vs SSM on a recall task</span><span class="lvl">thinking</span></div>
+<div class="eh"><span class="n">19.2</span><span class="ti">Attention vs SSM on a recall task</span><span class="lvl">thinking</span></div>
 <div class="eb">
 <p>Design a synthetic task that isolates the difference: a sequence of random key–value pairs followed by a
 query for one of the keys (the "associative recall" task from the Mamba literature). Train a 2-layer
@@ -231,13 +231,13 @@ hybrid architectures, and it's small enough to actually run.</p>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">18.3</span><span class="ti">Read a frontier paper properly</span><span class="lvl">applied</span></div>
+<div class="eh"><span class="n">19.3</span><span class="ti">Read a frontier paper properly</span><span class="lvl">applied</span></div>
 <div class="eb">
 <p>Pick one: the <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 technical report</a>, the
 <a href="https://arxiv.org/abs/2405.21060">Mamba-2 paper</a>, or a current model's technical report.
-Write a one-page summary answering the four questions from §18.3's box, plus: what would you need to
+Write a one-page summary answering the four questions from §19.3's box, plus: what would you need to
 believe for this to <i>not</i> be adopted widely?</p>
-<p class="tiny" style="margin-bottom:0">If you've worked through Chapters 1–17, the DeepSeek-V3 report should
+<p class="tiny" style="margin-bottom:0">If you've worked through Chapters 1–18, the DeepSeek-V3 report should
 now be substantially readable — you know MLA, MoE, load balancing, FP8, MTP, and the KV-cache economics that
 motivate all of them. That's a good measure of how far you've come.</p>
 </div></div>
@@ -254,9 +254,9 @@ motivate all of them. That's a good measure of how far you've come.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=7"></script>
-<script src="assets/course.js?v=7"></script>
-<script src="assets/viz.js?v=7"></script>
-<script>initChapter("18");</script>
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
+<script src="assets/viz.js?v=9"></script>
+<script>initChapter("19");</script>
 </body>
 </html>

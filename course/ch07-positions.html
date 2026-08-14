@@ -6,7 +6,7 @@
 <title>Ch 7 — Position: Sinusoidal → Learned → RoPE → ALiBi</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=7">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 <main>
@@ -18,7 +18,7 @@ Attention has a strange property: it does not know what order the tokens are in.
 what that something is — ending with RoPE, which essentially every model shipped since 2023 uses.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; position enters through the q-k dot product<div class="sep"></div><span class="k">Leads to</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; MLA has to split RoPE off to work<br><a href="ch17-scaling.html">Ch&nbsp;17</a> &mdash; context extension is RoPE scaling<div class="sep"></div><span class="k">Why this chapter</span>Attention cannot see order. Everything here is about telling it.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; position enters through the q-k dot product<div class="sep"></div><span class="k">Leads to</span><a href="ch14-gqa-mla.html">Ch&nbsp;14</a> &mdash; MLA has to split RoPE off to work<br><a href="ch18-scaling.html">Ch&nbsp;18</a> &mdash; context extension is RoPE scaling<div class="sep"></div><span class="k">Why this chapter</span>Attention cannot see order. Everything here is about telling it.</div>
 <h2>7.1 · Proving attention is position-blind</h2>
 
 <p>This isn't a hand-wave. Let <span class="math">P</span> be a permutation matrix that shuffles the token
@@ -199,7 +199,7 @@ assert abs(torch.dot(rot(q,0),rot(k,2)) - torch.dot(rot(q,10),rot(k,12))) < 1e-6
   <span class="k">Why no max length</span>
   A learned position table has <code>max_T</code> rows and position 1025 simply does not exist.
   RoPE computes <code>cos(m·θ)</code> for any <code>m</code> — which is why context extension
-  (Ch 17) is possible at all.
+  (Ch 18) is possible at all.
 </div>
 
 <h3>Implementation</h3>
@@ -291,7 +291,7 @@ encoding, the positional signal cannot be washed out by depth.</p>
   </div>
   <div class="expl"><b>Runs, degrades.</b> Unlike a learned table there's no hard limit — you can compute
   cos(m·θ) for any m. But the model never saw those angle regimes and generalises poorly. The fixes
-  (position interpolation, NTK-aware scaling, YaRN) are Chapter 17. This "silently gets worse rather than
+  (position interpolation, NTK-aware scaling, YaRN) are Chapter 18. This "silently gets worse rather than
   crashing" behaviour is why long-context claims need to be benchmarked, not trusted.</div>
 </div>
 </div>
@@ -339,7 +339,7 @@ for decoders than for encoders.</p>
 its base frequency</b> for long context. Llama 3 raised the base from 10,000 to <b>500,000</b> specifically
 to make 128k context viable — a one-line change with a large effect. Many current long-context models also
 interleave <b>local (sliding-window) RoPE layers</b> with a few <b>global</b> layers, so most layers only pay
-attention cost over a small window. Gemma 2/3 popularised that pattern. Chapter 17 covers the scaling
+attention cost over a small window. Gemma 2/3 popularised that pattern. Chapter 18 covers the scaling
 methods properly.</p>
 </div>
 
@@ -417,9 +417,9 @@ around. Dimensions that wrap many times within the context can't distinguish dis
 
 </main>
 
-<script src="assets/chapters.js?v=7"></script>
-<script src="assets/course.js?v=7"></script>
-<script src="assets/viz.js?v=7"></script>
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
+<script src="assets/viz.js?v=9"></script>
 <script>initChapter("07");</script>
 </body>
 </html>

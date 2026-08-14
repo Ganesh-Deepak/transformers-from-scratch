@@ -6,7 +6,7 @@
 <title>Ch 6 — Multi-Head Attention: The Reshape Dance</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=7">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 <main>
@@ -19,7 +19,7 @@ several attention operations in parallel, and the only genuinely tricky part is 
 This chapter draws every step.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; view and transpose, exactly<br><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; one head first<div class="sep"></div><span class="k">Leads to</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; GQA changes how many K/V heads exist<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; this is the block's attention sublayer<div class="sep"></div><span class="k">Why this chapter</span>Nothing is computed here — it is a reshape that turns one matmul into n parallel ones.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; view and transpose, exactly<br><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; one head first<div class="sep"></div><span class="k">Leads to</span><a href="ch14-gqa-mla.html">Ch&nbsp;14</a> &mdash; GQA changes how many K/V heads exist<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; this is the block's attention sublayer<div class="sep"></div><span class="k">Why this chapter</span>Nothing is computed here — it is a reshape that turns one matmul into n parallel ones.</div>
 <h2>6.1 · Why more than one head</h2>
 
 <p>A softmax row sums to 1. That is a <b>budget</b>: if a head spends 0.8 of its attention on the subject, it
@@ -241,7 +241,7 @@ class MultiHeadAttention(nn.Module):
         return self.proj(y.transpose(1, 2).reshape(B, T, C))
 </code></pre>
 
-<p>Same maths, a fraction of the memory, several times faster. Chapter 14 explains exactly how.</p>
+<p>Same maths, a fraction of the memory, several times faster. Chapter 15 explains exactly how.</p>
 
 <div class="quiz" data-title="Checkpoint 1 — the dance">
 <div class="qitem" data-answer="1">
@@ -301,7 +301,7 @@ class MultiHeadAttention(nn.Module):
 <tr><td>DeepSeek-V3</td><td class="num">7168</td><td class="num">128</td><td class="num">128*</td><td class="num">MLA (rank 512)</td></tr>
 </tbody>
 </table>
-<p class="tiny">*DeepSeek-V3's query/key head dim is actually 192 (128 no-RoPE + 64 RoPE) with value dim 128 — Chapter 13.</p>
+<p class="tiny">*DeepSeek-V3's query/key head dim is actually 192 (128 no-RoPE + 64 RoPE) with value dim 128 — Chapter 14.</p>
 </div>
 
 <p>Patterns worth noticing:</p>
@@ -310,7 +310,7 @@ class MultiHeadAttention(nn.Module):
 <code>d_model</code> grows, so <code>n_head</code> is what scales. 64 and 128 are also what tensor cores
 like.</li>
 <li><b><code>n_kv_head</code> diverged from <code>n_head</code> starting around 2023.</b> That's GQA —
-Chapter 13.</li>
+Chapter 14.</li>
 <li>Too many tiny heads hurts: below <code>d_head ≈ 32</code> each head has too little room to express a
 useful query.</li>
 </ul>
@@ -396,7 +396,7 @@ be critical on another. Ablation tells you about <i>this</i> input, not about th
 all — this is the point of §6.1.</li>
 <li>W_q and W_o stay 4096×4096. W_k and W_v shrink to 4096 × (8×128) = 4096×1024 = 4.19M each.
 Total = 16.78 + 16.78 + 4.19 + 4.19 = <b>41.9M</b>, a 37% reduction in attention parameters — and, far more
-importantly, a <b>4× reduction in KV cache</b>. Chapter 13.</li>
+importantly, a <b>4× reduction in KV cache</b>. Chapter 14.</li>
 </ol>
 </div></details>
 </div></div>
@@ -412,9 +412,9 @@ importantly, a <b>4× reduction in KV cache</b>. Chapter 13.</li>
 
 </main>
 
-<script src="assets/chapters.js?v=7"></script>
-<script src="assets/course.js?v=7"></script>
-<script src="assets/viz.js?v=7"></script>
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
+<script src="assets/viz.js?v=9"></script>
 <script>initChapter("06");</script>
 </body>
 </html>

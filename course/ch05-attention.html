@@ -6,7 +6,7 @@
 <title>Ch 5 — Attention From Scratch</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=7">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 <main>
@@ -18,7 +18,7 @@ attention rather than assert it — including <em>why</em> that <span class="mat
 there, which most tutorials skip.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; q @ k.T is a batched matmul<br><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; attention reads from the residual stream<div class="sep"></div><span class="k">Leads to</span><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; one head becomes many<br><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; the T x T matrix is what FlashAttention refuses to write down<div class="sep"></div><span class="k">Why this chapter</span>The core mechanism, derived rather than asserted.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; q @ k.T is a batched matmul<br><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; attention reads from the residual stream<div class="sep"></div><span class="k">Leads to</span><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; one head becomes many<br><a href="ch15-flashattention.html">Ch&nbsp;15</a> &mdash; the T x T matrix is what FlashAttention refuses to write down<div class="sep"></div><span class="k">Why this chapter</span>The core mechanism, derived rather than asserted.</div>
 <h2>5.1 · The problem attention was invented to solve</h2>
 
 <p>Before 2014, translation worked like this: an RNN encoder read the source sentence one word at a time,
@@ -350,7 +350,7 @@ w[0, 3]              # row 3: nonzero for j<=3, exactly 0 for j>3
 <pre style="margin:.6em 0 0"><code>out = F.scaled_dot_product_attention(q, k, v, is_causal=True)</code></pre>
 <p style="margin-bottom:0">PyTorch dispatches this to FlashAttention when it can. It is <i>numerically
 identical</i> to the code above but never materialises the <code>(T,T)</code> matrix — the subject of
-Chapter 14. Write the loop version once to understand it; call the fused one forever after.</p>
+Chapter 15. Write the loop version once to understand it; call the fused one forever after.</p>
 </div>
 
 <div class="quiz" data-title="Checkpoint 1 — the mechanism">
@@ -503,7 +503,7 @@ unrelated to its content — it acts as a "null option" when a head has nothing 
 softmax forces every row to sum to 1 whether or not anything is relevant.</p>
 <p style="margin-bottom:0">This is not a curiosity. Attention sinks are why naive sliding-window KV eviction
 breaks models, and the <a href="https://arxiv.org/abs/2309.17453">StreamingLLM</a> paper's fix — always keep
-the first few tokens in the cache — comes directly from this observation. We return to it in Chapter 17.</p>
+the first few tokens in the cache — comes directly from this observation. We return to it in Chapter 18.</p>
 </div></details>
 </div></div>
 
@@ -542,9 +542,9 @@ lengths people actually use, which is why this stopped being a theoretical conce
 
 </main>
 
-<script src="assets/chapters.js?v=7"></script>
-<script src="assets/course.js?v=7"></script>
-<script src="assets/viz.js?v=7"></script>
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
+<script src="assets/viz.js?v=9"></script>
 <script>initChapter("05");</script>
 </body>
 </html>

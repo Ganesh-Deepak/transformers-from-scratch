@@ -23,7 +23,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 # 3. Confirm everything works
-python tests/test_tfs.py        # 27 tests, ~1 minute
+python tests/test_tfs.py        # 30 tests, ~1 minute
 ```
 
 Work through the chapters **in order**. Parts 0 and I look elementary — do not skip them.
@@ -37,10 +37,11 @@ Almost everyone who finds transformers confusing is actually confused about tens
 ## What's here
 
 ```
-course/            22 interactive chapters. Open with serve.py. This is the course.
+course/            23 interactive chapters. Open with serve.py. This is the course.
   index.html         roadmap, progress tracking, the dimension cheat sheet
-  ch01..ch22         the chapters
+  ch01..ch23         the chapters
   assets/            style.css, course.js (quiz engine), viz.js (12 widgets)
+                     chapters.js — the outline; chapter order lives here and nowhere else
 
 notebooks/         Runnable Jupyter notebooks, one per key chapter
 tfs/               Reference implementation — working, tested code
@@ -49,7 +50,7 @@ tfs/               Reference implementation — working, tested code
   train.py           full training loop; `python -m tfs.train` trains a real model
   dpo.py             DPO, SimPO, sequence log-probs
 tests/
-  test_tfs.py        27 tests — every one checks a claim the course makes
+  test_tfs.py        30 tests — every one checks a claim the course makes
   run_notebooks.py   executes all notebook code cells as a smoke test
 data/              downloaded corpus + trained tokenizers (created on first run)
 ```
@@ -66,13 +67,19 @@ data/              downloaded corpus + trained tokenizers (created on first run)
 | **0 · Seeing tensors** | 1–2 | Shapes, strides, broadcasting, matmul, einsum. The foundation everything else stands on. |
 | **I · Text → vectors** | 3–4 | BPE from scratch; embeddings; **the residual stream** |
 | **II · Attention** | 5–7 | Attention derived (incl. why √d_k); the multi-head reshape dance; RoPE |
-| **III · The model** | 8–10 | The block, whole architectures, end-to-end shape trace, training |
-| **IV · Making it fast** | 11–15 | Sampling, **KV cache & the memory wall**, MQA/GQA/**MLA**, **FlashAttention**, serving |
-| **V · Making it big** | 16–18 | MoE, scaling laws, long context, the 2026 frontier |
-| **VI · Making it useful** | 19–21 | SFT/RLHF/PPO, **DPO derived line by line**, GRPO & RLVR |
-| **VII · Capstone** | 22 | Build the whole thing: RMSNorm+RoPE+GQA+SwiGLU+cache, trained, DPO-aligned |
+| **III · The block and the model** | 8–11 | The block, whole architectures, end-to-end shape trace, **every gradient derived by hand**, then training |
+| **IV · Making it fast** | 12–16 | Sampling, **KV cache & the memory wall**, MQA/GQA/**MLA**, **FlashAttention**, serving |
+| **V · Making it big** | 17–19 | MoE, scaling laws, long context, the 2026 frontier |
+| **VI · Making it useful** | 20–22 | SFT/RLHF/PPO, **DPO derived line by line**, GRPO & RLVR |
+| **VII · Capstone** | 23 | Build the whole thing: RMSNorm+RoPE+GQA+SwiGLU+cache, trained, DPO-aligned |
 
-~25 hours of work. 78 quiz questions, 77 exercises, 12 interactive widgets.
+~30 hours of work. 82 quiz questions, 73 exercises, 12 interactive widgets.
+
+**Chapter 10 (the backward pass) sits deliberately in the middle, not in an appendix.**
+It comes after you can trace a forward pass (Ch 9) and before you are asked to train
+anything (Ch 11), because "training diverged" is unreadable until you know what flows
+backwards. Every gradient — softmax, cross-entropy, RMSNorm, attention — is derived by
+hand and then checked against autograd in the same page.
 
 ---
 
@@ -89,11 +96,11 @@ These are the answer to "I can't picture tensor dimensions." Drag the sliders.
 | **attention** | 5 | Scores → mask → softmax, with √d_k and causal toggles |
 | **rope** | 7 | Position as rotation; why the dot product depends only on distance |
 | **trace** | 9 | 19-step walk through a full forward pass, shape by shape |
-| **kv** | 12 | KV cache calculator: MHA vs GQA vs MQA vs MLA |
-| **gqa** | 13 | Which query heads share which KV head |
-| **online** | 14 | Streaming vs one-shot softmax agreeing exactly — FlashAttention's theorem |
-| **softmax** | 11 | Temperature, top-k, top-p reshaping a distribution |
-| **chinchilla** | 17 | Compute-optimal model/data split |
+| **softmax** | 12 | Temperature, top-k, top-p reshaping a distribution |
+| **kv** | 13 | KV cache calculator: MHA vs GQA vs MQA vs MLA |
+| **gqa** | 14 | Which query heads share which KV head |
+| **online** | 15 | Streaming vs one-shot softmax agreeing exactly — FlashAttention's theorem |
+| **chinchilla** | 18 | Compute-optimal model/data split |
 
 ---
 
@@ -118,9 +125,15 @@ python tests/test_tfs.py         # 30 tests
 python tests/run_notebooks.py    # executes every notebook's code
 
 cd tests && npm install jsdom && node check_ui.js
-#   49 UI checks: WCAG contrast for every colour pair in BOTH themes, plus
+#   86 UI checks: WCAG contrast for every colour pair in BOTH themes, plus
 #   confirmation that each page builds its layout, topbar, theme toggle,
 #   copy buttons, chapter nav and quiz markers.
+
+node check_responsive.js
+#   Drives headless Chrome at 320/390/430/768/1024/1440/1920 and asserts
+#   scrollWidth <= innerWidth on every page. Caveat, printed by the script:
+#   headless Chrome clamps its window to ~504px, so the three narrowest
+#   entries are simulated, not a true 320px render.
 ```
 
 ---
@@ -135,17 +148,24 @@ cross-references, so you can see how a chapter connects without losing your plac
   labels, `Cascadia Mono` for every shape annotation. All resolve natively on Windows — no
   webfont, no silent fallback.
 - **Colour** — the boldness is spent on the **dimension palette**, because in this course colour
-  encodes *which tensor axis you are looking at*. Ochre, indigo, clay, moss — one per role,
-  consistent in every diagram. The verdigris accent is deliberately excluded from that set so it
-  can never be mistaken for a dimension.
+  encodes *which tensor axis you are looking at*: orange = Q / axis 0, blue = K / axis 1,
+  magenta = V / axis 2, green = the output. Those four are deliberately **saturated** and
+  maximally far apart in hue, because a muted palette makes two axes look like the same axis —
+  which is the exact confusion the course exists to fix. The violet accent is excluded from that
+  set so it can never be mistaken for a dimension.
+- **Grounds are neutral on purpose.** Light mode is a pale cool grey (`#F4F6F7`) with true-white
+  cards lifting off it — not blinding, and not cream. Dark mode is a neutral charcoal (`#18191B`)
+  — not navy, which tinted every diagram it sat behind.
 - **Both themes** are designed, not inverted. Every pair passes WCAG AA in both.
+- **Responsive** down to 320px: no page scrolls sideways at any width. The sidebar collapses to a
+  drawer; wide tables and code blocks scroll inside their own container rather than the body.
 
 ---
 
 ## Train a real model right now
 
 ```powershell
-# character-level -- best samples at this scale, matches Ch 10 Exercise 10.1
+# character-level -- best samples at this scale, matches Ch 11 Exercise 11.1
 python -m tfs.train --char --steps 2500 --d_model 192 --n_layer 6 --batch 32 --lr 1e-3
 
 # or with the BPE tokenizer (the default)
@@ -182,7 +202,7 @@ the best checkpoint, warns when train ≪ val, and restores the best weights rat
 > ahead**. The buggy version had a *lower* training loss (0.0457 vs 0.0482) and produced
 > character soup. Every unit test still passed, because `forward()` was correct; the caller
 > wasn't. What caught it: `test_generation_reproduces_memorised_text` — train a model to
-> memorise a short text, then check greedy decoding reproduces it. Case study in Chapter 10.6.
+> memorise a short text, then check greedy decoding reproduces it. Case study in Chapter 11.6.
 
 ---
 
@@ -193,8 +213,8 @@ Chinchilla coefficients, MoE configs) were taken from primary papers and public 
 configs and checked in **August 2026**. Where a claim is contested or an open research
 question, the course flags it rather than stating it flatly. Every chapter ends with sources.
 
-**Chapter 18 is deliberately dated** — it covers the moving frontier (DeepSeek Sparse
-Attention, Mamba-2 hybrids, FlashAttention-4) and will age. Chapters 1–17 cover mechanisms
+**Chapter 19 is deliberately dated** — it covers the moving frontier (DeepSeek Sparse
+Attention, Mamba-2 hybrids, FlashAttention-4) and will age. Chapters 1–18 cover mechanisms
 that have been stable for years.
 
 ---

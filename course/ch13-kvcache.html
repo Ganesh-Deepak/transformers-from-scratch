@@ -3,23 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch 12 — The KV Cache and the Memory Wall</title>
+<title>Ch 13 — The KV Cache and the Memory Wall</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=7">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 <main>
 
-<h1>12 · The KV Cache and the Memory Wall</h1>
+<h1>13 · The KV Cache and the Memory Wall</h1>
 <p class="lead">
 This chapter explains why serving an LLM is a fundamentally different engineering problem from training one,
 and why almost every architectural innovation since 2023 — GQA, MLA, MoE, speculative decoding — is aimed
 at the same bottleneck. It is not FLOPs. It is memory bandwidth.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch11-decoding.html">Ch&nbsp;11</a> &mdash; the generation loop<br><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; arithmetic intensity<div class="sep"></div><span class="k">Leads to</span><a href="ch13-gqa-mla.html">Ch&nbsp;13</a> &mdash; shrinking the cache<br><a href="ch14-flashattention.html">Ch&nbsp;14</a> &mdash; a different bottleneck<br><a href="ch15-serving.html">Ch&nbsp;15</a> &mdash; serving is built on this arithmetic<div class="sep"></div><span class="k">Why this chapter</span>Not FLOPs. Memory bandwidth. This chapter reframes everything after it.</div>
-<h2>12.1 · The waste in the naive loop</h2>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch12-decoding.html">Ch&nbsp;12</a> &mdash; the generation loop<br><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; arithmetic intensity<div class="sep"></div><span class="k">Leads to</span><a href="ch14-gqa-mla.html">Ch&nbsp;14</a> &mdash; shrinking the cache<br><a href="ch15-flashattention.html">Ch&nbsp;15</a> &mdash; a different bottleneck<br><a href="ch16-serving.html">Ch&nbsp;16</a> &mdash; serving is built on this arithmetic<div class="sep"></div><span class="k">Why this chapter</span>Not FLOPs. Memory bandwidth. This chapter reframes everything after it.</div>
+<h2>13.1 · The waste in the naive loop</h2>
 
 <p>Look again at generation. To produce token 101, we feed tokens 1–100 through the model. To produce token
 102, we feed tokens 1–101. We recompute K and V for tokens 1–100 <b>a second time</b> — and they are
@@ -44,7 +44,7 @@ computed.</b> So compute them once and keep them. Generating token <code>t+1</co
 </table>
 </div>
 
-<h2>12.2 · Implementation</h2>
+<h2>13.2 · Implementation</h2>
 
 <pre><code>class CachedAttention(nn.Module):
     def forward(self, x, cache=None):
@@ -87,7 +87,7 @@ keys. Symptom: bizarre contamination that only appears under batching.</li>
 </ol>
 </div>
 
-<h2>12.3 · Prefill vs decode — two different machines</h2>
+<h2>13.3 · Prefill vs decode — two different machines</h2>
 
 <p>This distinction is the core of LLM serving, and it is not obvious until someone points it out.</p>
 
@@ -166,7 +166,7 @@ is remarkable for a one-line model.</p>
 providers batch aggressively, and why your API latency is better when the service is <i>busy</i> than when
 it's idle. It is also why the KV cache matters so much: <b>the cache is the thing that limits batch size.</b></p>
 
-<h2>12.4 · The cache size calculation</h2>
+<h2>13.4 · The cache size calculation</h2>
 
 <div class="mathblock">
 bytes = 2 × n_layer × n_kv_head × d_head × seq_len × batch × dtype_bytes
@@ -194,7 +194,7 @@ one token, bf16.</p>
 
 <div class="step"><div class="i">3</div><div>
 <b>How many heads must you store?</b> Not 32 — Llama-3 uses GQA with
-<code>n_kv_head = 8</code>. This is the factor Chapter 13 attacks:
+<code>n_kv_head = 8</code>. This is the factor Chapter 14 attacks:
 <pre style="margin:.4rem 0"><code class="nohl">512 × 8 = 4,096 bytes   (per token, per LAYER)</code></pre>
 </div></div>
 
@@ -261,7 +261,7 @@ falls straight out of this arithmetic.</p>
 <span class="t">Without GQA, this model would be unservable</span>
 <p style="margin-bottom:0">With <code>n_kv_head = 64</code> (full MHA) instead of 8, the cache would be
 <b>8× larger</b>: 20 GB at 8k, 320 GB at 128k — a single 128k-context user would not fit on 4 H100s at all.
-GQA is not a nice optimisation; it is what makes long-context serving possible. That's Chapter 13.</p>
+GQA is not a nice optimisation; it is what makes long-context serving possible. That's Chapter 14.</p>
 </div>
 
 <div class="quiz" data-title="Checkpoint 1 — the memory wall">
@@ -299,38 +299,38 @@ GQA is not a nice optimisation; it is what makes long-context serving possible. 
     <div class="opt">~5</div>
   </div>
   <div class="expl"><b>~39.</b> Per user: 8192 × 128 KB ≈ 1.05 GB. 40 GB ÷ 1.05 GB ≈ 38–39. In practice
-  fragmentation cuts this further — which is exactly the problem PagedAttention solves (Chapter 15) by
+  fragmentation cuts this further — which is exactly the problem PagedAttention solves (Chapter 16) by
   allocating the cache in fixed-size blocks like OS virtual memory.</div>
 </div>
 </div>
 
-<h2>12.5 · Making the cache smaller — the map of Part IV</h2>
+<h2>13.5 · Making the cache smaller — the map of Part IV</h2>
 
 <div class="tw">
 <table>
 <thead><tr><th>Technique</th><th>Reduction</th><th>Cost</th><th>Where</th></tr></thead>
 <tbody>
-<tr><td><b>GQA</b></td><td>4–8×</td><td>small quality loss</td><td>Ch 13</td></tr>
-<tr><td><b>MQA</b></td><td>= n_head ×</td><td>noticeable quality loss</td><td>Ch 13</td></tr>
-<tr><td><b>MLA</b></td><td>up to ~64× vs MHA</td><td>extra compute; quality ≥ MHA</td><td>Ch 13</td></tr>
-<tr><td><b>KV quantization (fp8/int4)</b></td><td>2–4×</td><td>small accuracy loss</td><td>Ch 15</td></tr>
-<tr><td><b>Sliding window</b></td><td>T/window</td><td>loses long-range attention</td><td>Ch 17</td></tr>
-<tr><td><b>PagedAttention</b></td><td>~2× effective (removes fragmentation)</td><td>none — pure engineering</td><td>Ch 15</td></tr>
-<tr><td><b>Prefix / prompt caching</b></td><td>huge for shared prefixes</td><td>none</td><td>Ch 15</td></tr>
+<tr><td><b>GQA</b></td><td>4–8×</td><td>small quality loss</td><td>Ch 14</td></tr>
+<tr><td><b>MQA</b></td><td>= n_head ×</td><td>noticeable quality loss</td><td>Ch 14</td></tr>
+<tr><td><b>MLA</b></td><td>up to ~64× vs MHA</td><td>extra compute; quality ≥ MHA</td><td>Ch 14</td></tr>
+<tr><td><b>KV quantization (fp8/int4)</b></td><td>2–4×</td><td>small accuracy loss</td><td>Ch 16</td></tr>
+<tr><td><b>Sliding window</b></td><td>T/window</td><td>loses long-range attention</td><td>Ch 18</td></tr>
+<tr><td><b>PagedAttention</b></td><td>~2× effective (removes fragmentation)</td><td>none — pure engineering</td><td>Ch 16</td></tr>
+<tr><td><b>Prefix / prompt caching</b></td><td>huge for shared prefixes</td><td>none</td><td>Ch 16</td></tr>
 </tbody>
 </table>
 </div>
 
-<h2>12.6 · Exercises</h2>
+<h2>13.6 · Exercises</h2>
 
 <div class="exercise">
-<div class="eh"><span class="n">12.1</span><span class="ti">Add a KV cache and measure it</span><span class="lvl">essential</span></div>
+<div class="eh"><span class="n">13.1</span><span class="ti">Add a KV cache and measure it</span><span class="lvl">essential</span></div>
 <div class="eb">
 <p>Add caching to your Chapter 9 model. Then:</p>
 <ol>
 <li><b>Correctness:</b> assert that cached generation produces <b>token-identical</b> output to uncached
 generation with the same seed and greedy decoding. This is non-negotiable — if they differ, you have one of
-the three bugs from §12.2.</li>
+the three bugs from §13.2.</li>
 <li><b>Speed:</b> time generating 200 tokens with and without the cache. Plot time-per-token against
 position for both.</li>
 </ol>
@@ -343,11 +343,11 @@ reprocesses the whole prefix), so cumulative time is quadratic. Cached: time per
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">12.2</span><span class="ti">Build a serving calculator</span><span class="lvl">code</span></div>
+<div class="eh"><span class="n">13.2</span><span class="ti">Build a serving calculator</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>Write <code>plan(model_cfg, gpu_gb, gpu_bandwidth_tbs, context, dtype_bytes)</code> returning: weight
 memory, KV bytes per token, max concurrent sequences, and estimated batch-1 tokens/sec. Validate it against
-the Llama-3-70B numbers in §12.4, then use it to answer:</p>
+the Llama-3-70B numbers in §13.4, then use it to answer:</p>
 <ol>
 <li>How many H100s to serve Llama-3-70B at 128k context to 20 concurrent users?</li>
 <li>What happens to that answer with fp8 KV cache?</li>
@@ -363,7 +363,7 @@ quantization is standard in production despite the small accuracy cost.</li>
 </div></div>
 
 <div class="exercise">
-<div class="eh"><span class="n">12.3</span><span class="ti">Find the roofline crossover</span><span class="lvl">thinking</span></div>
+<div class="eh"><span class="n">13.3</span><span class="ti">Find the roofline crossover</span><span class="lvl">thinking</span></div>
 <div class="eb">
 <p>For a 7B model on an H100 (990 TFLOP/s bf16, 3.35 TB/s), at what batch size does decode stop being
 memory-bound? Compare that to prefill with a 2000-token prompt at batch 1 — which regime is it in, and why?</p>
@@ -375,7 +375,7 @@ hundreds.</p>
 <p style="margin-bottom:0">Prefill with T=2000 at batch 1 has intensity ≈ 2000, comfortably
 <b>compute-bound</b>. This is the key asymmetry behind <b>prefill–decode disaggregation</b>: the two phases
 want different hardware and different batching strategies, so several 2025–2026 serving stacks now run them
-on <i>separate GPU pools</i>. Chapter 15.</p>
+on <i>separate GPU pools</i>. Chapter 16.</p>
 </div></details>
 </div></div>
 
@@ -384,14 +384,14 @@ on <i>separate GPU pools</i>. Chapter 15.</p>
 <li><a href="https://arxiv.org/abs/2211.05102">Pope et al. 2022 — Efficiently Scaling Transformer Inference</a> — the definitive analysis of this chapter's arithmetic.</li>
 <li><a href="https://kipp.ly/transformer-inference-arithmetic/">kipply — Transformer Inference Arithmetic</a> — excellent, concrete, worked numbers.</li>
 <li><a href="https://arxiv.org/abs/2309.06180">Kwon et al. 2023 — PagedAttention / vLLM</a></li>
-<li>Companion notebook: <code>notebooks/12_kv_cache.ipynb</code></li>
+<li>Companion notebook: <code>notebooks/13_kv_cache.ipynb</code></li>
 </ul>
 
 </main>
 
-<script src="assets/chapters.js?v=7"></script>
-<script src="assets/course.js?v=7"></script>
-<script src="assets/viz.js?v=7"></script>
-<script>initChapter("12");</script>
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
+<script src="assets/viz.js?v=9"></script>
+<script>initChapter("13");</script>
 </body>
 </html>

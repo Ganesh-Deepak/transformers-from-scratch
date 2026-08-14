@@ -6,7 +6,7 @@
 <title>Transformers From Scratch</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=7">
+<link rel="stylesheet" href="assets/style.css?v=9">
 </head>
 <body>
 
@@ -21,9 +21,9 @@
   </p>
   <div class="stats">
     <div><b>23</b> chapters</div>
-    <div><b>27</b> hours</div>
+    <div><b>30</b> hours</div>
     <div><b>12</b> widgets</div>
-    <div><b>163</b> exercises &amp; questions</div>
+    <div><b>155</b> exercises &amp; questions</div>
   </div>
   <div class="bar"><i id="pbar"></i></div>
   <div class="tiny" style="margin-top:.6rem" id="pnote">Progress is saved in this browser.</div>
@@ -75,7 +75,7 @@ haven’t noticed.</p>
 <p style="margin-bottom:0">People assume deep learning requires multivariable calculus. For
 <i>understanding</i> and <i>building</i> a transformer, it does not — the derivatives are computed
 for you by autograd. Where gradients matter to the argument (Chapter 4’s residual stream,
-Chapter 8’s pre-LN, Chapter 20’s DPO) the course shows the one line of calculus that matters and
+Chapter 8’s pre-LN, Chapter 21’s DPO) the course shows the one line of calculus that matters and
 explains what it means. You need to read it, not derive it.</p>
 </div>
 
@@ -108,9 +108,9 @@ the margin column tells you where an idea came from and where it goes next.</p>
 <table>
 <thead><tr><th>If you want to…</th><th>Read</th><th>Time</th></tr></thead>
 <tbody>
-<tr><td><b>Understand how LLMs work</b>, no code</td><td>Ch 1–10, skim the code blocks</td><td>~8 h</td></tr>
-<tr><td><b>Build one</b> end to end</td><td>Ch 1–10 + 22, all notebooks</td><td>~15 h</td></tr>
-<tr><td><b>The whole thing</b>, including why serving and alignment look the way they do</td><td>Ch 1–22</td><td>~25 h</td></tr>
+<tr><td><b>Understand how LLMs work</b>, no code</td><td>Ch 1–11, skim the code blocks</td><td>~10 h</td></tr>
+<tr><td><b>Build one</b> end to end</td><td>Ch 1–11 + 23, all notebooks</td><td>~20 h</td></tr>
+<tr><td><b>The whole thing</b>, including why serving and alignment look the way they do</td><td>Ch 1–23</td><td>~30 h</td></tr>
 </tbody>
 </table>
 </div>
@@ -135,7 +135,7 @@ pip install -r requirements.txt
 python tests\test_tfs.py            # 30 checks, ~1 min — confirms it all works
 jupyter lab                         # opens notebooks/</code></pre>
 
-<p class="tiny">No GPU is required anywhere. Everything is sized for a laptop CPU. Chapter 10
+<p class="tiny">No GPU is required anywhere. Everything is sized for a laptop CPU. Chapter 11
 trains a real language model in about 14 minutes.</p>
 
 <div class="parts" id="parts"></div>
@@ -182,7 +182,7 @@ logits        (B, T, V)                     # one distribution per position</cod
 FlashAttention versions, Chinchilla coefficients) come from primary papers and public model configs,
 checked <b>August 2026</b>. Every quantitative claim the course makes about its own code is backed by
 a test in <code>tests/test_tfs.py</code>. Where something is contested or open, the text says so
-rather than stating it flatly. Chapter 18 is deliberately dated and will age; Chapters 1–17 cover
+rather than stating it flatly. Chapter 19 is deliberately dated and will age; Chapters 1–18 cover
 mechanisms that have been stable for years.</p>
 </div>
 
@@ -193,8 +193,8 @@ mechanisms that have been stable for years.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=7"></script>
-<script src="assets/course.js?v=7"></script>
+<script src="assets/chapters.js?v=9"></script>
+<script src="assets/course.js?v=9"></script>
 <script>
 (function () {
   const wrap = document.getElementById("parts");

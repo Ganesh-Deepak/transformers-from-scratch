@@ -9,13 +9,17 @@
            Cascadia Mono               (every shape annotation)
            Cambria Math                (mathematics)
 
-   Colour  WARM in both themes. Light is parchment (luminance 0.853), never
-           glaring white. Dark is a warm deep plum, not blue-black.
-           The boldness is spent on the DIMENSION palette, because here colour
-           encodes which tensor axis you are looking at. The teal accent is
-           deliberately excluded from those hues so it can never be mistaken
-           for one. Neither theme is an inversion of the other -- each was
-           picked on its own ground and WCAG-checked (tests/check_ui.js).
+   Colour  Taken from scientific plotting: a calm neutral ground with VIVID
+           categorical hues, because in this course colour encodes WHICH
+           TENSOR AXIS you are looking at. Boldness is spent there and
+           nowhere else.
+             light  #F4F6F7 pale cool grey (lum 0.919 -- not white, not cream)
+                    cards in true white so they lift off the ground
+             dark   #18191B neutral charcoal -- deliberately not blue, not brown
+           The violet accent is excluded from the four dimension hues so it can
+           never be mistaken for one. Neither theme is an inversion of the
+           other; each was picked on its own ground and WCAG-checked
+           (tests/check_ui.js).
    ========================================================================= */
 
 /* ---------------------------------------------------------------- tokens */
@@ -41,52 +45,50 @@
   --breakout: var(--wide);   /* grows on large screens — see below */
   --rule: 1px;
 
-  /* -- light theme (default) — WARM PARCHMENT, never glaring white ------- */
-  /* paper luminance 0.853; pure white is 1.000 and is what makes long
-     reading sessions hurt. Every pair below is WCAG-checked (tests/check_ui.js). */
-  --paper:      #F4EDE2;   /* warm parchment */
-  --surface:    #FBF6EC;   /* raised card — lighter than paper, still warm */
-  --surface-2:  #EAE1D2;   /* recessed */
-  --ink:        #2B241D;   /* warm dark brown-black, not blue-black */
-  --ink-2:      #574C40;
-  --ink-3:      #877A6B;
-  --ink-4:      #AEA294;
-  --line:       #DFD4C1;
-  --line-2:     #C9BCA6;
+  /* -- light theme (default) — pale cool grey, vivid hues ---------------- */
+  --paper: #F4F6F7;     /* pale cool grey — calm, not glaring, not cream */
+  --surface: #FFFFFF;   /* true white: cards lift off the grey ground */
+  --surface-2: #E7EBED;
+  --ink: #16191C;       /* crisp near-black */
+  --ink-2: #444A50;
+  --ink-3: #6B737A;
+  --ink-4: #98A1A8;
+  --line: #DCE1E4;
+  --line-2: #C1C8CD;
 
-  --accent:     #0A6A62;   /* deep teal — links, interaction, progress */
-  --accent-2:   #075049;
-  --accent-bg:  #DDEBE7;
+  --accent: #6B2FD0;    /* violet — links, interaction, progress */
+  --accent-2: #5424A8;
+  --accent-bg: #EDE6FB;
 
   /* dimension family — SEMANTIC: colour tells you which tensor axis.
-     Risograph-ish: vivid enough to be cheerful, muted enough to read on paper. */
-  --dim-1: #95580D;   /* marigold — Q / axis 0 / batch   */
-  --dim-2: #3A4FB5;   /* cobalt   — K / axis 1 / time    */
-  --dim-3: #AE3556;   /* raspberry— V / axis 2 / feature */
-  --dim-4: #46753A;   /* fern     — O / output           */
-  --dim-1-bg: #F6E9D4;
-  --dim-2-bg: #E4E6F5;
-  --dim-3-bg: #F6E3E7;
-  --dim-4-bg: #E6EEDD;
+     Saturated on purpose. The previous muted set read as faded. */
+  --dim-1: #C2410C;     /* orange  — Q / axis 0 / batch   */
+  --dim-2: #1D4ED8;     /* blue    — K / axis 1 / time    */
+  --dim-3: #BE185D;     /* magenta — V / axis 2 / feature */
+  --dim-4: #15803D;     /* green   — O / output           */
+  --dim-1-bg: #FCEFE7;
+  --dim-2-bg: #E2E9FB;
+  --dim-3-bg: #FBE4EF;
+  --dim-4-bg: #EEF9F1;
 
   /* semantic status — separate from accent */
-  --ok:    #35652F;
-  --warn:  #855309;
-  --stop:  #A32E25;
-  --ok-bg:   #E4EDDF;
-  --warn-bg: #F6EAD5;
-  --stop-bg: #F6E3E0;
+  --ok: #15803D;
+  --warn: #A15C07;
+  --stop: #C0261B;
+  --ok-bg: #EEF9F1;
+  --warn-bg: #FBEFDD;
+  --stop-bg: #FBE5E3;
 
   /* syntax */
-  --syn-comment: #8A7D6E;
-  --syn-key:     #9B3070;
-  --syn-str:     #35652F;
-  --syn-num:     #95580D;
-  --syn-fn:      #2A5395;
-  --syn-builtin: #6A44A8;
-  --syn-shape:   #0A6A62;
+  --syn-comment: #7A828A;
+  --syn-key: #A21C74;
+  --syn-str: #15803D;
+  --syn-num: #B4520B;
+  --syn-fn: #1D4ED8;
+  --syn-builtin: #6B2FD0;
+  --syn-shape: #0E7C74;
 
-  --shadow: 0 1px 2px rgba(43,36,29,.06), 0 8px 24px -12px rgba(43,36,29,.18);
+  --shadow: 0 1px 2px rgba(22,25,28,.05), 0 8px 24px -12px rgba(22,25,28,.16);
 }
 
 /* -- dark theme: OS preference ------------------------------------------
@@ -96,116 +98,116 @@
    for `background` while working for `color`. This is unambiguous. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --paper: #1C1722;
-    --surface: #262030;
-    --surface-2: #312A3C;
-    --ink: #F0E7DC;
-    --ink-2: #C0B4AC;
-    --ink-3: #95879B;
-    --ink-4: #6F6675;
-    --line: #342C3E;
-    --line-2: #473D53;
-    --accent: #54DBC4;
-    --accent-2: #7BE8D6;
-    --accent-bg: #16342F;
-    --dim-1: #F5BA55;
-    --dim-2: #9BADFA;
-    --dim-3: #F792AC;
-    --dim-4: #95D283;
-    --dim-1-bg: #33280F;
-    --dim-2-bg: #22254A;
-    --dim-3-bg: #3A1F2A;
-    --dim-4-bg: #22321B;
-    --ok: #84D07F;
-    --warn: #EDBA63;
-    --stop: #F78C81;
-    --ok-bg: #1B2E1B;
-    --warn-bg: #332714;
-    --stop-bg: #361E1C;
-    --syn-comment: #8A7F94;
-    --syn-key: #F79ACF;
-    --syn-str: #A0DDA3;
-    --syn-num: #F5C182;
-    --syn-fn: #8FBEF5;
-    --syn-builtin: #C3A8FA;
+    --paper: #18191B;
+    --surface: #212327;
+    --surface-2: #2B2E33;
+    --ink: #EDEFF1;
+    --ink-2: #B4BBC2;
+    --ink-3: #8A929A;
+    --ink-4: #666D74;
+    --line: #2C3035;
+    --line-2: #3E434A;
+    --accent: #B08CFF;
+    --accent-2: #C7ACFF;
+    --accent-bg: #241B3A;
+    --dim-1: #FB923C;
+    --dim-2: #60A5FA;
+    --dim-3: #F472B6;
+    --dim-4: #4ADE80;
+    --dim-1-bg: #33220F;
+    --dim-2-bg: #14243D;
+    --dim-3-bg: #331A28;
+    --dim-4-bg: #14301E;
+    --ok: #4ADE80;
+    --warn: #FBBF4C;
+    --stop: #FB7C70;
+    --ok-bg: #14301E;
+    --warn-bg: #33280F;
+    --stop-bg: #331A18;
+    --syn-comment: #7C848C;
+    --syn-key: #F49AD8;
+    --syn-str: #7EE6A0;
+    --syn-num: #FBBF4C;
+    --syn-fn: #60A5FA;
+    --syn-builtin: #B08CFF;
     --syn-shape: #54DBC4;
-    --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 30px -14px rgba(0,0,0,.65);
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
   }
 }
 
 /* -- explicit toggle must win in BOTH directions ------------------------ */
 :root[data-theme="light"] {
-  --paper: #F4EDE2;
-  --surface: #FBF6EC;
-  --surface-2: #EAE1D2;
-  --ink: #2B241D;
-  --ink-2: #574C40;
-  --ink-3: #877A6B;
-  --ink-4: #AEA294;
-  --line: #DFD4C1;
-  --line-2: #C9BCA6;
-  --accent: #0A6A62;
-  --accent-2: #075049;
-  --accent-bg: #DDEBE7;
-  --dim-1: #95580D;
-  --dim-2: #3A4FB5;
-  --dim-3: #AE3556;
-  --dim-4: #46753A;
-  --dim-1-bg: #F6E9D4;
-  --dim-2-bg: #E4E6F5;
-  --dim-3-bg: #F6E3E7;
-  --dim-4-bg: #E6EEDD;
-  --ok: #35652F;
-  --warn: #855309;
-  --stop: #A32E25;
-  --ok-bg: #E4EDDF;
-  --warn-bg: #F6EAD5;
-  --stop-bg: #F6E3E0;
-  --syn-comment: #8A7D6E;
-  --syn-key: #9B3070;
-  --syn-str: #35652F;
-  --syn-num: #95580D;
-  --syn-fn: #2A5395;
-  --syn-builtin: #6A44A8;
-  --syn-shape: #0A6A62;
-  --shadow: 0 1px 2px rgba(43,36,29,.06), 0 8px 24px -12px rgba(43,36,29,.18);
+  --paper: #F4F6F7;
+  --surface: #FFFFFF;
+  --surface-2: #E7EBED;
+  --ink: #16191C;
+  --ink-2: #444A50;
+  --ink-3: #6B737A;
+  --ink-4: #98A1A8;
+  --line: #DCE1E4;
+  --line-2: #C1C8CD;
+  --accent: #6B2FD0;
+  --accent-2: #5424A8;
+  --accent-bg: #EDE6FB;
+  --dim-1: #C2410C;
+  --dim-2: #1D4ED8;
+  --dim-3: #BE185D;
+  --dim-4: #15803D;
+  --dim-1-bg: #FCEFE7;
+  --dim-2-bg: #E2E9FB;
+  --dim-3-bg: #FBE4EF;
+  --dim-4-bg: #EEF9F1;
+  --ok: #15803D;
+  --warn: #A15C07;
+  --stop: #C0261B;
+  --ok-bg: #EEF9F1;
+  --warn-bg: #FBEFDD;
+  --stop-bg: #FBE5E3;
+  --syn-comment: #7A828A;
+  --syn-key: #A21C74;
+  --syn-str: #15803D;
+  --syn-num: #B4520B;
+  --syn-fn: #1D4ED8;
+  --syn-builtin: #6B2FD0;
+  --syn-shape: #0E7C74;
+  --shadow: 0 1px 2px rgba(22,25,28,.05), 0 8px 24px -12px rgba(22,25,28,.16);
 }
 
 :root[data-theme="dark"] {
-  --paper: #1C1722;
-  --surface: #262030;
-  --surface-2: #312A3C;
-  --ink: #F0E7DC;
-  --ink-2: #C0B4AC;
-  --ink-3: #95879B;
-  --ink-4: #6F6675;
-  --line: #342C3E;
-  --line-2: #473D53;
-  --accent: #54DBC4;
-  --accent-2: #7BE8D6;
-  --accent-bg: #16342F;
-  --dim-1: #F5BA55;
-  --dim-2: #9BADFA;
-  --dim-3: #F792AC;
-  --dim-4: #95D283;
-  --dim-1-bg: #33280F;
-  --dim-2-bg: #22254A;
-  --dim-3-bg: #3A1F2A;
-  --dim-4-bg: #22321B;
-  --ok: #84D07F;
-  --warn: #EDBA63;
-  --stop: #F78C81;
-  --ok-bg: #1B2E1B;
-  --warn-bg: #332714;
-  --stop-bg: #361E1C;
-  --syn-comment: #8A7F94;
-  --syn-key: #F79ACF;
-  --syn-str: #A0DDA3;
-  --syn-num: #F5C182;
-  --syn-fn: #8FBEF5;
-  --syn-builtin: #C3A8FA;
+  --paper: #18191B;
+  --surface: #212327;
+  --surface-2: #2B2E33;
+  --ink: #EDEFF1;
+  --ink-2: #B4BBC2;
+  --ink-3: #8A929A;
+  --ink-4: #666D74;
+  --line: #2C3035;
+  --line-2: #3E434A;
+  --accent: #B08CFF;
+  --accent-2: #C7ACFF;
+  --accent-bg: #241B3A;
+  --dim-1: #FB923C;
+  --dim-2: #60A5FA;
+  --dim-3: #F472B6;
+  --dim-4: #4ADE80;
+  --dim-1-bg: #33220F;
+  --dim-2-bg: #14243D;
+  --dim-3-bg: #331A28;
+  --dim-4-bg: #14301E;
+  --ok: #4ADE80;
+  --warn: #FBBF4C;
+  --stop: #FB7C70;
+  --ok-bg: #14301E;
+  --warn-bg: #33280F;
+  --stop-bg: #331A18;
+  --syn-comment: #7C848C;
+  --syn-key: #F49AD8;
+  --syn-str: #7EE6A0;
+  --syn-num: #FBBF4C;
+  --syn-fn: #60A5FA;
+  --syn-builtin: #B08CFF;
   --syn-shape: #54DBC4;
-  --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 30px -14px rgba(0,0,0,.65);
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
 }
 
 /* ------------------------------------------------------------------ base */
@@ -227,6 +229,7 @@ html {
 
 body {
   margin: 0;
+  overflow-x: clip;            /* belt-and-braces: no sideways page scroll */
   background: var(--paper);
   color: var(--ink);
   font-family: var(--body);
@@ -419,7 +422,7 @@ main > .exercise,
 main > .quiz,
 main > .example,
 main > .mathblock {
-  max-width: none;             /* fill main, i.e. the full breakout width */
+  max-width: 100%;             /* fill main (breakout-wide), never the viewport */
 }
 
 /* On large displays let that breakout keep growing. Prose does not. */
@@ -429,6 +432,19 @@ main > .mathblock {
 .box pre, .example pre, .exercise pre, .quiz pre,
 .reveal pre, .box .tw, .example .tw, .exercise .tw, .reveal .tw {
   width: auto;
+  max-width: 100%;
+}
+
+/* THE grid/flex overflow trap: a grid or flex item defaults to
+   `min-width: auto`, which means it refuses to shrink below its content. A
+   wide <pre> inside then pushes the whole page sideways instead of scrolling
+   inside its own box. Every container that can hold a <pre> needs min-width:0. */
+main > *,
+.example, .example .step, .example .step > *,
+.exercise, .exercise > .eb,
+.box, .quiz, .qitem, .opt, .reveal, .reveal > div,
+.grid2, .grid2 > * {
+  min-width: 0;
 }
 
 /* Set before first paint so a collapsed sidebar never flashes open. Replaced
@@ -459,10 +475,13 @@ main > .mathblock {
    `max-width:100%` on a child resolves against main and silently caps it. */
 main {
   position: relative;          /* anchor for the live margin */
-  max-width: var(--breakout);
+  width: 100%;
+  max-width: min(var(--breakout), 100%);
   min-width: 0;
 }
-main > * { max-width: var(--measure); }
+/* min() is load-bearing: a bare `37rem` is 592px, which overflows any phone.
+   Every width below must be able to shrink to the viewport. */
+main > * { max-width: min(var(--measure), 100%); }
 
 /* The live margin. Absolutely positioned with NO `top`, so each note keeps its
    static position — i.e. it lines up with the paragraph it follows. */
@@ -495,7 +514,7 @@ main > * { max-width: var(--measure); }
 
 /* Below the breakpoint the margin folds back into the column. */
 @media (max-width: 66rem) {
-  .wrap { max-width: var(--measure); }
+  .wrap { max-width: calc(var(--measure) + 2 * clamp(1rem, 4vw, 2.5rem)); }
   .mn {
     position: static; width: auto;
     border-top: 0; border-left: 2px solid var(--line-2);
@@ -541,7 +560,8 @@ h4 {
   margin: 1.8rem 0 .5rem;
 }
 
-p { margin: 0 0 1.1rem; }
+p { margin: 0 0 1.1rem; overflow-wrap: break-word; }
+li, td, th, dd { overflow-wrap: break-word; }
 .lead {
   font-size: 1.16rem; line-height: 1.6; color: var(--ink-2);
   margin-bottom: 1.8rem;
