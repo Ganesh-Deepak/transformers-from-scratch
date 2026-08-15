@@ -106,6 +106,8 @@ for (const theme of ["light", "dark"]) {
     ["dim-2 on paper", t["--dim-2"], t["--paper"], 3.0],
     ["dim-3 on paper", t["--dim-3"], t["--paper"], 3.0],
     ["dim-4 on paper", t["--dim-4"], t["--paper"], 3.0],
+    ["dim-5 on paper", t["--dim-5"], t["--paper"], 3.0],
+    ["dim-5 on surface", t["--dim-5"], t["--surface"], 3.0],
     ["ok on ok-bg", t["--ok"], t["--ok-bg"], 4.5],
     ["warn on warn-bg", t["--warn"], t["--warn-bg"], 4.5],
     ["stop on stop-bg", t["--stop"], t["--stop-bg"], 4.5],
@@ -115,13 +117,33 @@ for (const theme of ["light", "dark"]) {
     ok(r >= min, label.padEnd(20), `${r.toFixed(2)}:1 (need ${min})`);
   }
 
-  // the dimension hues must be mutually distinguishable
-  const dims = ["--dim-1", "--dim-2", "--dim-3", "--dim-4"].map(k => t[k]);
+  /* The dimension hues must be mutually distinguishable. Since colour here
+     encodes WHICH TENSOR AXIS, two axes that look alike is the exact failure
+     the palette exists to prevent — so separation is checked by HUE ANGLE,
+     not luminance. Two colours can share a luminance and still be obviously
+     different (blue vs orange); they cannot share a hue and be told apart. */
+  const dims = ["--dim-1", "--dim-2", "--dim-3", "--dim-4", "--dim-5"].map(k => t[k]);
+  const hueOf = hex => {
+    const c = hex.replace("#", "");
+    const [r, g, b] = [0, 2, 4].map(i => parseInt(c.substr(i, 2), 16) / 255);
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+    if (!d) return 0;
+    const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return (Math.round(h * 60) + 360) % 360;
+  };
+  let minHue = 360, worst = "";
+  for (let i = 0; i < dims.length; i++)
+    for (let j = i + 1; j < dims.length; j++) {
+      let d = Math.abs(hueOf(dims[i]) - hueOf(dims[j]));
+      d = Math.min(d, 360 - d);
+      if (d < minHue) { minHue = d; worst = `dim-${i + 1}/dim-${j + 1}`; }
+    }
+  ok(minHue >= 30, "axis hues at least 30deg apart", `closest ${worst} at ${minHue}deg`);
   let minDelta = 99;
   for (let i = 0; i < dims.length; i++)
     for (let j = i + 1; j < dims.length; j++)
       minDelta = Math.min(minDelta, Math.abs(relLum(dims[i]) - relLum(dims[j])));
-  console.log(` dimension palette: 4 hues, min luminance delta ${minDelta.toFixed(3)}`);
+  console.log(` dimension palette: ${dims.length} hues, min luminance delta ${minDelta.toFixed(3)}`);
   ok(t["--accent"] !== undefined && !dims.includes(t["--accent"]),
      "accent excluded from dimension hues");
 }

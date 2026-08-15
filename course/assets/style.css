@@ -111,10 +111,12 @@
   --dim-2: #1B4FA8;     /* blue    — K / axis 1 / time    */
   --dim-3: #A3176B;     /* magenta — V / axis 2 / feature */
   --dim-4: #3F6B14;     /* green   — O / output           */
+  --dim-5: #0B6A62;
   --dim-1-bg: #F7E0CE;
   --dim-2-bg: #DCE4F4;
   --dim-3-bg: #F4DAE7;
   --dim-4-bg: #E2EACB;
+  --dim-5-bg: #D7E9E6;
 
   /* semantic status — separate from accent */
   --ok: #2F6B22;
@@ -165,10 +167,12 @@
     --dim-2: #6FB4FF;
     --dim-3: #FF7BC0;
     --dim-4: #A8E05F;
+    --dim-5: #4FE0C6;
     --dim-1-bg: #4A2B12;
     --dim-2-bg: #1B3159;
     --dim-3-bg: #4A2135;
     --dim-4-bg: #2C4117;
+    --dim-5-bg: #10332E;
     --ok: #8CD46A;
     --warn: #F5C059;
     --stop: #FF8E76;
@@ -207,10 +211,12 @@
   --dim-2: #1B4FA8;
   --dim-3: #A3176B;
   --dim-4: #3F6B14;
+  --dim-5: #0B6A62;
   --dim-1-bg: #F7E0CE;
   --dim-2-bg: #DCE4F4;
   --dim-3-bg: #F4DAE7;
   --dim-4-bg: #E2EACB;
+  --dim-5-bg: #D7E9E6;
   --ok: #2F6B22;
   --warn: #8A5405;
   --stop: #A82A16;
@@ -247,10 +253,12 @@
   --dim-2: #6FB4FF;
   --dim-3: #FF7BC0;
   --dim-4: #A8E05F;
+  --dim-5: #4FE0C6;
   --dim-1-bg: #4A2B12;
   --dim-2-bg: #1B3159;
   --dim-3-bg: #4A2135;
   --dim-4-bg: #2C4117;
+  --dim-5-bg: #10332E;
   --ok: #8CD46A;
   --warn: #F5C059;
   --stop: #FF8E76;
@@ -1281,4 +1289,86 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
     box-shadow: none !important; break-inside: avoid;
   }
   .hero::before { display: none; }
+}
+
+/* ==========================================================================
+   AXIS HIGHLIGHTING — colour encodes WHICH AXIS, not which tensor.
+
+   Why this exists: (B,T,C) and (B,C,T) differ only by POSITION, so the axis
+   identity is the one thing the notation cannot tell you. Colour is the
+   scarce channel and it now buys exactly that. Hover/focus/tap any axis and
+   every other occurrence of the same axis on the page lights up — including
+   inside <pre>, which is where the reshape actually happens.
+
+   NOT COLOUR-ONLY. The whole system is colour-coded, so an active state that
+   were only a hue change would be invisible to a colour-blind reader and in
+   greyscale. Four independent channels move together:
+     1. everything else DIMS to .28 opacity   (luminance)
+     2. the active axis gains a 2px underline (shape)
+     3. it gains a tinted background          (area)
+     4. pinned adds a solid ring              (outline)
+   Cover the hues and the state is still unambiguous.
+
+   Progressive enhancement: axis COLOURS are plain CSS on [data-axis], so with
+   JS disabled every shape still renders correctly coloured — only the
+   interactive highlight is lost. Nothing depends on axes.js to be legible.
+   ====================================================================== */
+
+.shp {
+  /* a transparent inline group, NOT a chip: it has to sit inside <pre>
+     without disturbing monospace alignment, so nothing here may change
+     metrics — no padding, no border, no font-size change. */
+  white-space: nowrap;
+}
+.shp:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+b[data-axis] {
+  cursor: pointer;
+  font-weight: 700;
+  border-radius: 2px;
+  transition: opacity .12s ease, background-color .12s ease;
+}
+b[data-axis="batch"]   { color: var(--dim-1); }
+b[data-axis="time"]    { color: var(--dim-2); }
+b[data-axis="feat"]    { color: var(--dim-3); }
+b[data-axis="head"]    { color: var(--dim-4); }
+b[data-axis="headdim"] { color: var(--dim-5); }
+/* vocab has no hue of its own: every remaining gap in hue space sits within
+   45deg of an axis already in use, and a near-miss colour is worse than none.
+   It gets a non-hue treatment instead. */
+b[data-axis="vocab"]   { color: var(--ink-2); border-bottom: 1.5px dotted currentColor; }
+
+/* --- channel 1: when ANY axis is active, everything else recedes --------- */
+:root[data-ax] b[data-axis] { opacity: .28; }
+
+/* --- channels 2 + 3: the active axis comes forward ---------------------- */
+:root[data-ax~="batch"]   b[data-axis="batch"],
+:root[data-ax~="time"]    b[data-axis="time"],
+:root[data-ax~="feat"]    b[data-axis="feat"],
+:root[data-ax~="head"]    b[data-axis="head"],
+:root[data-ax~="headdim"] b[data-axis="headdim"],
+:root[data-ax~="vocab"]   b[data-axis="vocab"] {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 18%, transparent);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+/* --- channel 4: pinned is a stronger, persistent state ------------------ */
+:root[data-ax-pinned~="batch"]   b[data-axis="batch"],
+:root[data-ax-pinned~="time"]    b[data-axis="time"],
+:root[data-ax-pinned~="feat"]    b[data-axis="feat"],
+:root[data-ax-pinned~="head"]    b[data-axis="head"],
+:root[data-ax-pinned~="headdim"] b[data-axis="headdim"],
+:root[data-ax-pinned~="vocab"]   b[data-axis="vocab"] {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
+/* keyboard cursor inside a focused badge */
+b[data-axis].ax-cursor { outline: 2px dashed currentColor; outline-offset: 1px; opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  b[data-axis] { transition: none; }
 }

@@ -68,7 +68,7 @@ Small enough to track every value.</p>
 </div></div>
 
 <div class="step"><div class="i">2</div><div>
-<b><code>.view(B, T, 3, 4)</code> re-labels — it does not move anything.</b>
+<b><code>.view<span class="shp">(<b data-axis="batch">B</b>, <b data-axis="time">T</b>, 3, 4)</span></code> re-labels — it does not move anything.</b>
 <pre style="margin:.4rem 0"><code class="nohl">head 0 -> [10, 11, 12, 13]
 head 1 -> [20, 21, 22, 23]
 head 2 -> [30, 31, 32, 33]</code></pre>
@@ -78,14 +78,14 @@ Head <i>h</i> gets features <code>h·4 … h·4+3</code>. The 12 features are
 
 <div class="step"><div class="i">3</div><div>
 <b>Each head now attends independently</b> over its own 4 dimensions. Head 0 never sees
-features 4–11. Three separate <code>(T, 4)</code> problems instead of one <code>(T, 12)</code>.
+features 4–11. Three separate <code><span class="shp">(<b data-axis="time">T</b>, 4)</span></code> problems instead of one <code><span class="shp">(<b data-axis="time">T</b>, 12)</span></code>.
 </div></div>
 
 <div class="step"><div class="i">4</div><div>
 <b>Merging back — and the bug.</b> Say attention returns each head unchanged. The correct merge
 concatenates <i>this token's</i> three head-outputs:
 <pre style="margin:.4rem 0"><code class="nohl">correct:  [10,11,12,13, 20,21,22,23, 30,31,32,33]   <- what we started with</code></pre>
-Skip the transpose and <code>reshape</code> reads memory in <code>(head, token)</code> order
+Skip the transpose and <code>reshape</code> reads memory in <code><span class="shp">(<b data-axis="head">head</b>, <b data-axis="time">token</b>)</span></code> order
 instead, so with 2 tokens you get token 0's vector built partly from <b>token 1's</b> head
 outputs. Shapes stay valid; the model just quietly learns something worse.
 </div></div>
@@ -111,7 +111,7 @@ print("wrong[0,0] =", wrong[0, 0].tolist())
 
 <div class="mn">
   <span class="k">Why it hides</span>
-  Both merges give shape <code>(B, T, C)</code>. Nothing raises. The model still trains — just
+  Both merges give shape <code><span class="shp">(<b data-axis="batch">B</b>, <b data-axis="time">T</b>, <b data-axis="feat">C</b>)</span></code>. Nothing raises. The model still trains — just
   to a worse loss, with no error message pointing at the cause.
 </div>
 
@@ -160,8 +160,8 @@ out = W_o(out)                                 # (2, 100, 512)
 <p>After <code>transpose(1,2)</code> the tensor is <b>not contiguous</b> — its strides are out of order.
 <code>.view()</code> then raises:</p>
 <pre style="margin:.6em 0"><code class="nohl">RuntimeError: view size is not compatible with input tensor's size and stride</code></pre>
-<p style="margin-bottom:0">Two valid fixes: <code>.contiguous().view(B,T,C)</code> or just
-<code>.reshape(B,T,C)</code> (which calls <code>contiguous</code> internally when needed). What you must
+<p style="margin-bottom:0">Two valid fixes: <code>.contiguous().view<span class="shp">(<b data-axis="batch">B</b>,<b data-axis="time">T</b>,<b data-axis="feat">C</b>)</span></code> or just
+<code>.reshape<span class="shp">(<b data-axis="batch">B</b>,<b data-axis="time">T</b>,<b data-axis="feat">C</b>)</span></code> (which calls <code>contiguous</code> internally when needed). What you must
 <b>not</b> do is "fix" it by reordering the transpose — that silently interleaves head outputs and produces a
 model that trains to a mediocre loss and never tells you why.</p>
 </div>
@@ -186,7 +186,7 @@ MultiHead(Q,K,V) = Concat(head<sub>1</sub>, …, head<sub>h</sub>) W<sup>O</sup>
 <span class="math">(d<sub>model</sub>, d<sub>model</sub>)</span> and slices the output. These are
 mathematically identical — the big matrix is just the small ones stacked side by side — but the single
 matmul is far faster on a GPU. Most implementations go further and fuse Q, K, V into one
-<code>(C, 3C)</code> projection, then split.</p>
+<code><span class="shp">(<b data-axis="feat">C</b>, <b data-axis="feat">3C</b>)</span></code> projection, then split.</p>
 </div>
 
 <h2>6.3 · A complete, correct implementation</h2>
@@ -246,7 +246,7 @@ class MultiHeadAttention(nn.Module):
 <div class="quiz" data-title="Checkpoint 1 — the dance">
 <div class="qitem" data-answer="1">
   <div class="qq"><code>d_model=768</code>, <code>n_head=12</code>. After
-  <code>q.view(B,T,12,64).transpose(1,2)</code>, what shape is <code>q</code> for <code>B=4, T=256</code>?</div>
+  <code>q.view<span class="shp">(<b data-axis="batch">B</b>,<b data-axis="time">T</b>,12,64)</span>.transpose(1,2)</code>, what shape is <code>q</code> for <code>B=4, T=256</code>?</div>
   <div class="opts">
     <div class="opt">(4, 256, 12, 64)</div>
     <div class="opt">(4, 12, 256, 64)</div>
@@ -254,7 +254,7 @@ class MultiHeadAttention(nn.Module):
     <div class="opt">(4, 256, 768)</div>
   </div>
   <div class="expl"><b>(4, 12, 256, 64).</b> <code>transpose(1,2)</code> swaps axes 1 and 2, so
-  <code>(B, T, nh, hd) → (B, nh, T, hd)</code>. The last two axes are now the <code>(T, d_head)</code>
+  <code><span class="shp">(<b data-axis="batch">B</b>, <b data-axis="time">T</b>, <b data-axis="head">nh</b>, <b data-axis="headdim">hd</b>)</span> → <span class="shp">(<b data-axis="batch">B</b>, <b data-axis="head">nh</b>, <b data-axis="time">T</b>, <b data-axis="headdim">hd</b>)</span></code>. The last two axes are now the <code><span class="shp">(<b data-axis="time">T</b>, <b data-axis="headdim">d_head</b>)</span></code>
   matrix that attention operates on, batched over <code>B×nh = 48</code> independent problems.</div>
 </div>
 <div class="qitem" data-answer="0">
@@ -265,22 +265,22 @@ class MultiHeadAttention(nn.Module):
     <div class="opt">1/12 the parameters</div>
     <div class="opt">12× the FLOPs</div>
   </div>
-  <div class="expl"><b>Same.</b> W_q is <code>(d_model, d_model)</code> either way — you're partitioning
+  <div class="expl"><b>Same.</b> W_q is <code><span class="shp">(<b data-axis="feat">d_model</b>, <b data-axis="feat">d_model</b>)</span></code> either way — you're partitioning
   its output, not adding to it. The <code>T×T</code> score matrices total
   <code>12 × T × 64</code> vs <code>1 × T × 768</code> of contraction work: identical. Multi-head attention
   is free.</div>
 </div>
 <div class="qitem" data-answer="2">
-  <div class="qq">Someone replaces <code>y.transpose(1,2).reshape(B,T,C)</code> with
-  <code>y.reshape(B,T,C)</code> (no transpose). It runs. What is now wrong?</div>
+  <div class="qq">Someone replaces <code>y.transpose(1,2).reshape<span class="shp">(<b data-axis="batch">B</b>,<b data-axis="time">T</b>,<b data-axis="feat">C</b>)</span></code> with
+  <code>y.reshape<span class="shp">(<b data-axis="batch">B</b>,<b data-axis="time">T</b>,<b data-axis="feat">C</b>)</span></code> (no transpose). It runs. What is now wrong?</div>
   <div class="opts">
     <div class="opt">Nothing — reshape handles it</div>
     <div class="opt">The batch dimension is corrupted</div>
-    <div class="opt">The output features are ordered (head, time) instead of (time, head) — each token's vector is now a mix of other tokens' head outputs</div>
+    <div class="opt">The output features are ordered <span class="shp">(<b data-axis="head">head</b>, <b data-axis="time">time</b>)</span> instead of <span class="shp">(<b data-axis="time">time</b>, <b data-axis="head">head</b>)</span> — each token's vector is now a mix of other tokens' head outputs</div>
     <div class="opt">It will raise a RuntimeError</div>
   </div>
-  <div class="expl"><b>Catastrophic silent scrambling.</b> <code>y</code> is <code>(B, nh, T, hd)</code>;
-  reshaping directly to <code>(B, T, C)</code> reinterprets <code>nh×T×hd</code> numbers in memory order —
+  <div class="expl"><b>Catastrophic silent scrambling.</b> <code>y</code> is <code><span class="shp">(<b data-axis="batch">B</b>, <b data-axis="head">nh</b>, <b data-axis="time">T</b>, <b data-axis="headdim">hd</b>)</span></code>;
+  reshaping directly to <code><span class="shp">(<b data-axis="batch">B</b>, <b data-axis="time">T</b>, <b data-axis="feat">C</b>)</span></code> reinterprets <code>nh×T×hd</code> numbers in memory order —
   so "token 0's feature vector" is actually built from head 0's outputs for tokens 0 and 1, etc.
   The shapes are all valid, nothing errors, and the model learns something mediocre. <b>This is the single
   most common bug in hand-written attention.</b> Test it: run one token through and check the output equals
@@ -415,6 +415,7 @@ importantly, a <b>4× reduction in KV cache</b>. Chapter 16.</li>
 <script src="assets/chapters.js?v=10"></script>
 <script src="assets/course.js?v=10"></script>
 <script src="assets/viz.js?v=10"></script>
+<script src="assets/axes.js?v=10"></script>
 <script>initChapter("06");</script>
 </body>
 </html>
