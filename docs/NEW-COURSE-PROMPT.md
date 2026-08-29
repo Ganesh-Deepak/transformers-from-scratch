@@ -381,12 +381,27 @@ it, because the test only reads two of the four.
 
 ## 8. Definition of done
 
+```bash
+cd tests && npm install jsdom && npm run check:all
 ```
-cd tests && npm install jsdom
-node check_ui.js          # must end "ALL CHECKS PASSED"
-node check_responsive.js  # must end "NO HORIZONTAL OVERFLOW AT ANY WIDTH"
-python serve.py           # localhost:8777, click through every chapter
-```
+
+That runs three suites, and each answers a different question:
+
+| suite | question | how |
+|---|---|---|
+| `check_ui.js` | is it BUILT and legible? | jsdom — structure, WCAG, manifest, links |
+| `check_responsive.js` | does anything OVERFLOW? | real Chrome, fixed-width iframe |
+| `check_interaction.js` | does it WORK when pressed? | real Chrome, fake clock |
+
+The third one exists because the first two never press a button. A duration
+select that saved its value but never restarted the running sprint passed both
+of them and still shipped broken. It injects a fake clock before `course.js`
+loads, so `__advance(60000)` moves a countdown one minute instantly and
+exactly — a fifteen-minute timer is testable in milliseconds. Add a scenario
+for every stateful control you build; `--all` replays the core one on every
+chapter in the manifest.
+
+Then `python serve.py` and click through, because the suites cannot see taste.
 
 `check_ui.js` verifies, in **both** themes: every colour pair against WCAG
 (4.5:1 body, 3.0:1 large/UI), ≥30° hue separation between the semantic hues,

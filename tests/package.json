@@ -1,5 +1,13 @@
 {
   "dependencies": {
     "jsdom": "^29.1.1"
+  },
+  "scripts": {
+    "check": "node check_ui.js && node check_responsive.js && node check_interaction.js",
+    "check:all": "node check_ui.js && node check_responsive.js && node check_interaction.js --all",
+    "check:ui": "node check_ui.js",
+    "check:responsive": "node check_responsive.js",
+    "check:interaction": "node check_interaction.js",
+    "check:interaction:all": "node check_interaction.js --all"
   }
 }

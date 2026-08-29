@@ -600,6 +600,27 @@ function buildStudyConsole(currentId, sections) {
     timer = null;
   };
 
+  /* One place that owns the countdown, so entering a bite, changing the
+     duration mid-sprint, and restarting an expired sprint cannot drift apart.
+     Previously this lived inline in beginFocus and ran only on first entry,
+     which is why the duration select saved a new value that nothing acted on
+     until you left focus mode and came back. */
+  const startSprint = () => {
+    stopTimer();
+    consoleEl.classList.remove("sprint-finished");
+    secondsLeft = parseInt(duration.value, 10) * 60;
+    showTimer();
+    timer = setInterval(() => {
+      secondsLeft--;
+      showTimer();
+      if (secondsLeft <= 0) {
+        stopTimer();
+        consoleEl.classList.add("sprint-finished");
+        message.textContent = "Sprint complete. Stop guilt-free, or finish the current thought.";
+      }
+    }, 1000);
+  };
+
   /* requestAnimationFrame does not fire while a tab is hidden or backgrounded,
      and these callbacks are what actually perform the scroll. Without a
      fallback, opening a chapter in a background tab and switching to it later
@@ -695,21 +716,12 @@ function buildStudyConsole(currentId, sections) {
     start.hidden = true;
     if (topToggle) { topToggle.setAttribute("aria-pressed", "true"); topToggle.textContent = "Exit focus"; }
     saveResume(currentId, groups[index]);
-    if (entering) {
-      stopTimer();
-      consoleEl.classList.remove("sprint-finished");
-      secondsLeft = parseInt(duration.value, 10) * 60;
-      showTimer();
-      timer = setInterval(() => {
-        secondsLeft--;
-        showTimer();
-        if (secondsLeft <= 0) {
-          stopTimer();
-          consoleEl.classList.add("sprint-finished");
-          message.textContent = "Sprint complete. Stop guilt-free, or finish the current thought.";
-        }
-      }, 1000);
-    }
+    /* A sprint is a budget across bites, not per bite, so moving to the next
+       bite keeps counting. Two cases restart it: entering focus mode, and
+       continuing after the budget has already run out — if you have decided
+       to keep going, a fresh sprint is more honest than a stuck 0:00 and a
+       "sprint complete" banner that no longer describes anything. */
+    if (entering || secondsLeft <= 0) startSprint();
     message.textContent = `Focused on “${groups[index].label}”. Everything else is temporarily tucked away.`;
     refresh();
     updateNavigation(index);
@@ -721,7 +733,12 @@ function buildStudyConsole(currentId, sections) {
     beginFocus(Math.max(0, Math.min(groups.length - 1, base + delta)));
   };
 
-  duration.onchange = () => Store.set("study:minutes", parseInt(duration.value, 10));
+  duration.onchange = () => {
+    Store.set("study:minutes", parseInt(duration.value, 10));
+    // Mid-sprint the reader is telling us how long they now have. Honour it
+    // immediately rather than at the next entry into focus mode.
+    if (activeIndex >= 0) startSprint();
+  };
   start.onclick = () => beginFocus(nextIndex());
   exitButton.onclick = exitFocus;
   if (topToggle) topToggle.onclick = () => activeIndex >= 0 ? exitFocus() : beginFocus(nextIndex());

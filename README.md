@@ -138,17 +138,20 @@ Everything the course claims is checked by a test. Notable ones:
 python tests/test_tfs.py         # 30 tests
 python tests/run_notebooks.py    # executes every notebook's code
 
-cd tests && npm install jsdom && node check_ui.js
-#   145 UI checks: WCAG contrast for every colour pair in BOTH themes, plus
-#   confirmation that each page builds its layout, topbar, theme toggle,
-#   copy buttons, chapter nav and quiz markers.
-
-node check_responsive.js
-#   Drives headless Chrome at 320/390/430/768/1024/1440/1920 and asserts
-#   scrollWidth <= innerWidth on every page. Caveat, printed by the script:
-#   headless Chrome clamps its window to ~504px, so the three narrowest
-#   entries are simulated, not a true 320px render.
+cd tests && npm install jsdom && npm run check:all
 ```
+
+Three suites, each answering a different question:
+
+| suite | question | how |
+|---|---|---:|
+| `check_ui.js` | is it **built** and legible? | jsdom: 727 checks — WCAG contrast for every colour pair in both themes, axis hues >=30 degrees apart, manifest integrity, every internal link, and the full interface on all 26 chapters |
+| `check_responsive.js` | does anything **overflow**? | real Chrome at 320/375/390/430/768/1024/1440/1920, each rendered in a fixed-width iframe so the narrow widths are genuine |
+| `check_interaction.js` | does it **work** when pressed? | real Chrome with a fake clock: drives clicks through every bite of every chapter and advances a 15-minute sprint in milliseconds |
+
+The third exists because the first two never press a button. A duration select
+that saved its value but never restarted the running sprint passed both of them
+and still shipped broken.
 
 ---
 
