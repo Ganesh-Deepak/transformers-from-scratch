@@ -200,8 +200,9 @@ console.log("\n=== MANIFEST INTEGRITY ==========================");
 
 (async () => {
 console.log("\n=== PAGE STRUCTURE ==============================");
-for (const file of ["index.html", "ch01-tensors.html", "ch16-gqa-mla.html", "ch10-backprop.html",
-                    "ch12-precision.html", "ch14-gpu.html", "ch19-distributed.html"]) {
+const manifestFiles = [...fs.readFileSync(path.join(ROOT, "assets", "chapters.js"), "utf8")
+  .matchAll(/id:\s*"\d+",\s*f:\s*"([^"]+)"/g)].map(m => m[1]);
+for (const file of ["index.html", ...manifestFiles]) {
   const { dom, errors, ready } = load(file, "dark");
   await ready;
   const d = dom.window.document;
@@ -229,6 +230,10 @@ for (const file of ["index.html", "ch01-tensors.html", "ch16-gqa-mla.html", "ch1
   ok(!!d.querySelector(".readbar"), "reading-progress bar present");
   ok(!!d.querySelector(".sb-toggle"), "drawer toggle present (narrow screens)");
 
+  if (file === "index.html") {
+    ok(!!d.querySelector(".home-study"), "short-session resume card built");
+  }
+
   if (file !== "index.html") {
     ok(!!d.querySelector(".chapnav"), "chapter nav built");
     ok(d.querySelectorAll(".opt .mk").length > 0, "quiz markers built");
@@ -239,6 +244,24 @@ for (const file of ["index.html", "ch01-tensors.html", "ch16-gqa-mla.html", "ch1
     const bad = [...secs].filter(a => !d.getElementById(a.getAttribute("href").slice(1)));
     ok(bad.length === 0, "every section link resolves",
        bad.map(a => a.getAttribute("href")).join(" "));
+    ok(!!d.querySelector(".study-console"), "short-session console built");
+    ok(!!d.querySelector(".focus-toggle"), "focus-mode toggle present");
+    ok(d.querySelectorAll(".study-step").length === secs.length,
+       "every section is a resumable bite", `${d.querySelectorAll(".study-step").length}/${secs.length}`);
+    ok(d.querySelectorAll(".section-tools").length === secs.length,
+       "every section has completion controls", `${d.querySelectorAll(".section-tools").length}/${secs.length}`);
+    ok(d.querySelectorAll(".bite-footer").length === secs.length,
+       "every bite has bottom navigation", `${d.querySelectorAll(".bite-footer").length}/${secs.length}`);
+    ok(!!d.querySelector(".study-nav-prev") && !!d.querySelector(".study-nav-next") &&
+       !!d.querySelector(".study-nav-last") && !!d.querySelector(".study-nav-first"),
+       "first, previous, next, and last bite controls present");
+    ok(d.querySelectorAll(".exercise .ex-check").length === d.querySelectorAll(".exercise").length,
+       "every exercise is independently trackable",
+       `${d.querySelectorAll(".exercise .ex-check").length}/${d.querySelectorAll(".exercise").length}`);
+    ok([...d.querySelectorAll(".opts")].every(x => x.getAttribute("role") === "radiogroup"),
+       "quiz option groups expose radio semantics");
+    ok([...d.querySelectorAll(".opt")].every(x => x.getAttribute("role") === "radio"),
+       "quiz choices expose radio semantics");
   }
   dom.window.close();
 }

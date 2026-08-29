@@ -3,17 +3,28 @@
      cd tests && node check_responsive.js
 
    jsdom has no layout engine, so this drives headless Chrome instead and asks
-   the page directly whether anything overflows the viewport. Catches the class
-   of bug where a fixed `37rem` measure silently exceeds a 390px phone.
-*/
+   the page directly whether anything overflows the viewport.
+
+   The page is measured inside a fixed-width IFRAME rather than by sizing the
+   browser window. --window-size is clamped by the OS to roughly 500px, so the
+   previous approach silently rendered 320, 390 and 430 all at the same ~504px
+   and reported three passes for widths it never drew. That gap hid four real
+   bugs, each of which only overflows below ~500px:
+     - the masthead (.home does not shrink, four controls beside it)
+     - .shp { white-space: nowrap } on a shape badge near the right edge
+     - tables not wrapped in .tw
+     - prose inside .opt, a display:flex container, where every text run and
+       inline span is blockified into a non-wrapping flex item
+   An iframe gets a genuine narrow viewport, so these rows now mean what they
+   say. */
 const { execFileSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
 const CHROME_CANDIDATES = [
-  "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+  "C:/Program Files/Google/Chrome/Application/chrome.exe",
   "/usr/bin/google-chrome",
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 ];
@@ -26,33 +37,32 @@ if (!CHROME) {
 const COURSE = path.join(__dirname, "..", "course");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "tfs-resp-"));
 
-// Widths that matter: phone, large phone, tablet, laptop, desktop.
-// CAVEAT: headless Chrome clamps --window-size to a minimum around 500px, so
-// the three narrowest entries all actually render at ~504px. They still catch
-// the bug class we care about (content wider than its viewport); they do NOT
-// prove true 320px behaviour. Verify a real 320px device separately.
-const WIDTHS = [320, 390, 430, 768, 1024, 1440, 1920];
-// A sample chosen for the widest content: index (card grid), ch05 (attention
-// diagrams), ch16 (wide tables), plus the three newest chapters, which are the
-// most table- and code-block-heavy in the course.
-const PAGES = ["index.html", "ch01-tensors.html", "ch05-attention.html", "ch16-gqa-mla.html",
-               "ch12-precision.html", "ch14-gpu.html", "ch19-distributed.html"];
+const WIDTHS = [320, 375, 390, 430, 768, 1024, 1440, 1920];
+const PAGES = ["index.html", "ch01-tensors.html", "ch05-attention.html", "ch06-mha.html",
+               "ch11-training.html", "ch16-gqa-mla.html", "ch17-flashattention.html",
+               "ch19-distributed.html", "ch23-sft-rlhf.html"];
 
+/* Runs INSIDE the harness page, against the iframe's window/document. */
 const PROBE = `
-(function(){
-  var d = document.documentElement, b = document.body;
-  var vw = window.innerWidth;
+function probe(W, D) {
+  var d = D.documentElement, b = D.body;
+  var vw = W.innerWidth;
   var wide = [];
-  var all = document.querySelectorAll("main *");
+  var all = D.querySelectorAll("body *");
   for (var i = 0; i < all.length; i++) {
-    var r = all[i].getBoundingClientRect();
-    // an element is a problem only if it extends PAST the viewport edge
+    var el = all[i];
+    var r = el.getBoundingClientRect();
     if (r.width > 0 && r.right > vw + 1) {
-      var el = all[i];
-      // a scroll container handles its own overflow — that is fine
-      var oc = getComputedStyle(el).overflowX;
-      var parentScrolls = el.closest("[style*='overflow'], pre, .tw, figure") !== null;
-      if (oc !== "auto" && oc !== "scroll" && !parentScrolls) {
+      // An ancestor that scrolls or clips owns its overflow, and that is fine.
+      // Walk real computed styles: the old check matched tag names and inline
+      // style attributes, which missed .tw wrappers and any new container.
+      var a = el.parentElement, contained = false;
+      while (a && a !== D.body) {
+        var ox = W.getComputedStyle(a).overflowX;
+        if (ox === "auto" || ox === "scroll" || ox === "hidden" || ox === "clip") { contained = true; break; }
+        a = a.parentElement;
+      }
+      if (!contained) {
         wide.push(el.tagName.toLowerCase() + "." + (el.className || "").toString().split(" ")[0]
                   + " right=" + Math.round(r.right));
       }
@@ -61,56 +71,66 @@ const PROBE = `
   return JSON.stringify({
     vw: vw,
     docScrollW: d.scrollWidth,
+    clientW: d.clientWidth,
     bodyScrollW: b.scrollWidth,
-    overflows: d.scrollWidth > vw + 1,
+    overflows: d.scrollWidth > d.clientWidth + 1,
     offenders: wide.slice(0, 4)
   });
-})()
+}
 `;
 
 function measure(page, width) {
-  // pin the theme and stub storage so nothing depends on prior state
-  let src = fs.readFileSync(path.join(COURSE, page), "utf8");
-  src = src.replace(/href="assets\//g, `href="file:///${COURSE.replace(/\\/g, "/")}/assets/`)
-           .replace(/src="assets\//g, `src="file:///${COURSE.replace(/\\/g, "/")}/assets/`);
-  const probeHtml = src.replace("</body>",
-    `<script>window.addEventListener("load",function(){
-       setTimeout(function(){
-         document.title = "RESULT:" + ${JSON.stringify(PROBE)}.length; // keep simple
-         var el = document.createElement("pre"); el.id="__probe";
-         el.textContent = (function(){ ${PROBE.trim().replace(/^\(function\(\)\{/, "").replace(/\}\)\(\)$/, "")} })();
-         document.body.appendChild(el);
-       }, 250);
-     });</script></body>`);
-  const f = path.join(TMP, `${width}-${page}`);
-  fs.writeFileSync(f, probeHtml);
+  const pageUrl = "file:///" + path.join(COURSE, page).split(path.sep).join("/");
+  const wrapper = [
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><style>',
+    'html,body{margin:0;padding:0;overflow:hidden}',
+    'iframe{width:' + width + 'px;height:900px;border:0;display:block}',
+    '</style></head><body>',
+    '<iframe id="f" src="' + pageUrl + '"></iframe><pre id="__probe"></pre>',
+    '<script>', PROBE,
+    'document.getElementById("f").addEventListener("load", function(){',
+    '  var f = document.getElementById("f");',
+    '  setTimeout(function(){',
+    '    var out;',
+    '    try { out = probe(f.contentWindow, f.contentDocument); }',
+    '    catch (e) { out = JSON.stringify({ error: String(e) }); }',
+    '    document.getElementById("__probe").textContent = out;',
+    '  }, 500);',
+    '});',
+    '<\/script></body></html>',
+  ].join("\n");
+
+  const f = path.join(TMP, width + "-" + page);
+  fs.writeFileSync(f, wrapper);
   const out = execFileSync(CHROME, [
     "--headless", "--disable-gpu", "--no-sandbox",
-    `--window-size=${width},900`,
-    `--user-data-dir=${path.join(TMP, "prof" + width)}`,
-    "--virtual-time-budget=4000", "--dump-dom",
-    "file:///" + f.replace(/\\/g, "/"),
+    "--window-size=1400,1000",
+    "--allow-file-access-from-files",
+    "--user-data-dir=" + path.join(TMP, "prof" + width),
+    "--virtual-time-budget=6000", "--dump-dom",
+    "file:///" + f.split(path.sep).join("/"),
   ], { encoding: "utf8", maxBuffer: 40 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
   const m = out.match(/<pre id="__probe">([\s\S]*?)<\/pre>/);
-  if (!m) return null;
+  if (!m || !m[1].trim()) return null;
   return JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&")
                         .replace(/&lt;/g, "<").replace(/&gt;/g, ">"));
 }
 
 let fail = 0;
-console.log("Horizontal overflow check — document must never exceed the viewport\n");
+console.log("Horizontal overflow check — document must never exceed the viewport");
+console.log("(measured in a fixed-width iframe, so narrow widths are real)\n");
 for (const page of PAGES) {
   console.log(` ${page}`);
   for (const w of WIDTHS) {
     const r = measure(page, w);
-    if (!r) { console.log(`   ${String(w).padStart(4)}px   probe failed`); fail++; continue; }
-    const bad = r.docScrollW > r.vw + 1;
+    if (!r || r.error) { console.log(`   ${String(w).padStart(4)}px   probe failed ${r ? r.error : ""}`); fail++; continue; }
+    const bad = r.overflows;
     if (bad) fail++;
     console.log(`   ${String(w).padStart(4)}px   ${bad ? "FAIL" : "ok  "}  ` +
-      `scrollW ${String(r.docScrollW).padStart(5)} vs vw ${String(r.vw).padStart(5)}` +
+      `scrollW ${String(r.docScrollW).padStart(5)} vs client ${String(r.clientW).padStart(5)}` +
       (bad && r.offenders.length ? `   ${r.offenders.join(" | ")}` : ""));
   }
 }
 fs.rmSync(TMP, { recursive: true, force: true });
-console.log(`\n${fail === 0 ? "NO HORIZONTAL OVERFLOW AT ANY WIDTH" : fail + " WIDTH(S) OVERFLOW"}`);
+console.log(`\n${fail === 0 ? "NO HORIZONTAL OVERFLOW AT ANY WIDTH (320px up)" : fail + " WIDTH(S) OVERFLOW"}`);
 process.exit(fail ? 1 : 0);

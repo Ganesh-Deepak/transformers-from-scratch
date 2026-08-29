@@ -133,12 +133,19 @@ function tfsResolveAxis(part) {
   document.addEventListener("mouseout", function (e) {
     var a = axisOf(e.target); if (a) window.tfsAxis.unhover(a);
   });
+  /* CAPTURE phase, and it stops propagation. Quiz options bind their own
+     onclick directly on .opt (course.js), and a quiz locks on first answer.
+     A bubble-phase listener here runs AFTER that handler, so tapping a shape
+     badge inside an option to inspect an axis would silently lock in that
+     answer. Capturing lets the axis click be handled without ever reaching
+     the option. */
   document.addEventListener("click", function (e) {
     var el = e.target.closest ? e.target.closest("[data-axis]") : null;
     if (!el) return;
     e.preventDefault();
+    e.stopPropagation();
     window.tfsAxis.toggle(el.getAttribute("data-axis"));
-  });
+  }, true);
 
   /* Keyboard: the BADGE is the tab stop, not each axis -- ch06 alone has 41
      occurrences of T, and 41 extra tab stops would make the page hostile to

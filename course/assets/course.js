@@ -15,6 +15,7 @@ const Store = (() => {
   return {
     get: k => mem[k],
     set: (k, v) => { mem[k] = v; save(); },
+    remove: k => { delete mem[k]; save(); },
     all: () => mem,
     reset: () => { mem = {}; save(); },
     available: () => ok,
@@ -99,12 +100,14 @@ function buildTopbar(currentId) {
     `<a class="home" href="index.html">Transformers <i>From Scratch</i></a>` +
     (ch ? `<div class="crumb">${part ? part.n + " &middot; " : ""}Ch ${ch.id}</div>` : "") +
     `<div class="spacer"></div>` +
-    `<div class="prog" title="Chapters marked complete">${done}/${total}</div>` +
+    (ch ? `<button class="focus-toggle" type="button" aria-pressed="false">Focus</button>` : "") +
+    `<div class="prog" title="Chapters marked complete">${done}/${total}<span> chapters</span></div>` +
     `<button class="theme-toggle" type="button">${SUN}${MOON}</button>`;
   document.body.prepend(bar);
   bar.querySelector(".theme-toggle").onclick = Theme.toggle;
   bar.querySelector(".sb-toggle").onclick = toggleSidebar;
   Theme.apply();
+  if (!ch) buildHomeStudy();
 }
 
 /* ----------------------------------------------------------- prev/next */
@@ -129,7 +132,17 @@ function buildChapterNav(currentId) {
   main.appendChild(row);
   row.querySelector("#mark").onclick = () => {
     Store.set(doneKey(currentId), !isDone(currentId));
-    location.reload();
+    const nowDone = isDone(currentId);
+    row.querySelector(".lbl").textContent = nowDone
+      ? "Marked complete."
+      : "Finished this chapter? Mark it so the roadmap tracks your progress.";
+    const mark = row.querySelector("#mark");
+    mark.textContent = nowDone ? "Undo" : "Mark complete";
+    mark.classList.toggle("primary", !nowDone);
+    document.querySelector(`.sb-ch[href="${CHAPTERS[i].f}"]`)?.classList.toggle("done", nowDone);
+    const done = CHAPTERS.filter(c => isDone(c.id)).length;
+    const prog = document.querySelector(".topbar .prog");
+    if (prog) prog.innerHTML = `${done}/${CHAPTERS.length}<span> chapters</span>`;
   };
 
   const nav = document.createElement("nav");
@@ -214,8 +227,8 @@ function decorateCode() {
 
 /* ---------------------------------------------------------- quiz engine */
 
-function initQuizzes() {
-  document.querySelectorAll(".quiz").forEach(quiz => {
+function initQuizzes(currentId = "page") {
+  document.querySelectorAll(".quiz").forEach((quiz, quizIndex) => {
     if (quiz.dataset.built) return;
     quiz.dataset.built = "1";
     const h = document.createElement("div");
@@ -223,31 +236,97 @@ function initQuizzes() {
     h.textContent = quiz.dataset.title || "Check yourself";
     quiz.prepend(h);
 
-    quiz.querySelectorAll(".qitem").forEach(item => {
+    const items = [...quiz.querySelectorAll(".qitem")];
+    const status = document.createElement("div");
+    status.className = "quiz-status";
+    status.setAttribute("aria-live", "polite");
+    h.insertAdjacentElement("afterend", status);
+
+    const reset = document.createElement("button");
+    reset.className = "quiz-reset";
+    reset.type = "button";
+    reset.textContent = "Retry";
+    reset.hidden = true;
+    h.appendChild(reset);
+
+    const chosen = Array(items.length).fill(null);
+    const refreshStatus = () => {
+      const answered = chosen.filter(v => v !== null).length;
+      const correct = chosen.reduce((n, v, i) =>
+        n + (v !== null && v === parseInt(items[i].dataset.answer, 10) ? 1 : 0), 0);
+      status.textContent = answered === items.length
+        ? `${correct}/${items.length} correct · explanations unlocked`
+        : `${answered}/${items.length} answered`;
+      reset.hidden = answered === 0;
+    };
+
+    items.forEach((item, itemIndex) => {
       const ans = parseInt(item.dataset.answer, 10);
       const opts = [...item.querySelectorAll(".opt")];
       const expl = item.querySelector(".expl");
+      const group = item.querySelector(".opts");
+      const key = `quiz:${currentId}:${quizIndex}:${itemIndex}`;
+      const prompt = item.querySelector(".qq")?.textContent.trim() || `Question ${itemIndex + 1}`;
+      if (group) {
+        group.setAttribute("role", "radiogroup");
+        group.setAttribute("aria-label", prompt);
+      }
+
+      const announce = document.createElement("span");
+      announce.className = "sr-only";
+      announce.setAttribute("aria-live", "polite");
+      item.appendChild(announce);
+
+      const lockChoice = (idx, persist = true) => {
+        if (item.dataset.answered) return;
+        item.dataset.answered = "1";
+        chosen[itemIndex] = idx;
+        opts.forEach((oo, jj) => {
+          oo.classList.add("disabled");
+          oo.setAttribute("aria-disabled", "true");
+          oo.setAttribute("aria-checked", String(jj === idx));
+          oo.setAttribute("tabindex", jj === idx ? "0" : "-1");
+          if (jj === ans) oo.classList.add("correct");
+        });
+        if (idx !== ans) opts[idx]?.classList.add("wrong");
+        if (expl) expl.classList.add("show");
+        announce.textContent = idx === ans
+          ? "Correct. Explanation shown."
+          : "Not quite. The correct answer and explanation are shown.";
+        if (persist) Store.set(key, idx);
+        refreshStatus();
+      };
+
       opts.forEach((o, idx) => {
         const mk = document.createElement("div");
         mk.className = "mk"; mk.textContent = "ABCDEF"[idx];
         o.prepend(mk);
-        o.setAttribute("role", "button");
-        o.setAttribute("tabindex", "0");
-        const choose = () => {
-          if (item.dataset.answered) return;
-          item.dataset.answered = "1";
-          opts.forEach((oo, jj) => {
-            oo.classList.add("disabled");
-            oo.setAttribute("tabindex", "-1");
-            if (jj === ans) oo.classList.add("correct");
-          });
-          if (idx !== ans) o.classList.add("wrong");
-          if (expl) expl.classList.add("show");
+        o.setAttribute("role", "radio");
+        o.setAttribute("aria-checked", "false");
+        o.setAttribute("tabindex", idx === 0 ? "0" : "-1");
+        o.onclick = () => lockChoice(idx);
+        o.onkeydown = e => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault(); lockChoice(idx); return;
+          }
+          if (item.dataset.answered || !["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft"].includes(e.key)) return;
+          e.preventDefault();
+          const delta = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : -1;
+          const next = (idx + delta + opts.length) % opts.length;
+          opts.forEach((oo, jj) => oo.setAttribute("tabindex", jj === next ? "0" : "-1"));
+          opts[next].focus();
         };
-        o.onclick = choose;
-        o.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); choose(); } };
       });
+
+      const saved = Store.get(key);
+      if (Number.isInteger(saved) && saved >= 0 && saved < opts.length) lockChoice(saved, false);
     });
+
+    reset.onclick = () => {
+      items.forEach((_, itemIndex) => Store.remove(`quiz:${currentId}:${quizIndex}:${itemIndex}`));
+      location.reload();
+    };
+    refreshStatus();
   });
 }
 
@@ -303,6 +382,425 @@ function tagSections() {
     out.push({ id: h.id, label, el: h });
   });
   return out;
+}
+
+/* ------------------------------------------------------ short sessions */
+/* The course stays intact. This layer lets a learner work one existing h2
+   section at a time, save that exact place, and stop after a short sprint. */
+
+let Study = null;
+
+const sectionDoneKey = (chapterId, sectionId) => `section:${chapterId}:${sectionId}`;
+const exerciseDoneKey = (chapterId, index) => `exercise:${chapterId}:${index}`;
+
+function sectionGroups(sections) {
+  return sections.map((section, index) => {
+    const stop = sections[index + 1]?.el || null;
+    const nodes = [];
+    let node = section.el;
+    while (node && node !== stop) {
+      nodes.push(node);
+      node = node.nextElementSibling;
+    }
+    const text = nodes.map(n => n.textContent || "").join(" ").trim();
+    const words = text ? text.split(/\s+/).length : 0;
+    const code = nodes.reduce((n, el) => n + el.querySelectorAll("pre").length + (el.matches("pre") ? 1 : 0), 0);
+    const questions = nodes.reduce((n, el) => n + el.querySelectorAll(".qitem").length + (el.matches(".qitem") ? 1 : 0), 0);
+    const exercises = nodes.reduce((n, el) => n + el.querySelectorAll(".exercise").length + (el.matches(".exercise") ? 1 : 0), 0);
+    const widgets = nodes.reduce((n, el) => n + el.querySelectorAll("[data-viz]").length + (el.matches("[data-viz]") ? 1 : 0), 0);
+    const project = nodes.some(el => [...el.querySelectorAll(".exercise .lvl")]
+      .some(x => /\bhrs?\b/i.test(x.textContent)));
+    const minutes = Math.max(2, Math.min(20,
+      Math.ceil(words / 220 + code * .35 + questions * .7 + exercises * 1.5 + widgets * 1.5)));
+    return { ...section, nodes, minutes, timeLabel: project ? "project block" : `~${minutes} min` };
+  });
+}
+
+function saveResume(chapterId, section) {
+  const chapter = CHAPTERS.find(c => c.id === chapterId);
+  if (!chapter || !section) return;
+  Store.set("resume", {
+    chapterId,
+    sectionId: section.id,
+    chapter: chapter.t,
+    section: section.label,
+    file: chapter.f,
+    updated: Date.now(),
+  });
+}
+
+function initExerciseProgress(currentId) {
+  document.querySelectorAll(".exercise").forEach((exercise, index) => {
+    const head = exercise.querySelector(":scope > .eh");
+    if (!head || head.querySelector(".ex-check")) return;
+    const key = exerciseDoneKey(currentId, index);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ex-check";
+    const refresh = () => {
+      const done = !!Store.get(key);
+      exercise.classList.toggle("exercise-done", done);
+      button.classList.toggle("is-done", done);
+      button.setAttribute("aria-pressed", String(done));
+      button.textContent = done ? "Done ✓" : "Mark done";
+    };
+    button.onclick = () => { Store.set(key, !Store.get(key)); refresh(); };
+    head.appendChild(button);
+    refresh();
+  });
+}
+
+function buildStudyConsole(currentId, sections) {
+  if (!currentId || !sections.length) return null;
+  const main = document.querySelector("main");
+  const groups = sectionGroups(sections);
+  Store.set(`sections-total:${currentId}`, groups.length);
+
+  // The orientation note used to sit in the live margin. A wide study console
+  // occupies that same column, so long notes could visually cover—and intercept
+  // clicks on—the focus controls. Fold only this introductory note into the
+  // reading column when the short-session interface is present.
+  main.querySelector(":scope > .mn.orient")?.classList.add("study-orient");
+
+  const consoleEl = document.createElement("section");
+  consoleEl.className = "study-console";
+  consoleEl.setAttribute("aria-labelledby", "study-title");
+  consoleEl.innerHTML = `
+    <div class="study-kicker"><span>Short-session mode</span><span class="study-count"></span></div>
+    <div class="study-main">
+      <div class="study-copy">
+        <strong id="study-title">Do one bite, then stop guilt-free.</strong>
+        <span class="study-next"></span>
+      </div>
+      <div class="study-actions">
+        <label>Session
+          <select class="study-duration" aria-label="Focus-session length">
+            <option value="5">5 min</option><option value="10">10 min</option>
+            <option value="15">15 min</option><option value="20">20 min</option>
+          </select>
+        </label>
+        <button class="btn primary study-start" type="button">Focus suggested bite</button>
+        <button class="btn study-exit" type="button" hidden>Show full chapter</button>
+        <span class="study-timer" aria-live="polite"></span>
+      </div>
+    </div>
+    <div class="study-message" role="status" aria-live="polite">Your exact place is saved automatically.</div>
+    <nav class="study-nav" aria-label="Bite navigation">
+      <button class="study-nav-first" type="button">First bite</button>
+      <button class="study-nav-prev" type="button">&larr; Previous</button>
+      <span class="study-position" aria-live="polite"></span>
+      <button class="study-nav-next" type="button">Next &rarr;</button>
+      <button class="study-nav-last" type="button">Last bite</button>
+    </nav>
+    <details class="study-map">
+      <summary>Chapter map <span></span></summary>
+      <div class="study-steps"></div>
+    </details>`;
+  main.insertBefore(consoleEl, sections[0].el);
+
+  const stepList = consoleEl.querySelector(".study-steps");
+  const footers = [];
+  groups.forEach((group, index) => {
+    const tail = group.nodes[group.nodes.length - 1];
+    const step = document.createElement("button");
+    step.type = "button";
+    step.className = "study-step";
+    step.dataset.index = index;
+    step.innerHTML = `<span class="study-step-mark">${index + 1}</span>` +
+      `<span class="study-step-label">${group.label}</span><span class="study-step-time">${group.timeLabel}</span>`;
+    stepList.appendChild(step);
+
+    const toolsEl = document.createElement("div");
+    toolsEl.className = "section-tools";
+    toolsEl.dataset.section = group.id;
+    toolsEl.innerHTML = `<span>${group.timeLabel}</span>` +
+      `<button class="section-focus" type="button">Focus here</button>` +
+      `<button class="section-done" type="button" aria-pressed="false">Mark section done</button>`;
+    group.el.insertAdjacentElement("afterend", toolsEl);
+    group.nodes.splice(1, 0, toolsEl);
+
+    const footer = document.createElement("nav");
+    footer.className = "bite-footer";
+    footer.dataset.index = index;
+    footer.setAttribute("aria-label", `End of bite ${index + 1}`);
+    footer.innerHTML = `
+      <span>Bite ${index + 1} of ${groups.length}</span>
+      <button class="bite-prev" type="button">&larr; Previous bite</button>
+      <button class="bite-next" type="button">Next bite &rarr;</button>
+      <button class="bite-last" type="button">Last bite</button>
+      <button class="bite-exit" type="button">Show full chapter</button>`;
+    tail.insertAdjacentElement("afterend", footer);
+    group.nodes.push(footer);
+    footers.push(footer);
+  });
+
+  const count = consoleEl.querySelector(".study-count");
+  const nextLabel = consoleEl.querySelector(".study-next");
+  const mapSummary = consoleEl.querySelector(".study-map summary span");
+  const start = consoleEl.querySelector(".study-start");
+  const exitButton = consoleEl.querySelector(".study-exit");
+  const duration = consoleEl.querySelector(".study-duration");
+  const timerEl = consoleEl.querySelector(".study-timer");
+  const message = consoleEl.querySelector(".study-message");
+  const position = consoleEl.querySelector(".study-position");
+  const firstButton = consoleEl.querySelector(".study-nav-first");
+  const prevButton = consoleEl.querySelector(".study-nav-prev");
+  const nextButton = consoleEl.querySelector(".study-nav-next");
+  const lastButton = consoleEl.querySelector(".study-nav-last");
+  const topToggle = document.querySelector(".focus-toggle");
+  const savedDuration = parseInt(Store.get("study:minutes"), 10);
+  duration.value = [5, 10, 15, 20].includes(savedDuration) ? String(savedDuration) : "10";
+
+  let activeIndex = -1;
+  let timer = null;
+  let secondsLeft = 0;
+
+  const isComplete = index => !!Store.get(sectionDoneKey(currentId, groups[index].id));
+  const nextIndex = () => {
+    const resume = Store.get("resume");
+    if (resume?.chapterId === currentId) {
+      const saved = groups.findIndex(g => g.id === resume.sectionId);
+      if (saved >= 0 && !isComplete(saved)) return saved;
+    }
+    const first = groups.findIndex((_, i) => !isComplete(i));
+    return first >= 0 ? first : groups.length - 1;
+  };
+
+  const refresh = () => {
+    const completed = groups.filter((_, i) => isComplete(i)).length;
+    count.textContent = `${completed}/${groups.length} sections`;
+    mapSummary.textContent = `· ${completed}/${groups.length} done`;
+    const next = groups[nextIndex()];
+    nextLabel.textContent = completed === groups.length
+      ? "Chapter map complete — revisit any section or mark the chapter complete below."
+      : `Next: ${next.label} · ${next.timeLabel}`;
+    groups.forEach((group, index) => {
+      const done = isComplete(index);
+      const step = stepList.querySelector(`[data-index="${index}"]`);
+      step?.classList.toggle("is-done", done);
+      step?.setAttribute("aria-label", `${group.label}, ${group.timeLabel}${done ? ", complete" : ""}`);
+      const toolsEl = document.querySelector(`.section-tools[data-section="${group.id}"]`);
+      const doneButton = toolsEl?.querySelector(".section-done");
+      if (doneButton) {
+        doneButton.classList.toggle("is-done", done);
+        doneButton.setAttribute("aria-pressed", String(done));
+        doneButton.textContent = done ? "Section done ✓" : "Mark section done";
+      }
+    });
+  };
+
+  const showTimer = () => {
+    const mins = Math.floor(secondsLeft / 60);
+    const secs = String(secondsLeft % 60).padStart(2, "0");
+    timerEl.textContent = `${mins}:${secs}`;
+  };
+
+  const stopTimer = () => {
+    clearInterval(timer);
+    timer = null;
+  };
+
+  /* requestAnimationFrame does not fire while a tab is hidden or backgrounded,
+     and these callbacks are what actually perform the scroll. Without a
+     fallback, opening a chapter in a background tab and switching to it later
+     leaves the reader parked at the top of the document with no idea why.
+     First-wins, so a normal foreground load still scrolls after real layout. */
+  const afterLayout = fn => {
+    let done = false;
+    const run = () => { if (done) return; done = true; fn(); };
+    requestAnimationFrame(() => requestAnimationFrame(run));
+    setTimeout(run, 80);
+  };
+
+  const scrollAfterLayout = element => {
+    afterLayout(() => {
+      const topbar = document.querySelector(".topbar");
+      const offset = (topbar?.offsetHeight || 0) + 12;
+      const top = element.getBoundingClientRect().top + window.scrollY - offset;
+      window.scrollTo({ top: Math.max(0, top), behavior: "auto" });
+    });
+  };
+
+  /* Entering a bite anchored on the console, which is right on a wide screen
+     (the console is short, so the bite's heading sits just under it) and wrong
+     on a phone. In focus mode the console is position:relative and runs
+     369-431px tall at narrow widths, so the heading landed 660-726px down the
+     page and the reader arrived looking at controls with the actual content
+     below the fold. It read as "cut off" or "skipped".
+
+     So: anchor on the console only when doing so still leaves the heading
+     comfortably on screen. Otherwise anchor on the heading itself — seeing
+     the content you asked for matters more than keeping the controls in view,
+     and they are one scroll up. */
+  const scrollIntoBite = (consoleElement, headingElement) => {
+    if (!headingElement) return scrollAfterLayout(consoleElement);
+    afterLayout(() => {
+      const topbar = document.querySelector(".topbar");
+      const offset = (topbar?.offsetHeight || 0) + 12;
+      const viewport = document.documentElement.clientHeight;
+      const consoleTop = consoleElement.getBoundingClientRect().top + window.scrollY - offset;
+      const headingTop = headingElement.getBoundingClientRect().top + window.scrollY - offset;
+      const headingAfterConsoleScroll = (headingTop - consoleTop) + offset;
+      const consoleAnchorKeepsHeadingVisible = headingAfterConsoleScroll < viewport - 140;
+      const top = consoleAnchorKeepsHeadingVisible ? consoleTop : headingTop;
+      window.scrollTo({ top: Math.max(0, top), behavior: "auto" });
+    });
+  };
+
+  const updateNavigation = index => {
+    const focused = activeIndex >= 0;
+    const group = groups[index];
+    position.textContent = `${focused ? "Bite" : "Suggested bite"} ${index + 1} of ${groups.length} · ${group.label}`;
+    firstButton.disabled = index === 0;
+    prevButton.disabled = index === 0;
+    nextButton.disabled = index === groups.length - 1;
+    lastButton.disabled = index === groups.length - 1;
+    groups.forEach((_, i) => stepList.querySelector(`[data-index="${i}"]`)?.classList.toggle("is-active", focused && i === index));
+    footers.forEach((footer, i) => {
+      footer.querySelector(".bite-prev").disabled = i === 0;
+      footer.querySelector(".bite-next").disabled = i === groups.length - 1;
+      footer.querySelector(".bite-last").disabled = i === groups.length - 1;
+    });
+  };
+
+  const exitFocus = () => {
+    const restoreIndex = activeIndex >= 0 ? activeIndex : nextIndex();
+    stopTimer();
+    document.body.classList.remove("focus-mode");
+    main.querySelectorAll(":scope > .focus-hidden").forEach(el => el.classList.remove("focus-hidden"));
+    activeIndex = -1;
+    timerEl.textContent = "";
+    exitButton.hidden = true;
+    start.hidden = false;
+    start.textContent = "Focus suggested bite";
+    if (topToggle) { topToggle.setAttribute("aria-pressed", "false"); topToggle.textContent = "Focus"; }
+    message.textContent = "Full chapter restored. Your exact place is saved.";
+    layoutMarginNotes();
+    updateNavigation(nextIndex());
+    scrollAfterLayout(groups[restoreIndex].el);
+  };
+
+  const beginFocus = (index = nextIndex()) => {
+    if (!groups[index]) return;
+    const entering = activeIndex < 0;
+    activeIndex = index;
+    const visible = new Set([main.querySelector(":scope > h1"), consoleEl, ...groups[index].nodes]);
+    [...main.children].forEach(el => el.classList.toggle("focus-hidden", !visible.has(el)));
+    document.body.classList.add("focus-mode");
+    // Margin notes may carry large inline offsets from the full chapter's
+    // collision layout. Re-running after focus-mode makes them static and
+    // clears those offsets before we measure or scroll the bite.
+    layoutMarginNotes();
+    exitButton.hidden = false;
+    start.hidden = true;
+    if (topToggle) { topToggle.setAttribute("aria-pressed", "true"); topToggle.textContent = "Exit focus"; }
+    saveResume(currentId, groups[index]);
+    if (entering) {
+      stopTimer();
+      consoleEl.classList.remove("sprint-finished");
+      secondsLeft = parseInt(duration.value, 10) * 60;
+      showTimer();
+      timer = setInterval(() => {
+        secondsLeft--;
+        showTimer();
+        if (secondsLeft <= 0) {
+          stopTimer();
+          consoleEl.classList.add("sprint-finished");
+          message.textContent = "Sprint complete. Stop guilt-free, or finish the current thought.";
+        }
+      }, 1000);
+    }
+    message.textContent = `Focused on “${groups[index].label}”. Everything else is temporarily tucked away.`;
+    refresh();
+    updateNavigation(index);
+    scrollIntoBite(consoleEl, groups[index] && groups[index].el);
+  };
+
+  const navigate = delta => {
+    const base = activeIndex >= 0 ? activeIndex : nextIndex();
+    beginFocus(Math.max(0, Math.min(groups.length - 1, base + delta)));
+  };
+
+  duration.onchange = () => Store.set("study:minutes", parseInt(duration.value, 10));
+  start.onclick = () => beginFocus(nextIndex());
+  exitButton.onclick = exitFocus;
+  if (topToggle) topToggle.onclick = () => activeIndex >= 0 ? exitFocus() : beginFocus(nextIndex());
+  firstButton.onclick = () => beginFocus(0);
+  prevButton.onclick = () => navigate(-1);
+  nextButton.onclick = () => navigate(1);
+  lastButton.onclick = () => beginFocus(groups.length - 1);
+
+  stepList.querySelectorAll(".study-step").forEach(step => {
+    step.onclick = () => beginFocus(parseInt(step.dataset.index, 10));
+  });
+  groups.forEach((group, index) => {
+    const toolsEl = document.querySelector(`.section-tools[data-section="${group.id}"]`);
+    toolsEl.querySelector(".section-focus").onclick = () => beginFocus(index);
+    toolsEl.querySelector(".section-done").onclick = () => {
+      const key = sectionDoneKey(currentId, group.id);
+      Store.set(key, !Store.get(key));
+      saveResume(currentId, group);
+      message.textContent = Store.get(key)
+        ? "Bite complete. That is enough for this session."
+        : "Section reopened.";
+      refresh();
+    };
+    const footer = footers[index];
+    footer.querySelector(".bite-prev").onclick = () => navigate(-1);
+    footer.querySelector(".bite-next").onclick = () => navigate(1);
+    footer.querySelector(".bite-last").onclick = () => beginFocus(groups.length - 1);
+    footer.querySelector(".bite-exit").onclick = exitFocus;
+  });
+
+  refresh();
+  saveResume(currentId, groups[nextIndex()]);
+  updateNavigation(nextIndex());
+  const api = {
+    beginFocus,
+    exitFocus,
+    goFirst: () => beginFocus(0),
+    goLast: () => beginFocus(groups.length - 1),
+    isFocused: () => activeIndex >= 0,
+    activeIndex: () => activeIndex,
+    groups,
+  };
+  Study = api;
+
+  const params = new URLSearchParams(location.search);
+  if (params.get("focus") === "1") {
+    const hash = location.hash.slice(1);
+    const index = groups.findIndex(g => g.id === hash);
+    afterLayout(() => beginFocus(index >= 0 ? index : nextIndex()));
+  }
+  return api;
+}
+
+function buildHomeStudy() {
+  const hero = document.querySelector(".hero");
+  if (!hero || document.querySelector(".home-study")) return;
+  const resume = Store.get("resume");
+  const chapter = CHAPTERS.find(c => c.id === resume?.chapterId) || CHAPTERS.find(c => !c.wip);
+  if (!chapter) return;
+  const sectionDone = Object.entries(Store.all()).filter(([k, v]) => k.startsWith("section:") && v).length;
+  const exerciseDone = Object.entries(Store.all()).filter(([k, v]) => k.startsWith("exercise:") && v).length;
+  const quizDone = Object.entries(Store.all()).filter(([k, v]) => k.startsWith("quiz:") && Number.isInteger(v)).length;
+  const hasResume = resume && chapter.id === resume.chapterId;
+  const href = hasResume
+    ? `${chapter.f}?focus=1#${resume.sectionId}`
+    : `${chapter.f}?focus=1`;
+
+  const card = document.createElement("section");
+  card.className = "home-study";
+  card.setAttribute("aria-labelledby", "home-study-title");
+  card.innerHTML = `
+    <div class="home-study-mark">${hasResume ? "Resume" : "Start small"}</div>
+    <div class="home-study-copy">
+      <strong id="home-study-title">${hasResume ? chapter.id + ". " + chapter.t : "One focused bite is enough."}</strong>
+      <span>${hasResume ? resume.section : "Open Chapter 1 with everything except the first section tucked away."}</span>
+      <small>${sectionDone} sections · ${exerciseDone} exercises · ${quizDone} checks saved</small>
+    </div>
+    <a class="btn primary" href="${href}">${hasResume ? "Continue this bite" : "Start a 10-min bite"} &rarr;</a>`;
+  hero.insertAdjacentElement("afterend", card);
 }
 
 function buildSidebar(currentId) {
@@ -372,7 +870,7 @@ function buildSidebar(currentId) {
 }
 
 /* Highlight the section you are actually reading. */
-function initScrollspy(sections) {
+function initScrollspy(sections, currentId) {
   if (!sections.length || typeof IntersectionObserver === "undefined") return;
   const links = new Map();
   document.querySelectorAll(".sb-sec").forEach(a =>
@@ -385,13 +883,15 @@ function initScrollspy(sections) {
     links.forEach(a => a.classList.remove("active"));
     const a = links.get(id);
     if (a) a.classList.add("active");
+    const section = sections.find(s => s.id === id);
+    if (currentId && section) saveResume(currentId, section);
   };
 
   const io = new IntersectionObserver(entries => {
     // pick the heading nearest the top of the viewport that has passed it
     const visible = sections
       .map(s => ({ id: s.id, top: s.el.getBoundingClientRect().top }))
-      .filter(s => s.top < window.innerHeight * 0.4);
+      .filter(s => document.getElementById(s.id)?.getClientRects().length && s.top < window.innerHeight * 0.4);
     if (visible.length) setActive(visible[visible.length - 1].id);
     else setActive(sections[0].id);
   }, { rootMargin: "-10% 0px -60% 0px", threshold: [0, 1] });
@@ -400,7 +900,7 @@ function initScrollspy(sections) {
   window.addEventListener("scroll", () => {
     const visible = sections
       .map(s => ({ id: s.id, top: s.el.getBoundingClientRect().top }))
-      .filter(s => s.top < window.innerHeight * 0.4);
+      .filter(s => document.getElementById(s.id)?.getClientRects().length && s.top < window.innerHeight * 0.4);
     setActive(visible.length ? visible[visible.length - 1].id : sections[0].id);
   }, { passive: true });
 }
@@ -409,11 +909,14 @@ function initScrollspy(sections) {
    position — but two notes placed close together resolve to overlapping spots.
    Push any collision down until the column is clean. */
 function layoutMarginNotes() {
-  const notes = [...document.querySelectorAll(".mn")];
+  const allNotes = [...document.querySelectorAll(".mn")];
+  if (!allNotes.length) return;
+  allNotes.forEach(n => (n.style.marginTop = ""));
+  // Some notes (such as the chapter orientation) deliberately stay in the
+  // prose flow. Collision-layout only the notes that actually occupy the
+  // absolute margin column; one inline note must not disable the rest.
+  const notes = allNotes.filter(n => getComputedStyle(n).position === "absolute");
   if (!notes.length) return;
-  notes.forEach(n => (n.style.marginTop = ""));
-  // only applies when the margin is actually a column (not folded inline)
-  if (getComputedStyle(notes[0]).position !== "absolute") return;
 
   const main = document.querySelector("main");
   if (!main) return;
@@ -476,6 +979,7 @@ function initKeyboard(currentId) {
       return;
     }
     if (e.key === "Escape") {
+      if (Study?.isFocused()) { Study.exitFocus(); return; }
       document.body.classList.remove("side-open");
       if (typing) e.target.blur();
       return;
@@ -502,9 +1006,11 @@ function initChapter(id) {
   step("topbar",   () => buildTopbar(id));
   const sections = step("sidebar", () => buildSidebar(id)) || [];
   step("code",     () => decorateCode());
-  step("quizzes",  () => initQuizzes());
+  step("quizzes",  () => initQuizzes(id));
+  step("exercises",() => initExerciseProgress(id));
+  step("study",    () => buildStudyConsole(id, sections));
   step("chapnav",  () => buildChapterNav(id));
-  step("scrollspy",() => initScrollspy(sections));
+  step("scrollspy",() => initScrollspy(sections, id));
   step("readbar",  () => initReadingBar());
   step("keyboard", () => initKeyboard(id));
   step("viz",      () => window.initViz && window.initViz());

@@ -32,6 +32,14 @@ Almost everyone who finds transformers confusing is actually confused about tens
 > Run `serve.py` rather than double-clicking `index.html`: browsers block `localStorage`
 > on `file://` URLs, so your chapter-progress marks wouldn't save.
 
+### If you learn best in short sessions
+
+Use the **Start/continue a bite** card on the course home page. Every chapter is divided into
+resumable sections, and **Focus** mode temporarily shows one section at a time. Choose a 5, 10,
+15, or 20 minute sprint; your exact place, section marks, exercise marks, and quiz attempts are
+saved in the browser. The full chapter is always one click away, and no lesson content is hidden
+or removed.
+
 ---
 
 ## What's here

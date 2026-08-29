@@ -228,7 +228,7 @@ mechanisms that have been stable for years.</p>
     : "Progress can’t be saved — browser storage is blocked on file:// URLs. Run serve.py instead.";
 
   document.getElementById("reset").onclick = () => {
-    if (confirm("Clear all chapter completion marks?")) { Store.reset(); location.reload(); }
+    if (confirm("Clear all course progress, quiz attempts, and saved places?")) { Store.reset(); location.reload(); }
   };
 
   buildLayout();

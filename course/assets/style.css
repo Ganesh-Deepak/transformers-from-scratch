@@ -277,6 +277,7 @@
 /* ------------------------------------------------------------------ base */
 
 *, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html {
   scroll-behavior: smooth;
@@ -380,6 +381,19 @@ body {
 .theme-toggle[data-is-dark="1"] .sun { display: block; }
 :root[data-theme="dark"] .theme-toggle .moon,
 .theme-toggle[data-is-dark="1"] .moon { display: none; }
+
+.focus-toggle {
+  padding: .28rem .58rem;
+  font-family: var(--label); font-size: .62rem; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--stamp-ink); background: transparent;
+  border: var(--rule) solid color-mix(in srgb, var(--stamp-ink) 38%, transparent);
+  border-radius: var(--radius); cursor: pointer;
+}
+.focus-toggle:hover, .focus-toggle[aria-pressed="true"] {
+  color: #fff; border-color: var(--stamp-ink);
+  background: color-mix(in srgb, var(--stamp-ink) 16%, transparent);
+}
 
 /* --------------------------------------------------- monograph layout */
 
@@ -502,6 +516,8 @@ main > table,
 main > figure,
 main > .panel,
 main > [data-viz],
+main > .study-console,
+main > .home-study,
 main > .exercise,
 main > .quiz,
 main > .example,
@@ -595,6 +611,14 @@ main > * { max-width: min(var(--measure), 100%); }
   margin: .6rem 0 .5rem;
 }
 .mn .k:not(:first-child) { margin-top: .6rem; }
+
+/* The short-session console uses the breakout width and therefore the live
+   margin column. Keep the introductory dependency note in normal flow so it
+   can never cover or intercept the bite controls. */
+main > .mn.study-orient {
+  position: static; left: auto; width: min(var(--measure), 100%);
+  margin: 1rem 0 1.35rem !important;
+}
 
 /* Below the breakpoint the margin folds back into the column. */
 @media (max-width: 66rem) {
@@ -929,26 +953,27 @@ select, input[type=text], input[type=number] {
 
 /* Buttons are stamped chips: hard shadow that collapses on press, so the
    button physically presses into the paper. */
-button.btn {
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
   font-family: var(--label); font-size: .75rem; font-weight: 700; letter-spacing: .04em;
   background: var(--surface); color: var(--ink);
   border: var(--rule-2) solid var(--line-2);
   border-radius: var(--radius);
   box-shadow: 3px 3px 0 var(--shadow-hue);
-  padding: .42rem .85rem; cursor: pointer;
+  padding: .42rem .85rem; cursor: pointer; text-decoration: none; line-height: 1.35;
   transition: background .14s, border-color .14s, color .14s, box-shadow .1s, transform .1s;
 }
-button.btn:hover:not(:disabled) {
+.btn:hover:not(:disabled) {
   border-color: var(--accent); color: var(--accent); background: var(--accent-bg);
 }
-button.btn:active:not(:disabled) { box-shadow: 0 0 0 var(--shadow-hue); transform: translate(3px, 3px); }
-button.btn.primary {
+.btn:active:not(:disabled) { box-shadow: 0 0 0 var(--shadow-hue); transform: translate(3px, 3px); }
+.btn.primary {
   background: var(--accent); border-color: var(--accent); color: var(--surface);
 }
-button.btn.primary:hover:not(:disabled) {
+.btn.primary:hover:not(:disabled) {
   background: var(--accent-2); border-color: var(--accent-2); color: var(--surface);
 }
-button.btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
+.btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
 
 /* ---------------------------------------------------------------- quiz */
 
@@ -974,24 +999,32 @@ button.btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
 .qitem .qq { font-weight: 700; margin-bottom: .75rem; line-height: 1.5; }
 .opts { display: flex; flex-direction: column; gap: .4rem; }
 
+/* Block flow, NOT flex. An .opt holds running prose, and prose that contains
+   an inline <span> inside a flex container is a trap: flex blockifies every
+   child, so each text run and each <span class="shp"> becomes its own item on
+   a single flex-wrap:nowrap line. The option's min-content width then equals
+   the SUM of all those runs — 346px on a 310px viewport — and the whole page
+   scrolls sideways. The marker is positioned into a hanging indent instead,
+   which looks identical and lets the text actually wrap. */
 .opt {
-  display: flex; align-items: flex-start; gap: .6rem;
+  display: block; position: relative;
   border: 1.5px solid var(--line);
   border-radius: var(--radius);
   background: var(--paper);
-  padding: .52rem .7rem;
+  padding: .52rem .7rem .52rem 2.5rem;
   cursor: pointer;
   font-size: .93rem; line-height: 1.5;
   transition: border-color .13s, background .13s, transform .13s;
 }
 .opt:hover:not(.disabled) { border-color: var(--line-2); background: var(--surface-2); transform: translateX(2px); }
 .opt .mk {
-  flex: none; width: 1.2rem; height: 1.2rem;
+  position: absolute; left: .7rem; top: .64rem;
+  width: 1.2rem; height: 1.2rem;
   display: grid; place-items: center;
   border: 1.5px solid var(--line-2);
   border-radius: var(--radius);
   font-family: var(--label); font-size: .64rem; font-weight: 700;
-  color: var(--ink-3); margin-top: .12rem;
+  color: var(--ink-3);
 }
 .opt.correct { border-color: var(--ok); background: var(--ok-bg); }
 .opt.correct .mk { background: var(--ok); border-color: var(--ok); color: var(--surface); }
@@ -1010,6 +1043,206 @@ button.btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
 }
 .expl.show { display: block; }
 .expl b { color: var(--ink); }
+
+.quiz-status {
+  margin: -.35rem 0 1rem;
+  font-family: var(--label); font-size: .7rem; font-weight: 600;
+  color: var(--ink-3);
+}
+.quiz-reset {
+  margin-left: .5rem; padding: .08rem .35rem;
+  font: inherit; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--stamp-ink); background: transparent;
+  border: 1px solid color-mix(in srgb, var(--stamp-ink) 45%, transparent);
+  border-radius: var(--radius); cursor: pointer;
+}
+.quiz-reset:hover { border-color: var(--stamp-ink); background: color-mix(in srgb, #fff 12%, transparent); }
+
+/* --------------------------------------------------- short-session layer */
+
+.sr-only {
+  position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+.study-console {
+  margin: 1.4rem 0 2.5rem;
+  background: var(--surface);
+  border: var(--rule-2) solid var(--accent);
+  border-radius: var(--radius-lg);
+  box-shadow: 5px 5px 0 var(--shadow-hue);
+  overflow: hidden;
+}
+.study-kicker {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: .42rem .8rem;
+  font-family: var(--label); font-size: .62rem; font-weight: 700;
+  letter-spacing: .14em; text-transform: uppercase;
+  color: var(--surface); background: var(--accent);
+}
+.study-main {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem 1.5rem; align-items: center;
+  padding: 1rem 1.05rem .65rem;
+}
+.study-copy { display: flex; flex-direction: column; gap: .2rem; min-width: 0; }
+.study-copy strong {
+  font-family: var(--display); font-size: 1.08rem; line-height: 1.25; letter-spacing: -.025em;
+}
+.study-copy span { font-size: .84rem; line-height: 1.45; color: var(--ink-3); }
+.study-actions { display: flex; align-items: center; justify-content: flex-end; gap: .6rem; flex-wrap: wrap; }
+.study-actions label {
+  display: inline-flex; align-items: center; gap: .4rem;
+  font-family: var(--label); font-size: .66rem; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3);
+}
+.study-duration { min-height: 2rem; }
+.study-timer {
+  min-width: 4.4rem; text-align: center;
+  font-family: var(--mono); font-size: 1.05rem; font-weight: 700;
+  font-variant-numeric: tabular-nums lining-nums; color: var(--accent);
+}
+.study-timer:empty { display: none; }
+.study-message {
+  padding: 0 1.05rem .9rem;
+  font-size: .78rem; line-height: 1.45; color: var(--ink-3);
+}
+.study-nav {
+  display: grid; grid-template-columns: auto auto minmax(8rem, 1fr) auto auto;
+  gap: .45rem; align-items: center;
+  padding: .65rem 1.05rem;
+  border-top: var(--rule) solid var(--line);
+  background: var(--surface-2);
+}
+.study-nav button, .bite-footer button {
+  padding: .34rem .55rem; cursor: pointer; white-space: nowrap;
+  font-family: var(--label); font-size: .65rem; font-weight: 700;
+  color: var(--ink-2); background: var(--surface);
+  border: 1.5px solid var(--line-2); border-radius: var(--radius);
+}
+.study-nav button:hover:not(:disabled), .bite-footer button:hover:not(:disabled) {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-bg);
+}
+.study-nav button:disabled, .bite-footer button:disabled { opacity: .38; cursor: default; }
+.study-position {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-align: center; font-family: var(--label); font-size: .7rem; font-weight: 700;
+  color: var(--ink-3);
+}
+.study-map { border-top: var(--rule) solid var(--line); }
+.study-map > summary {
+  padding: .55rem 1.05rem; cursor: pointer; list-style: none;
+  font-family: var(--label); font-size: .7rem; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--accent);
+}
+.study-map > summary::-webkit-details-marker { display: none; }
+.study-map > summary::before { content: "+"; display: inline-block; width: 1rem; color: var(--ink-4); }
+.study-map[open] > summary::before { content: "−"; }
+.study-steps {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .45rem; padding: 0 1.05rem 1rem;
+}
+.study-step {
+  display: grid; grid-template-columns: 1.55rem minmax(0, 1fr) auto;
+  gap: .45rem; align-items: center; width: 100%; min-width: 0;
+  padding: .48rem .55rem; text-align: left; cursor: pointer;
+  color: var(--ink-2); background: var(--paper);
+  border: 1.5px solid var(--line); border-radius: var(--radius);
+}
+.study-step:hover { border-color: var(--accent); background: var(--accent-bg); }
+.study-step-mark {
+  display: grid; place-items: center; width: 1.35rem; height: 1.35rem;
+  font-family: var(--mono); font-size: .62rem; font-weight: 700;
+  border: 1.5px solid var(--line-2); border-radius: 50%; color: var(--ink-3);
+}
+.study-step-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--label); font-size: .74rem; font-weight: 600;
+}
+.study-step-time { font-family: var(--mono); font-size: .62rem; color: var(--ink-4); white-space: nowrap; }
+.study-step.is-done { border-color: var(--ok); background: var(--ok-bg); }
+.study-step.is-active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.study-step.is-done .study-step-mark { color: var(--surface); background: var(--ok); border-color: var(--ok); font-size: 0; }
+.study-step.is-done .study-step-mark::after { content: "✓"; font-size: .7rem; }
+
+.section-tools {
+  display: flex; align-items: center; justify-content: flex-end; gap: .45rem; flex-wrap: wrap;
+  margin: -1.1rem 0 1.2rem; color: var(--ink-4);
+  font-family: var(--label); font-size: .66rem; font-weight: 600;
+}
+.section-tools button, .ex-check {
+  padding: .25rem .48rem; cursor: pointer;
+  font-family: var(--label); font-size: .64rem; font-weight: 700; letter-spacing: .03em;
+  color: var(--ink-3); background: var(--surface);
+  border: 1.5px solid var(--line-2); border-radius: var(--radius);
+}
+.section-tools button:hover, .ex-check:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
+.section-tools .is-done, .ex-check.is-done { color: var(--ok); border-color: var(--ok); background: var(--ok-bg); }
+.ex-check { margin-left: .15rem; white-space: nowrap; }
+.exercise.exercise-done { border-color: var(--ok); }
+.exercise.exercise-done > .eh { background: var(--ok-bg); }
+
+.bite-footer {
+  display: none;
+  align-items: center; justify-content: flex-end; gap: .5rem; flex-wrap: wrap;
+  margin: 2.5rem 0 .5rem; padding: .8rem .85rem;
+  border-top: var(--rule-2) solid var(--line-2);
+  border-bottom: var(--rule-2) solid var(--line-2);
+  background: var(--surface-2);
+}
+.bite-footer > span {
+  margin-right: auto;
+  font-family: var(--label); font-size: .66rem; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3);
+}
+
+.home-study {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: .75rem 1rem; align-items: center;
+  margin: -1.7rem 0 3rem; padding: .9rem 1rem;
+  background: var(--surface); border: var(--rule-2) solid var(--accent);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow);
+}
+.home-study-mark {
+  font-family: var(--label); font-size: .6rem; font-weight: 700;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--surface);
+  background: var(--accent); border-radius: var(--radius); padding: .25rem .45rem;
+}
+.home-study-copy { display: flex; flex-direction: column; min-width: 0; }
+.home-study-copy strong { font-family: var(--display); font-size: 1rem; line-height: 1.3; }
+.home-study-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .82rem; color: var(--ink-3); }
+.home-study-copy small { font-family: var(--mono); font-size: .62rem; color: var(--ink-4); margin-top: .15rem; }
+
+body.focus-mode .sidebar { transform: translateX(-100%); }
+body.focus-mode.has-side .wrap {
+  max-width: calc(var(--breakout) + 2 * clamp(1rem, 4vw, 2.5rem));
+  padding-left: clamp(1rem, 4vw, 2.5rem);
+}
+body.focus-mode .scrim { display: none !important; }
+body.focus-mode main > .focus-hidden { display: none !important; }
+body.focus-mode .study-console {
+  position: relative; top: auto; z-index: auto;
+  margin-bottom: 2rem; box-shadow: 4px 4px 0 var(--shadow-hue);
+}
+body.focus-mode .study-map { display: none; }
+body.focus-mode .bite-footer { display: flex; }
+body.focus-mode main > .mn {
+  position: static; width: auto; margin: 1rem 0 !important;
+}
+
+@media (max-width: 44rem) {
+  .study-main { grid-template-columns: 1fr; }
+  .study-actions { justify-content: flex-start; }
+  .study-nav { grid-template-columns: 1fr 1fr; }
+  .study-position { grid-column: 1 / -1; grid-row: 1; text-align: left; white-space: normal; }
+  .study-steps { grid-template-columns: 1fr; }
+  .bite-footer { justify-content: stretch; }
+  .bite-footer > span { width: 100%; margin-right: 0; }
+  .bite-footer button { flex: 1 1 8rem; }
+  .home-study { grid-template-columns: auto minmax(0, 1fr); }
+  .home-study .btn { grid-column: 1 / -1; }
+  .topbar .prog span { display: none; }
+}
 
 /* -------------------------------------------------------------- reveal */
 
@@ -1280,7 +1513,9 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
 
 @media print {
   .topbar, .sidebar, .readbar, .chapnav, .done-row, .copy-btn,
-  .theme-toggle, .sb-toggle, .scrim { display: none !important; }
+  .theme-toggle, .sb-toggle, .scrim, .study-console, .home-study,
+  .section-tools, .ex-check, .bite-footer { display: none !important; }
+  body.focus-mode main > .focus-hidden { display: block !important; }
   body { background: #fff !important; background-image: none !important; color: #000; }
   body.has-side .wrap { padding-left: 0; max-width: none; }
   .wrap { padding: 0; }
@@ -1371,4 +1606,57 @@ b[data-axis].ax-cursor { outline: 2px dashed currentColor; outline-offset: 1px; 
 
 @media (prefers-reduced-motion: reduce) {
   b[data-axis] { transition: none; }
+}
+
+/* ==========================================================================
+   NARROW-SCREEN OVERFLOW FIXES
+
+   At a real 375px viewport the page scrolled sideways — documentElement
+   .scrollWidth was 493px against a 375px client. Two independent causes:
+
+     1. The masthead. `.home` is ~190px and does not shrink, and four controls
+        sit beside it, so the topbar alone set the page width to 493px.
+     2. `.shp { white-space: nowrap }`. Keeping a shape expression on one line
+        is right in prose on a wide screen and wrong on a phone, where a
+        90px badge starting near the right edge forces 460px of page width.
+
+   Neither was caught because check_responsive.js could not actually render
+   below ~504px — headless Chrome on Windows clamps --window-size, so its
+   320 / 390 / 430 rows all silently measured the same 504px viewport. The
+   test now renders each page inside a fixed-width iframe instead, which
+   gives a genuine narrow viewport.
+   ====================================================================== */
+
+@media (max-width: 44rem) {
+  /* a flex item will not shrink below its content without min-width: 0 */
+  .topbar { gap: .6rem; padding-inline: clamp(.6rem, 3vw, 1rem); }
+  .topbar .home { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .topbar .crumb { display: none; }   /* the h1 already says which chapter */
+
+  /* on a phone a shape may wrap; overflowing the page is the worse failure */
+  .shp { white-space: normal; }
+
+  /* Inline code in prose must never set the page width. `overflow-wrap:
+     break-word` (already on p/li/td) is not enough for two reasons: the quiz
+     containers .qq and .expl are divs and so never inherited it, and
+     break-word does not reduce an element's MIN-CONTENT contribution, which
+     is what actually pins the page open. `anywhere` does.
+     Reset inside <pre>, where code must keep its lines and scroll instead. */
+  code { overflow-wrap: anywhere; }
+  pre code { overflow-wrap: normal; }
+}
+@media (max-width: 30rem) {
+  .topbar .prog { display: none; }
+}
+
+/* Any table NOT wrapped in .tw must still scroll rather than widen the page.
+   The convention is a .tw wrapper, but four-plus tables across the course sit
+   bare or nested one level deeper, and ch17's overflowed to 492px on a 365px
+   viewport. This is the standard responsive-table pattern: max-content lets
+   columns size naturally, max-width caps it, overflow-x makes it scroll. */
+:not(.tw) > table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
 }
