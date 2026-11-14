@@ -2044,6 +2044,431 @@ def _nb18():
     ]
 
 
+@notebook("19_distributed")
+def _nb19():
+    return [
+        md("""
+        # Chapter 19 — Distributed Training: DP, TP, PP, ZeRO
+
+        Every number in Chapter 19, recomputed, with the collectives and schedules *simulated* in-process
+        rather than taken from formulas: a ring all-reduce whose bytes are counted, a pipeline schedule whose
+        idle slots are counted, and tensor parallelism done with plain tensor slices. Each cell **asserts**
+        what it checks, so `python tests/run_notebooks.py 19` fails if the chapter and the code disagree.
+        Exercise 19.3 (a real multi-process `gloo` all-reduce) is not run here; the ring simulation stands in.
+        """),
+        code(SETUP),
+        md("## 19.1 — 16 bytes per parameter"),
+        code("""
+        per_param = {"bf16 weights": 2, "bf16 grads": 2, "fp32 master": 4, "Adam m": 4, "Adam v": 4}
+        assert sum(per_param.values()) == 16 and per_param["fp32 master"] + 8 == 12
+        for P, gb in ((1e9, 16), (7e9, 112), (70e9, 1120), (671e9, 10_736)):
+            print(f"{P / 1e9:5.0f}B params -> {16 * P / 1e9:7,.0f} GB  ({math.ceil(16 * P / 80e9)} x 80 GB GPUs)")
+            assert 16 * P / 1e9 == gb
+        assert 16e9 <= 80e9 < 112e9 and math.ceil(1120 / 80) == 14 and math.ceil(10_736 / 80) == 135  # "134+"
+        assert round(16 * 671e9 / 1e12, 1) == 10.7 and 14 / 16 == 7 / 8   # 7/8 is training machinery
+        """),
+        md("""
+        ## 19.2 — ring all-reduce, simulated: every GPU sends 2(N−1)/N of the buffer
+
+        Reduce-scatter (N−1 steps) then all-gather (N−1 steps), each GPU passing one chunk to its neighbour
+        per step. The result must be the sum everywhere, and the bytes each GPU sends are counted.
+        """),
+        code("""
+        def ring_allreduce(bufs):
+            N = len(bufs)
+            chunks = [list(b.chunk(N)) for b in bufs]
+            chunks = [[c.clone() for c in row] for row in chunks]
+            sent = [0] * N
+            for step in range(N - 1):                       # reduce-scatter
+                msgs = [(r, (r - step) % N, chunks[r][(r - step) % N].clone()) for r in range(N)]
+                for r, idx, data in msgs:
+                    chunks[(r + 1) % N][idx] += data; sent[r] += data.numel()
+            for step in range(N - 1):                       # all-gather
+                msgs = [(r, (r + 1 - step) % N, chunks[r][(r + 1 - step) % N].clone()) for r in range(N)]
+                for r, idx, data in msgs:
+                    chunks[(r + 1) % N][idx] = data; sent[r] += data.numel()
+            return [torch.cat(row) for row in chunks], sent
+        S = 1024 * 1024
+        rows = {2: 1.0, 4: 1.5, 8: 1.75, 64: 1.9688, 512: 1.9961}
+        for N, mult in rows.items():
+            if N <= 8:
+                bufs = [torch.randn(S) for _ in range(N)]
+                out, sent = ring_allreduce(bufs)
+                total = sum(bufs)
+                assert all(torch.allclose(o, total, atol=1e-4) for o in out)
+                assert all(s == 2 * (N - 1) * S // N for s in sent)            # counted, not assumed
+            m = 2 * (N - 1) / N
+            print(f"N={N:4d}  multiplier {m:.4f}  7B bf16 grads: {14 * m:.1f} GB per GPU per step")
+            assert round(m, 4) == mult and round(14 * m, 1) == {2: 14.0, 4: 21.0, 8: 24.5, 64: 27.6, 512: 27.9}[N]
+        assert round(100 * (rows[512] / rows[64] - 1)) == 1                     # 64 -> 512 GPUs: +1%
+        """),
+        md("## 19.3 — ZeRO: bytes per parameter on each GPU, and the floors"),
+        code("""
+        stages = {"DDP": lambda N: 16, "ZeRO-1": lambda N: 4 + 12 / N, "ZeRO-2": lambda N: 2 + 14 / N,
+                  "ZeRO-3": lambda N: 16 / N}
+        want = {"DDP": (16, 16, 16, 16), "ZeRO-1": (16, 5.5, 4.19, 4.02), "ZeRO-2": (16, 3.75, 2.22, 2.03),
+                "ZeRO-3": (16, 2.0, 0.25, 0.03)}
+        for name, f in stages.items():
+            got = tuple(round(f(N), 2) for N in (1, 8, 64, 512))
+            print(f"{name:7} {got}")
+            assert got == want[name]
+        assert stages["ZeRO-1"](10**9) - 4 < 1e-6 and stages["ZeRO-2"](10**9) - 2 < 1e-6   # floors 4 and 2
+        assert round(7e9 * stages["ZeRO-3"](64) / 1e9, 1) == 1.8 and 7e9 * 16 / 1e9 == 112
+        """),
+        md("""
+        ## 19.4 / Exercise 19.4 — tensor parallelism with plain tensors
+
+        Column-split W₁, row-split W₂, one sum. Then the wrong way round.
+
+        **Minor wording.** The exercise asks to verify the split is "bit-identical" to the unsplit MLP,
+        but its own code uses `allclose`, which is correct: the two partial sums add the same products in a
+        different order, so in floating point the result agrees to ~1e-7 but is generally not
+        bit-identical. (§19.3 says the same of ZeRO-3 vs DDP; that one *is* exact because ZeRO-3 only
+        moves parameters, it does not split a reduction.)
+        """),
+        code("""
+        torch.manual_seed(0)
+        act = F.gelu
+        x, W1, W2 = torch.randn(8, 64), torch.randn(64, 256) / 8, torch.randn(256, 64) / 16
+        W1_a, W1_b = W1.chunk(2, dim=1)                    # column split
+        W2_a, W2_b = W2.chunk(2, dim=0)                    # row split
+        y = act(x @ W1_a) @ W2_a + act(x @ W1_b) @ W2_b    # the "all-reduce"
+        ref = act(x @ W1) @ W2
+        print(f"max |TP - unsplit| = {(y - ref).abs().max():.2e}   bit-identical: {torch.equal(y, ref)}")
+        assert torch.allclose(y, ref, atol=1e-5)
+        x_a, x_b = x.chunk(2, dim=1); R_a, R_b = W1.chunk(2, dim=0)          # the wrong way: row-split W1
+        wrong = (act(x_a @ R_a) + act(x_b @ R_b)) @ W2
+        assert not torch.allclose(wrong, ref, atol=1e-2)                    # gelu(a) + gelu(b) != gelu(a + b)
+        assert torch.allclose((x_a @ R_a + x_b @ R_b), x @ W1, atol=1e-5)   # fine BEFORE the nonlinearity
+        """),
+        md("## 19.4 — the TP bill: 2 all-reduces forward, 2 backward, of a 134 MB activation"),
+        code("""
+        act_bytes = 8 * 2048 * 4096 * 2
+        print(f"activation {act_bytes / 1e6:.1f} MB")
+        assert round(act_bytes / 1e6, 1) == 134.2
+        for tp, want in ((2, 0.54), (4, 0.81), (8, 0.94)):
+            per_layer = 4 * 2 * (tp - 1) / tp * act_bytes
+            print(f"TP={tp}: {per_layer / 1e9:.2f} GB per layer per step")
+            assert round(per_layer / 1e9, 2) == want
+        assert round(80 * 4 * 2 * 7 / 8 * act_bytes / 1e9) == 75 and 900 / 50 == 18
+        """),
+        md("""
+        ## 19.5 — the pipeline bubble, by counting idle slots in a simulated schedule
+
+        A dependency-driven simulation: stage s may run forward(j) once stage s−1 has; backward(j) once stage
+        s+1 has and its own forward(j) is done; each stage runs its tasks in GPipe order (all forwards, then
+        all backwards). Idle fraction = 1 − busy / (span × p).
+        """),
+        code("""
+        def simulate(p, m, chunks=1, backward=True):
+            # one 'chunk-stage' per (gpu, chunk); a microbatch visits chunk-stages 0..p*chunks-1, stage c on GPU c % p
+            S, unit = p * chunks, 1.0 / chunks
+            order = {g: [] for g in range(p)}
+            groups = [list(range(i, min(i + p, m))) for i in range(0, m, p)] if chunks > 1 else [list(range(m))]
+            for grp in groups:                                   # Megatron-style interleaved forward order
+                for r in range(chunks):
+                    for j in grp:
+                        for g in range(p):
+                            order[g].append(("F", j, r * p + g))
+            if backward:
+                for grp in groups:
+                    for r in reversed(range(chunks)):
+                        for j in grp:
+                            for g in range(p):
+                                order[g].append(("B", j, r * p + g))
+            done, free_at, busy = {}, [0.0] * p, [0.0] * p
+            pending = {g: list(order[g]) for g in range(p)}
+            while any(pending.values()):
+                progressed = False
+                for g in range(p):
+                    while pending[g]:
+                        kind, j, c = pending[g][0]
+                        deps = [("F", j, c - 1)] if kind == "F" and c > 0 else []
+                        if kind == "B":
+                            deps = [("F", j, c)] + ([("B", j, c + 1)] if c < S - 1 else [("F", j, S - 1)])
+                        if not all(d in done for d in deps):
+                            break
+                        start = max([free_at[g]] + [done[d] for d in deps])
+                        done[(kind, j, c)] = free_at[g] = start + unit
+                        busy[g] += unit; pending[g].pop(0); progressed = True
+                assert progressed, "deadlock"
+            span = max(free_at)
+            return 1 - sum(busy) / (span * p), span
+        # the naive diagram: 4 stages, 1 batch, forward + backward
+        assert simulate(4, 1)[0] == 0.75
+        for p_, m_, want in ((4, 1, 0.75), (4, 8, 0.2727), (4, 32, 0.0857), (8, 8, 0.4667), (8, 32, 0.1795), (8, 128, 0.0519)):
+            sim = simulate(p_, m_)[0]
+            print(f"p={p_} m={m_:3d}  simulated {sim:.4f}   (p-1)/(m+p-1) {(p_ - 1) / (m_ + p_ - 1):.4f}")
+            assert round(sim, 4) == want == round((p_ - 1) / (m_ + p_ - 1), 4)
+        for p_ in (2, 4, 8, 16):                                   # Exercise 19.2's sweep (forward-only, fast)
+            for m_ in (1, 2, 3, 7, 16, 33, 128):
+                assert abs(simulate(p_, m_, backward=False)[0] - (p_ - 1) / (m_ + p_ - 1)) < 1e-12
+        """),
+        md("""
+        ## 19.5 — the "under 10%" rule, and the quiz's 8 stages × 8 microbatches
+
+        **DISCREPANCY (minor).** For p = 8 the quiz says you need "about 72" microbatches to get the bubble
+        under 10%. The chapter's own rule m > 9(p−1) gives **m ≥ 64** (64 → 9.9%); 72 (= 9p) gives 8.9%.
+        "Roughly ten per stage" would be 80. The three numbers should agree.
+        """),
+        code("""
+        bubble = lambda p, m: (p - 1) / (m + p - 1)
+        assert round(bubble(8, 8), 4) == 0.4667 and abs(bubble(8, 8) - 7 / 15) < 1e-12
+        m_min = next(m for m in range(1, 1000) if bubble(8, m) < 0.10)
+        print(f"p=8: first m under 10% is {m_min} ({bubble(8, m_min):.2%}); m=72 gives {bubble(8, 72):.2%}")
+        assert m_min == 9 * 7 + 1 == 64
+        assert all((bubble(p, m) < 0.1) == (m > 9 * (p - 1)) for p in range(2, 17) for m in range(1, 300))
+        """),
+        md("""
+        ## Exercise 19.2 — interleaved schedules: what "(p−1)/(vm)" measures
+
+        The simulator above with v chunks per GPU (each 1/v of a stage's work). Counting idle time, the bubble
+        *time* falls by exactly v: (p−1)/v per GPU instead of p−1.
+
+        **DISCREPANCY (definitions).** §19.5 and Exercise 19.2 say interleaving "cuts the bubble to
+        (p−1)/(vm)", comparing it with (p−1)/(m+p−1). Those are two different quantities: (p−1)/(vm) is
+        bubble time divided by *ideal compute time* (Narayanan et al.'s definition; for v = 1 it is (p−1)/m),
+        while (p−1)/(m+p−1) is the *idle fraction of total time*, which is what Exercise 19.2's `bubble()`
+        computes. In the idle-fraction convention the interleaved bubble is **(p−1)/(vm+p−1)**. The cost of
+        v is v× as many cross-GPU boundary messages per microbatch (pv − 1 instead of p − 1).
+        """),
+        code("""
+        for p_, m_, v in ((4, 8, 2), (4, 16, 4), (8, 16, 2), (8, 32, 4)):
+            frac, span = simulate(p_, m_, chunks=v, backward=False)
+            ideal = m_                                                  # each GPU's work: m microbatches x 1 stage
+            bubble_over_ideal = (span - ideal) / ideal
+            print(f"p={p_} m={m_:2d} v={v}: idle fraction {frac:.4f}  bubble/ideal {bubble_over_ideal:.4f}  "
+                  f"(p-1)/(vm) {(p_ - 1) / (v * m_):.4f}  (p-1)/(vm+p-1) {(p_ - 1) / (v * m_ + p_ - 1):.4f}")
+            assert abs(bubble_over_ideal - (p_ - 1) / (v * m_)) < 1e-9
+            assert abs(frac - (p_ - 1) / (v * m_ + p_ - 1)) < 1e-9
+            assert abs(simulate(p_, m_, backward=False)[1] - m_ - (p_ - 1)) < 1e-9   # v=1 bubble: p-1
+            assert (p_ * v - 1) / (p_ - 1) > v - 1                                    # ~v x the boundary messages
+        """),
+        md("## 19.6 — the 1024-GPU mesh, and activation checkpointing's √L"),
+        code("""
+        assert 8 * 16 * 8 == 1024
+        L = 64
+        def stored(L, k):                 # checkpoint every L/k layers: k boundaries + one segment's interior
+            return k + L / k
+        best_k = min(range(1, L + 1), key=lambda k: stored(L, k))
+        print(f"L={L}: best checkpoint count {best_k}, memory {stored(L, best_k):.0f} layer-activations vs {L}")
+        assert best_k == int(math.sqrt(L)) and stored(L, best_k) == 2 * math.sqrt(L)
+        """),
+        md("""
+        ## Exercise 19.1 — a 70B plan on 256 H100s (80 layers, 4M-token batch at 8192)
+
+        One consistent plan, checked against the constraints the chapter names. (Activations are not
+        estimated here; that needs a per-layer activation model the chapter does not give.)
+        """),
+        code("""
+        state = 16 * 70e9
+        min_gpus = math.ceil(state / 80e9)
+        TP = 8                                                     # one node; NVLink domain
+        PP = 4                                                     # 80 layers -> 20 per stage
+        DP = 256 // (TP * PP)
+        seqs = 4 * 2**20 // 8192                                   # sequences per global batch
+        m = seqs // DP                                             # microbatches of 1 sequence per pipeline
+        print(f"state {state / 1e9:.0f} GB -> >= {min_gpus} GPUs; TP {TP} x PP {PP} x DP {DP} = {TP * PP * DP}; "
+              f"{seqs} seqs/batch, m = {m} microbatches, bubble {bubble(PP, m):.1%}; "
+              f"state per GPU {state / (TP * PP) / 1e9:.0f} GB (DDP over DP) or {state / 256 / 1e9:.1f} GB (ZeRO-3)")
+        assert min_gpus == 14 and TP <= 8 and 80 % PP == 0 and TP * PP * DP == 256
+        assert m > 9 * (PP - 1) and bubble(PP, m) < 0.10
+        assert state / (TP * PP) < 80e9                            # fits before activations
+        """),
+    ]
+
+
+@notebook("21_scaling")
+def _nb21():
+    return [
+        md("""
+        # Chapter 21 — Scaling Laws and Long Context
+
+        Every number in Chapter 21, recomputed from the Hoffmann et al. fit the chapter quotes, plus the
+        long-context arithmetic. Each cell **asserts** what it checks, so `python tests/run_notebooks.py 21`
+        fails if the chapter and the code disagree. Exercises 21.1 and 21.2 run on tiny models of this
+        course's architecture trained for seconds on the bundled offline corpus (a small analogue of the
+        Tiny Shakespeare runs); Exercise 21.3 needs a real long-context model and is not reproduced.
+        """),
+        code(SETUP, """
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+        E, A, B_, a, b = 1.69, 406.4, 410.7, 0.34, 0.28                 # Hoffmann et al. 2022
+        def loss(N, D): return E + A / N ** a + B_ / D ** b
+        def optimal_20(C):                                                 # C = 6ND with D = 20N
+            N = math.sqrt(C / 120); return N, C / (6 * N)
+        """),
+        md("## 21.1 — the worked example: was GPT-3 the right size?"),
+        code("""
+        C = 3.14e23
+        N_opt, D_opt = optimal_20(C)
+        print(f"N* = {N_opt / 1e9:.1f} B, D* = {D_opt / 1e9:,.0f} B tokens")
+        assert round(N_opt / 1e9, 1) == 51.2 and round(D_opt / 1e9) == 1023
+        as_built, opt, llama = loss(175e9, 300e9), loss(N_opt, D_opt), loss(8e9, 15e12)
+        print(f"GPT-3 {as_built:.4f}   compute-optimal {opt:.4f}   Llama-3-8B {llama:.4f}")
+        assert (round(as_built, 4), round(opt, 4), round(llama, 4)) == (2.0023, 1.961, 1.9485)
+        assert opt < as_built and llama < as_built
+        assert round(175 / (N_opt / 1e9), 1) == 3.4 and round(D_opt / 300e9, 1) == 3.4
+        assert round(300 / 175, 1) == 1.7 and round(175 / 8) == 22
+        """),
+        md("## 21.1 — the ridge across budgets, the tokens-per-parameter table, the quiz"),
+        code("""
+        ridge = {1e21: (2.9, 58, 2.335), 1e22: (9.1, 183, 2.146), 1e23: (28.9, 577, 2.012), 1e25: (289, 5774, 1.851)}
+        for C, (n, d, l) in ridge.items():
+            N, D = optimal_20(C)
+            print(f"C={C:.0e}  N*={N / 1e9:6.1f}B  D*={D / 1e9:6.0f}B  loss {loss(N, D):.3f}")
+            assert round(N / 1e9, 1 if N < 1e11 else 0) == n and round(D / 1e9) == d and round(loss(N, D), 3) == l
+        assert round(math.sqrt(10), 1) == 3.2                                # 10x compute -> ~3.2x each
+        for (P, T, want) in ((175e9, 300e9, 1.7), (70e9, 1.4e12, 20), (7e9, 2e12, 286), (8e9, 15e12, 1875), (4e9, 36e12, 9000)):
+            assert round(T / P, 1 if want < 10 else 0) == want
+        assert round(1875 / 20) == 94
+        N, D = optimal_20(1e23)
+        assert round(N / 1e9) == 29 and round(D / 1e9, -1) == 580          # quiz: ~29B / ~580B
+        assert 0.8 < (70e9 * 1.4e12) / (280e9 * 300e9) < 1.25 and 280 / 70 == 4   # ~same compute, 4x smaller
+        print(f"Chinchilla 6ND = {6 * 70e9 * 1.4e12:.2e}, Gopher 6ND = {6 * 280e9 * 300e9:.2e}")
+        """),
+        md("""
+        ## The fit's own optimum is not at 20 tokens per parameter
+
+        **DISCREPANCY (method).** The worked example imposes D = 20N and calls the result "compute-optimal"
+        for the Hoffmann fit; the derivation box says "because α ≈ β, N* ∝ C^0.5". With the quoted
+        constants α = 0.34 ≠ β = 0.28, minimising L(N, C/6N) exactly gives N* ∝ C^(β/(α+β)) = C^0.45 and
+        D* ∝ C^0.55, so the ratio is not pinned: ~50 tokens/param at 10²¹ FLOPs, **~87 at GPT-3's budget**
+        (N* ≈ 24.5 B, D* ≈ 2.1 T, loss 1.954 — lower than the 1.9610 the example reports as optimal), and ~122
+        at 10²⁵. The 20-tokens-per-parameter rule comes from Hoffmann et al.'s other two estimation
+        approaches, not from this parametric fit (Besiroglu et al. 2024 discuss the mismatch). The
+        conclusion — GPT-3 was too big for its data — survives; the numbers labelled "optimal" are the
+        20-tok/param point, not the fit's minimum.
+        """),
+        code("""
+        G = (a * A / (b * B_)) ** (1 / (a + b))
+        def argmin(C):
+            N = G * (C / 6) ** (b / (a + b)); return N, C / (6 * N)
+        for C in (1e21, 3.14e23, 1e25):
+            N, D = argmin(C)
+            grid = min(loss(n, C / (6 * n)) for n in torch.logspace(8, 13, 4001).tolist())
+            print(f"C={C:.2e}: argmin N={N / 1e9:7.1f}B D={D / 1e9:8.0f}B  {D / N:5.0f} tok/param  loss {loss(N, D):.4f}"
+                  f"  (D=20N point: {loss(*optimal_20(C)):.4f})")
+            assert abs(loss(N, D) - grid) < 1e-6                         # it really is the minimum
+            assert loss(N, D) < loss(*optimal_20(C))
+        N, D = argmin(3.14e23)
+        assert round(N / 1e9, 1) == 24.5 and round(D / N) == 87 and round(loss(N, D), 3) == 1.954
+        assert round(b / (a + b), 2) == 0.45
+        """),
+        md("## 21.2 — position interpolation and NTK-aware base scaling, the numbers"),
+        code("""
+        scale = 4096 / 32768
+        assert scale == 1 / 8 and 32767 * scale == 4095.875                # "position 32767 -> 4095.9"
+        base_new = 10000 * 8 ** (128 / 126)
+        print(f"NTK base for s=8, d=128: {base_new:,.0f}")
+        assert round(base_new, -2) == 82_700
+        """),
+        md("""
+        ## 21.2 — sliding-window attention: O(T·W) work, and a receptive field that grows with depth
+
+        With `mask = (i - j < W) & (j <= i)` each layer reaches W − 1 tokens back, so L layers reach
+        L·(W − 1) — the chapter's "n_layer × W", to within one token per layer.
+        """),
+        code("""
+        T, W, L = 64, 4, 5
+        i, j = torch.arange(T)[:, None], torch.arange(T)[None, :]
+        mask = ((i - j < W) & (j <= i)).float()
+        assert mask.sum() == sum(min(t + 1, W) for t in range(T))          # ~T*W entries, not T^2
+        reach = torch.eye(T)
+        for _ in range(L):
+            reach = (mask @ reach).clamp(max=1)
+        back = (T - 1) - reach[T - 1].nonzero().min().item()
+        print(f"{L} layers of window {W}: last token sees {back} tokens back (L*(W-1) = {L * (W - 1)})")
+        assert back == L * (W - 1)
+        """),
+        md("""
+        ## Exercise 21.1 — a scaling curve from tiny models
+
+        Four widths of this course's model trained for the same number of tokens on the offline corpus.
+        Loss falls smoothly with N, as the chapter expects; the fitted exponent is printed, not asserted —
+        the chapter's point is that it will *not* be 0.34 at this scale on this data.
+        """),
+        code("""
+        from tfs.model import Config, Model, build_rope_cache
+        from tfs.train import _fallback_corpus, get_batch
+        from tfs.tokenizer import CharTokenizer
+        text = _fallback_corpus()
+        ctok = CharTokenizer(text)
+        data = torch.tensor(ctok.encode(text))
+        train, val = data[:350_000], data[350_000:]
+        def train_model(d, steps=150, T=64):
+            torch.manual_seed(0)
+            m = Model(Config(vocab_size=ctok.vocab_size, d_model=d, n_layer=2, n_head=4, n_kv_head=2,
+                             d_head=d // 4, d_ff=2 * d, max_T=T))
+            opt = torch.optim.AdamW(m.parameters(), lr=3e-3)
+            torch.manual_seed(1)
+            for _ in range(steps):
+                x = get_batch(train, 16, T)
+                _, l, _ = m(x, targets=x)
+                opt.zero_grad(); l.backward(); opt.step()
+            m.eval()
+            with torch.no_grad():
+                g = torch.Generator().manual_seed(0)
+                ix = torch.randint(len(val) - T - 1, (32,), generator=g)
+                xv = torch.stack([val[k:k + T] for k in ix])
+                vl = m(xv, targets=xv)[1].item()
+            n = sum(p.numel() for name, p in m.named_parameters() if "embed" not in name)
+            return m, n, vl
+        runs = {d: train_model(d) for d in (16, 32, 48, 64)}
+        for d, (_, n, vl) in runs.items():
+            print(f"d_model {d:3d}: {n:7,} non-embedding params  val loss {vl:.3f}")
+        Ns = torch.tensor([float(r[1]) for r in runs.values()]); Ls = torch.tensor([r[2] for r in runs.values()])
+        slope = torch.linalg.lstsq(torch.stack([Ns.log(), torch.ones(4)], 1), Ls.log()[:, None]).solution[0].item()
+        print(f"log-log slope of loss vs N: {slope:.3f}")
+        assert all(Ls[k + 1] < Ls[k] for k in range(3))                   # bigger is better, smoothly
+        """),
+        md("""
+        ## Exercise 21.2 — extend the context of a model trained at T = 64
+
+        The largest model above, evaluated at 128 and 256 tokens with (a) no change, (b) position
+        interpolation, (c) NTK-aware base scaling — by swapping the RoPE tables `tfs.model.Model` holds as
+        buffers. Loss is reported separately on the first 64 positions (the trained range) and the last 64.
+        YaRN is not implemented here.
+
+        The chapter's shape reproduces: (a) degrades on positions past 64 and gets worse with length;
+        (b) PI is worse than (a) even inside the trained range — the price of compressing every frequency;
+        (c) NTK keeps the trained range intact and degrades least past it.
+        """),
+        code("""
+        lm = runs[64][0]
+        cfg = lm.cfg
+        def set_rope(T, base=10000.0, pos_scale=1.0):
+            inv = 1.0 / (base ** (torch.arange(0, cfg.d_head, 2).float() / cfg.d_head))
+            f = torch.outer(torch.arange(T).float() * pos_scale, inv)
+            e = torch.cat((f, f), -1)
+            lm.cos, lm.sin, cfg.max_T = e.cos(), e.sin(), T
+        @torch.no_grad()
+        def ev(T, **kw):
+            set_rope(T, **kw)
+            g = torch.Generator().manual_seed(0)
+            ix = torch.randint(len(val) - T - 1, (16,), generator=g)
+            xv = torch.stack([val[k:k + T] for k in ix])
+            lg, _, _ = lm(xv)
+            nll = F.cross_entropy(lg[:, :-1].transpose(1, 2), xv[:, 1:], reduction="none")
+            return nll[:, :63].mean().item(), nll[:, -64:].mean().item()
+        res = {}
+        for T in (128, 256):
+            s = T / 64
+            res[T] = {"none": ev(T), "PI": ev(T, pos_scale=1 / s), "NTK": ev(T, base=10000 * s ** (cfg.d_head / (cfg.d_head - 2)))}
+            for k, (first, last) in res[T].items():
+                print(f"T={T}  {k:4}: loss on positions <64 {first:.3f}   last 64 positions {last:.3f}")
+        set_rope(64); base_loss = ev(64)[0]
+        assert torch.allclose(lm.cos, build_rope_cache(64, cfg.d_head)[0])
+        for T in (128, 256):
+            r = res[T]
+            assert r["none"][1] > r["none"][0] + 0.05                        # (a) degrades past the trained length
+            assert r["PI"][0] > r["none"][0] + 0.1                           # (b) PI hurts the trained range
+            assert abs(r["NTK"][0] - r["none"][0]) < 0.15                    # (c) NTK leaves it ~intact ...
+            assert r["NTK"][1] < r["none"][1]                                # ... and degrades less past it
+        assert res[256]["none"][1] > res[128]["none"][1]                     # worse the further you go
+        """),
+    ]
+
+
 # ============================================================ END NOTEBOOKS
 
 
