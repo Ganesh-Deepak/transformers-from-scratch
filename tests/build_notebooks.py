@@ -1514,6 +1514,536 @@ def _nb11():
     ]
 
 
+@notebook("13_decoding")
+def _nb13():
+    return [
+        md("""
+        # Chapter 13 — Decoding and Sampling
+
+        Every number in Chapter 13, recomputed, and every sampler checked through `tfs.model.sample` (the
+        course's implementation, temperature → top-k → top-p → min-p). Each cell **asserts** what it checks,
+        so `python tests/run_notebooks.py 13` fails if the chapter and the code disagree. Exercises 13.2 and
+        13.3 use a tiny character model trained here for a few seconds on the bundled offline corpus instead
+        of the Chapter 11 Shakespeare model or GPT-2: a small analogue with the same shape of result.
+        """),
+        code(SETUP, """
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+        from tfs.model import Config, Model, sample
+        logits = torch.tensor([3., 2., 1., 0., -1.])          # mat floor rug sky idea
+        """),
+        md("## The worked example — one distribution, four samplers"),
+        code("""
+        r3 = lambda t: [round(v, 3) for v in t.tolist()]
+        p = logits.softmax(-1)
+        temps = {0.5: [0.865, 0.117, 0.016, 0.002, 0.0], 1.0: [0.636, 0.234, 0.086, 0.032, 0.012],
+                 2.0: [0.429, 0.26, 0.158, 0.096, 0.058]}
+        for T, want in temps.items():
+            print(f"T={T}", r3((logits / T).softmax(-1)))
+            assert r3((logits / T).softmax(-1)) == want
+        assert abs(p[0] / p[1] - math.e) < 1e-5                          # one logit unit = e x probability
+        p2 = (logits / 2).softmax(-1)
+        assert round(1 / p2[4].item()) == 17                               # "idea": 1 in 17 at T = 2
+        assert r3(p[:2] / p[:2].sum()) == [0.731, 0.269]                  # top-k = 2, renormalised
+        assert r3(p.cumsum(0)) == [0.636, 0.871, 0.957, 0.988, 1.0]
+        kept = int(((p.cumsum(0) - p) < 0.9).sum())
+        assert kept == 3                                                    # top-p 0.9 keeps mat, floor, rug
+        sure = torch.tensor([0.98, 0.01, 0.005, 0.005])
+        assert int(((sure.cumsum(0) - sure) < 0.9).sum()) == 1              # a confident model keeps 1
+        """),
+        md("""
+        ## Exercise 13.1 — `tfs.model.sample`: T = 0 is argmax, and each filter shrinks the support
+
+        20,000 draws per setting; the empirical support must be exactly what the worked example predicts,
+        and the frequencies must match the renormalised probabilities.
+        """),
+        code("""
+        torch.manual_seed(0)
+        L = logits.expand(20_000, 5)
+        def draws(**kw):
+            return sample(L, **kw).flatten()
+        assert (draws(temperature=0) == 0).all()
+        assert (draws(temperature=0, top_p=0.9) == 0).all()                 # quiz: T=0 decides everything
+        assert set(draws(top_k=2).tolist()) == {0, 1}
+        assert set(draws(top_p=0.9).tolist()) == {0, 1, 2}
+        assert set(draws(min_p=0.1).tolist()) == {0, 1, 2}                  # keep p >= 0.1 * 0.636
+        assert set(draws().tolist()) == {0, 1, 2, 3, 4}
+        freq = torch.bincount(draws(top_k=2), minlength=5).float() / 20_000
+        print("top-k=2 frequencies", r3(freq))
+        assert abs(freq[0] - 0.731) < 0.015 and abs(freq[1] - 0.269) < 0.015
+        freq = torch.bincount(draws(temperature=2.0), minlength=5).float() / 20_000
+        assert torch.allclose(freq, p2, atol=0.015)
+        # order matters: temperature before top-p. At T=2 the 0.9 nucleus is 4 tokens, not 3
+        assert set(draws(temperature=2.0, top_p=0.9).tolist()) == {0, 1, 2, 3}
+        """),
+        md("""
+        ## Temperature divides logits, not probabilities
+
+        Dividing the probabilities by T and renormalising is not a softer distribution — it is the same one.
+        """),
+        code("""
+        wrong = (p / 2.0) / (p / 2.0).sum()
+        assert torch.allclose(wrong, p) and not torch.allclose(p2, p)
+        """),
+        md("## Repetition penalty (applied to logits) and constrained decoding (mask to −inf)"),
+        code("""
+        lg = torch.tensor([2.0, -1.0, 0.5, 0.1])
+        pen = lg.clone()
+        for tok in {0, 1}:                                   # already generated
+            pen[tok] /= 1.1 if pen[tok] > 0 else 1 / 1.1
+        print(lg.tolist(), "->", [round(v, 4) for v in pen.tolist()])
+        assert pen[0] < lg[0] and pen[1] < lg[1]             # both logits pushed down, positive or negative
+        assert pen.softmax(-1)[0] < lg.softmax(-1)[0]        # (a probability is relative: the others rise)
+        allowed = torch.tensor([True, False, True, False])
+        cons = lg.masked_fill(~allowed, float("-inf"))
+        torch.manual_seed(0)
+        assert set(sample(cons.expand(5000, 4)).flatten().tolist()) <= {0, 2}   # invalid tokens: p = 0
+        """),
+        md("""
+        ## 13.3 — beam search finds a likelier sequence than greedy (and costs k×)
+
+        A toy two-step model where the greedy first choice leads to a flat second step. Beam search with
+        k = 2 finds the higher-probability sequence.
+        """),
+        code("""
+        step1 = torch.tensor([0.6, 0.4])                          # P(first token)
+        step2 = {0: torch.tensor([0.35, 0.35, 0.3]), 1: torch.tensor([0.9, 0.05, 0.05])}
+        greedy_first = int(step1.argmax())
+        greedy = (greedy_first, int(step2[greedy_first].argmax()))
+        seq_p = lambda s: (step1[s[0]] * step2[s[0]][s[1]]).item()
+        beams = sorted(((a, b) for a in (0, 1) for b in range(3)), key=seq_p, reverse=True)[:2]
+        print(f"greedy {greedy} p={seq_p(greedy):.3f}   beam best {beams[0]} p={seq_p(beams[0]):.3f}")
+        assert seq_p(beams[0]) > seq_p(greedy)
+        """),
+        md("""
+        ## Exercises 13.2 and 13.3 — temperature, diversity and surprisal on a tiny trained model
+
+        A character model trained for a few seconds on the offline corpus (an analogue of the Chapter 11
+        model). At each temperature: 250 generated characters, their distinct-trigram ratio, and the longest
+        repeated substring. Then the average −log p the model assigns to greedy text, nucleus text and
+        held-out real text (Holtzman et al.'s comparison).
+
+        On this tiny model the ordering matches the chapter (greedy ≪ nucleus < real text, and nucleus is the
+        closer of the two) but nucleus text is not *close* to the real-text value as it is for GPT-2: a
+        few-second model is over-confident on its own samples. The asserts check the ordering only.
+        """),
+        code("""
+        from tfs.train import _fallback_corpus, get_batch
+        from tfs.tokenizer import CharTokenizer
+        text = _fallback_corpus()
+        ctok = CharTokenizer(text)
+        data = torch.tensor(ctok.encode(text))
+        train, held = data[:300_000], data[300_000:]
+        torch.manual_seed(0)
+        lm = Model(Config(vocab_size=ctok.vocab_size, d_model=64, n_layer=2, n_head=4, n_kv_head=2, d_head=16,
+                          d_ff=192, max_T=512))
+        opt = torch.optim.AdamW(lm.parameters(), lr=3e-3)
+        for step in range(200):
+            x = get_batch(train, 16, 96)
+            _, loss, _ = lm(x, targets=x)
+            opt.zero_grad(); loss.backward(); opt.step()
+        print(f"tiny LM trained: loss {loss.item():.3f}")
+        def longest_repeat(s):
+            best = 0
+            for n in range(1, len(s)):
+                seen = {s[i:i + n] for i in range(len(s) - n + 1)}
+                if len(seen) == len(s) - n + 1:
+                    break
+                best = n
+            return best
+        prompt = held[:16][None]
+        stats = {}
+        for T in (0.1, 0.5, 0.8, 1.0, 1.3, 2.0):
+            torch.manual_seed(1)
+            out = ctok.decode(lm.generate(prompt.clone(), 250, temperature=T)[0, 16:].tolist())
+            tri = [out[i:i + 3] for i in range(len(out) - 2)]
+            stats[T] = (len(set(tri)) / len(tri), longest_repeat(out))
+            print(f"T={T:3}: distinct-trigram ratio {stats[T][0]:.2f}  longest repeat {stats[T][1]:3d}   {out[:50]!r}")
+        assert stats[0.1][0] < stats[1.0][0] < stats[2.0][0]                 # diversity rises with T
+        assert stats[0.1][1] > 3 * stats[2.0][1]                              # low T loops
+        """),
+        code("""
+        @torch.no_grad()
+        def surprisal(ids):                      # mean -log p per token, under the model
+            lg, _, _ = lm(ids[None])
+            return F.cross_entropy(lg[0, :-1], ids[1:]).item()
+        n = 300
+        torch.manual_seed(2)
+        greedy = lm.generate(prompt.clone(), n, temperature=0)[0]
+        nucleus = lm.generate(prompt.clone(), n, temperature=1.0, top_p=0.95)[0]
+        human = held[:2000]
+        s = {"greedy": surprisal(greedy), "top-p 0.95": surprisal(nucleus), "held-out text": surprisal(human)}
+        print({k: round(v, 3) for k, v in s.items()})
+        assert s["greedy"] < 0.5 * s["held-out text"]                        # far too likely to be "human"
+        assert abs(s["top-p 0.95"] - s["held-out text"]) < abs(s["greedy"] - s["held-out text"])
+        """),
+    ]
+
+
+@notebook("14_gpu")
+def _nb14():
+    return [
+        md("""
+        # Chapter 14 — The GPU: Memory, Tensor Cores, and the Roofline
+
+        Every number in Chapter 14 is arithmetic on a handful of hardware figures, so this notebook
+        recomputes all of them from those figures and **asserts** each printed value. There is no GPU here:
+        Exercises 14.2 and 14.4 are measured on this machine's CPU, which shows the same shapes (a rising
+        then flat FLOP/s curve; strided access costing more than contiguous) at CPU scale.
+        """),
+        code(SETUP, """
+        H100 = dict(flops=989.4e12, bw=3.35e12)
+        def roofline(flops, bytes_moved, peak_flops=989.4e12, bw=3.35e12):
+            t_compute, t_memory = flops / peak_flops, bytes_moved / bw
+            return dict(ai=flops / bytes_moved,
+                        bound="compute" if t_compute > t_memory else "memory",
+                        seconds=max(t_compute, t_memory), t_compute=t_compute, t_memory=t_memory,
+                        frac_of_peak=min(1.0, (flops / bytes_moved) / (peak_flops / bw)))
+        """),
+        md("## 14.1 — the ridge point, and how it moved across four chips"),
+        code("""
+        ridge = H100["flops"] / H100["bw"]
+        print(f"H100 ridge: {ridge:.1f} FLOP/byte")
+        assert round(ridge) == 295
+        chips = {"A100 80GB": (312, 2.04, 153), "H100 SXM5": (989, 3.35, 295), "H200 SXM": (989, 4.80, 206),
+                 "B200": (2250, 8.00, 281)}
+        for name, (tf, tb, want) in chips.items():
+            print(f"{name:10} {tf / tb:6.1f}")
+            assert round(tf / tb) == want
+        """),
+        md("## 14.2 — a square bf16 matmul has AI = n/3; the crossover is n ≈ 886"),
+        code("""
+        def matmul_ai(M, K, N, bytes_per=2):
+            return 2 * M * K * N / (bytes_per * (M * K + K * N + M * N))
+        table = {128: 42.7, 256: 85.3, 512: 170.7, 1024: 341.3, 4096: 1365.3}
+        for n, want in table.items():
+            ai = matmul_ai(n, n, n)
+            verdict = "COMPUTE" if ai > ridge else "MEMORY"
+            print(f"n={n:5d}  AI={ai:7.1f}  {verdict}-bound")
+            assert round(ai, 1) == want and abs(ai - n / 3) < 1e-9
+            assert (verdict == "COMPUTE") == (n >= 1024)
+        assert round(3 * ridge) == 886
+        assert round(100 * matmul_ai(512, 512, 512) / ridge) == 58          # 171/295 = 58% of peak
+        """),
+        md("## 14.3 — one decoded token of a 7B bf16 model: memory-bound by ~300×"),
+        code("""
+        P = 7e9
+        r = roofline(2 * P, 2 * P)                       # 14 GFLOP, 14 GB
+        print(f"AI {r['ai']:.0f}; memory {r['t_memory'] * 1e3:.3f} ms; compute {r['t_compute'] * 1e3:.3f} ms; "
+              f"{r['t_memory'] / r['t_compute']:.0f}x; ceiling {1 / r['t_memory']:.0f} tok/s; idle {1 - 1 / ridge:.1%}")
+        assert r["ai"] == 1 and r["bound"] == "memory"
+        assert round(r["t_memory"] * 1e3, 3) == 4.179 and round(r["t_compute"] * 1e3, 3) == 0.014
+        assert round(r["t_memory"] / r["t_compute"], -1) == 300 and round(1 / r["t_memory"]) == 239
+        assert round(100 * (1 - 1 / ridge), 1) == 99.7
+        pre = roofline(2 * P * 2048, 2 * P)
+        print(f"prefill 2048: AI {pre['ai']:.0f}; memory {pre['t_memory'] * 1e3:.3f} ms; compute {pre['t_compute'] * 1e3:.3f} ms")
+        assert pre["ai"] == 2048 and pre["bound"] == "compute" and round(pre["t_compute"] * 1e3, 3) == 28.979
+        """),
+        md("## 14.3 — decode batching: AI = B, and the fraction of peak it can reach"),
+        code("""
+        want = {1: 0.3, 8: 2.7, 32: 10.8, 128: 43.3, 256: 86.7, 295: 99.9}
+        for B, pct in want.items():
+            r = roofline(2 * P * B, 2 * P)
+            print(f"batch {B:3d}: AI {r['ai']:.0f}  {100 * r['frac_of_peak']:5.1f}% of peak")
+            assert r["ai"] == B and round(100 * r["frac_of_peak"], 1) == pct
+        """),
+        md("## 14.4 — tensor-core alignment: vocab padding and head sizes"),
+        code("""
+        assert 50304 % 64 == 0 and 50304 == 64 * math.ceil(50257 / 64)          # nanoGPT's padded vocab
+        assert 4096 // 32 == 128 and 768 // 12 == 64 and 2560 // 32 == 80
+        for d_head in (64, 80, 96, 128, 192, 256):
+            assert d_head % 16 == 0                                            # all tensor-core friendly
+        assert 80 == 5 * 16
+        """),
+        md("""
+        ## 14.5 — coalescing: how many 128-byte lines one warp's load touches
+
+        32 threads each read one 4-byte word at `stride × thread` (in words).
+        """),
+        code("""
+        def lines_per_warp(stride, word=4, line=128):
+            return len({(t * stride * word) // line for t in range(32)})
+        for s, want in ((1, 1), (2, 2), (4, 4), (32, 32)):
+            print(f"stride {s:2d}: {lines_per_warp(s)} lines, {100 / lines_per_warp(s):.0f}% of fetched bytes used")
+            assert lines_per_warp(s) == want
+        assert 32 * 4 == 128
+        """),
+        md("""
+        ## 14.6 — fusion, and the T×T score matrix FlashAttention never writes
+
+        **DISCREPANCY (minor).** §14.6 calls shared memory "~7× the bandwidth of HBM"; with the table's own
+        figures (~20 TB/s vs 3.35 TB/s) that is **~6×**. The "128 MB per head" for T = 8192 is in MiB
+        (134 MB in decimal units) — consistent with the course's other figures, just binary.
+        """),
+        code("""
+        unfused_trips, fused_trips = 3, 1
+        assert unfused_trips / fused_trips == 3                             # same FLOPs, 3x the intensity
+        S = 8192 * 8192 * 2                                                  # bf16 scores, one head
+        print(f"T=8192 scores: {S / 2**20:.0f} MiB = {S / 1e6:.0f} MB, vs a 50 MB L2; SRAM/HBM = {20 / 3.35:.1f}x")
+        assert S == 128 * 2**20 and S / 1e6 > 50
+        assert round(20 / 3.35) == 6                                         # chapter: ~7x
+        """),
+        md("""
+        ## Exercise 14.1 — the roofline calculator on one decode step of a d = 4096 block (B = T = 1)
+
+        bf16 weights and activations; SwiGLU with d_ff = 11008 (Llama-2-7B), MHA projections 4096×4096.
+        Element-wise ops do a few FLOPs per element. Everything is memory-bound, and the time is almost
+        entirely the seven weight matrices; the norms, residual adds and softmax are a rounding error.
+        """),
+        code("""
+        d, ff = 4096, 11008
+        ops = {f"attn {n}": (2 * d * d, 2 * d * d + 4 * d) for n in ("q", "k", "v", "o")}
+        ops.update({f"swiglu {n}": (2 * d * ff, 2 * d * ff + 2 * (d + ff)) for n in ("gate", "up", "down")})
+        ops["rmsnorm x2"] = (2 * 4 * d, 2 * 3 * 2 * d)
+        ops["residual add x2"] = (2 * d, 2 * 3 * 2 * d)
+        ops["softmax (ctx 1)"] = (5, 2 * 2)
+        res = {k: roofline(f, b) for k, (f, b) in ops.items()}
+        for k, r in sorted(res.items(), key=lambda kv: -kv[1]["seconds"]):
+            print(f"{k:16} AI {r['ai']:6.2f}  {r['bound']:7}  {r['seconds'] * 1e6:8.3f} us")
+        assert all(r["bound"] == "memory" for r in res.values())
+        total = sum(r["seconds"] for r in res.values())
+        tiny_ops = sum(res[k]["seconds"] for k in ("rmsnorm x2", "residual add x2", "softmax (ctx 1)"))
+        print(f"block decode step {total * 1e6:.1f} us; norm/add/softmax share {tiny_ops / total:.3%}")
+        assert tiny_ops / total < 0.01
+        """),
+        md("""
+        ## Exercise 14.2 — find this CPU's ridge empirically
+
+        Achieved FLOP/s rises with n and then flattens. On this CPU the knee is at a few hundred — far below
+        a GPU's ~886, because a CPU's compute-to-bandwidth ratio is much smaller.
+        """),
+        code("""
+        import time
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+        achieved = {}
+        for n in (64, 128, 256, 512, 1024):
+            a, b = torch.randn(n, n), torch.randn(n, n)
+            for _ in range(3): a @ b
+            reps = max(3, int(1e8 / n ** 3))
+            t = time.perf_counter()
+            for _ in range(reps): a @ b
+            achieved[n] = 2 * n ** 3 / ((time.perf_counter() - t) / reps)
+            print(f"n={n:5d}  {achieved[n] / 1e9:7.1f} GFLOP/s")
+        assert achieved[1024] > 5 * achieved[64]                          # rises ...
+        assert achieved[1024] < 3 * achieved[512]                         # ... then flattens
+        """),
+        md("""
+        ## Exercise 14.3 — 70B on 8×H100: does the compute-bound decode batch fit?
+
+        Assumes Llama-70B's 80 layers (the exercise gives 8 KV heads and d_head = 128) and bf16 cache.
+        """),
+        code("""
+        agg_flops, agg_bw = 7912e12, 26.8e12
+        B_star = agg_flops / agg_bw
+        kv_per_seq = 2 * 80 * 8 * 128 * 2 * 8192                           # K and V, layers, heads, d, bytes, ctx
+        free = 8 * 80e9 - 140e9
+        fits = free / kv_per_seq
+        print(f"compute-bound at B ~ {B_star:.0f}; KV/seq {kv_per_seq / 1e9:.2f} GB; "
+              f"{free / 1e9:.0f} GB free holds {fits:.0f} sequences")
+        assert round(B_star) == 295 and round(kv_per_seq / 1e9, 2) == 2.68
+        assert fits < B_star                                                # it does not fit: hence GQA/MLA/paging
+        """),
+        md("""
+        ## Exercise 14.4 — the cost of a bad layout (CPU)
+
+        Summing every 16th float of a 256 MB array versus a contiguous run of the same number of floats.
+        Same useful bytes; the strided read pulls a whole cache line for every element it uses.
+        """),
+        code("""
+        x = torch.randn(8192 * 8192)
+        def bench(fn, reps=5):
+            fn(); t = time.perf_counter()
+            for _ in range(reps): fn()
+            return (time.perf_counter() - t) / reps
+        n = x.numel() // 16
+        assert x[::16].numel() == x[:n].numel()
+        t_strided, t_contig = bench(lambda: x[::16].sum()), bench(lambda: x[:n].sum())
+        print(f"strided {t_strided * 1e3:.2f} ms, contiguous {t_contig * 1e3:.2f} ms: {t_strided / t_contig:.1f}x")
+        assert t_strided > 1.5 * t_contig                                  # measured 3.5-7.7x on this CPU
+        """),
+    ]
+
+
+@notebook("18_serving")
+def _nb18():
+    return [
+        md("""
+        # Chapter 18 — Serving at Scale
+
+        Every number in Chapter 18, recomputed, plus small simulations of the three systems ideas:
+        PagedAttention's allocator, continuous batching, and speculative decoding's exactness guarantee.
+        Each cell **asserts** what it checks, so `python tests/run_notebooks.py 18` fails if the chapter and
+        the code disagree. Speculative decoding runs on two toy bigram "models" instead of GPT-2 small and
+        large (Exercise 18.1's analogue: the guarantee is about distributions, so any pair of models tests it).
+        """),
+        code(SETUP),
+        md("## 18.1 — contiguous reservation wastes what the sequence never uses"),
+        code("""
+        print(f"200 of 4096 reserved tokens used: {1 - 200 / 4096:.1%} wasted")
+        assert round(100 * (1 - 200 / 4096)) == 95
+        """),
+        md("""
+        ## Exercise 18.2 — a block allocator, simulated on 1000 lognormal requests
+
+        `BlockManager` with `allocate`, `append`, `free` and copy-on-write `fork`. Request lengths are
+        lognormal with mean 300, capped at 4096; contiguous allocation reserves 4096 per request.
+
+        **DISCREPANCY.** The chapter expects contiguous allocation to waste "70–90%" with these lengths.
+        Reserving 4096 for sequences averaging ~300 tokens wastes 1 − 300/4096 ≈ **93%** — above the stated
+        range by construction (the range would fit a reservation of ~1000–3000, or a mean of ~400–1200).
+        Paged allocation wastes under 3%, as the chapter says.
+        """),
+        code("""
+        class BlockManager:
+            def __init__(self, total_blocks, block_size=16):
+                self.bs, self.free_list = block_size, list(range(total_blocks))
+                self.ref = {}                    # physical block -> reference count
+                self.tables, self.lens = {}, {}  # seq -> [physical blocks], seq -> tokens
+            def _new(self):
+                b = self.free_list.pop(); self.ref[b] = 1; return b
+            def allocate(self, seq, n_tokens):
+                self.tables[seq] = [self._new() for _ in range(-(-n_tokens // self.bs))]
+                self.lens[seq] = n_tokens
+            def append(self, seq):
+                t = self.tables[seq]
+                if self.lens[seq] % self.bs == 0:
+                    t.append(self._new())                      # need a fresh block
+                elif self.ref[t[-1]] > 1:                      # copy-on-write: last block is shared
+                    self.ref[t[-1]] -= 1; t[-1] = self._new()
+                self.lens[seq] += 1
+            def fork(self, parent, child):
+                self.tables[child] = list(self.tables[parent]); self.lens[child] = self.lens[parent]
+                for b in self.tables[child]: self.ref[b] += 1
+            def free(self, seq):
+                for b in self.tables.pop(seq):
+                    self.ref[b] -= 1
+                    if self.ref[b] == 0: del self.ref[b]; self.free_list.append(b)
+                del self.lens[seq]
+            def used_blocks(self):
+                return len(self.ref)
+
+        bm = BlockManager(100)
+        bm.allocate("a", 40)                                   # 3 blocks
+        bm.fork("a", "b")
+        assert bm.used_blocks() == 3                           # a shared prefix costs nothing extra
+        bm.append("b")                                         # b writes into the shared last block -> copy
+        assert bm.used_blocks() == 4 and bm.tables["a"][:2] == bm.tables["b"][:2]
+        bm.free("a"); bm.free("b")
+        assert bm.used_blocks() == 0 and len(bm.free_list) == 100
+
+        torch.manual_seed(0)
+        sigma = 1.0
+        mu = math.log(300) - sigma ** 2 / 2                    # lognormal with mean 300
+        lens = torch.distributions.LogNormal(mu, sigma).sample((1000,)).round().clamp(1, 4096).long()
+        bm = BlockManager(10**6)
+        for i, n in enumerate(lens.tolist()):
+            bm.allocate(i, 1)
+            for _ in range(n - 1): bm.append(i)               # grow one token at a time, on demand
+        used = lens.sum().item()
+        paged_waste = 1 - used / (bm.used_blocks() * 16)
+        contig_waste = 1 - used / (4096 * len(lens))
+        print(f"mean length {lens.float().mean():.0f}; contiguous wastes {contig_waste:.1%}, paged wastes {paged_waste:.1%}")
+        assert paged_waste < 0.03
+        assert contig_waste > 0.90                             # chapter says 70-90%
+        """),
+        md("""
+        ## 18.2 — static vs continuous batching, counted in slot-steps
+
+        8 slots, 64 requests with skewed lengths. Static batching holds a batch until its longest member
+        finishes; continuous batching refills a slot the step it frees.
+        """),
+        code("""
+        torch.manual_seed(1)
+        req = torch.distributions.LogNormal(math.log(100), 1.2).sample((64,)).round().clamp(1, 4000).long().tolist()
+        slots = 8
+        static_steps = sum(max(req[i:i + slots]) for i in range(0, len(req), slots))
+        import heapq
+        finish = [0] * slots
+        for n in req:                                          # each request takes the earliest free slot
+            t = heapq.heappop(finish) if len(finish) == slots else 0
+            heapq.heappush(finish, t + n)
+        continuous_steps = max(finish)
+        print(f"static {static_steps} steps, continuous {continuous_steps} steps: {static_steps / continuous_steps:.1f}x")
+        assert static_steps / continuous_steps > 2                  # the chapter: typically 2-4x
+        assert 32 - 4 == 28                                         # seq A in the diagram: done at 4, idle 28
+        """),
+        md("## 18.3 — the worked example: how many drafted tokens survive (α = 0.7, k = 4)"),
+        code("""
+        def expected_tokens(alpha, k):
+            return (1 - alpha ** (k + 1)) / (1 - alpha)
+        a, k = 0.7, 4
+        dist = [a ** i * (1 - a) for i in range(k)] + [a ** k]
+        print("accept exactly 0..4:", [round(p, 4) for p in dist])
+        assert [round(p, 4) for p in dist] == [0.3, 0.21, 0.147, 0.1029, 0.2401]
+        assert abs(sum(dist) - 1) < 1e-12
+        E = sum(i * p for i, p in enumerate(dist)) + 1             # + the corrected / bonus token
+        assert abs(E - expected_tokens(a, k)) < 1e-12 and round(E, 2) == 2.77
+        table = {0.3: (1.39, 1.43, 1.43), 0.5: (1.75, 1.94, 2.00), 0.7: (2.19, 2.77, 3.20), 0.9: (2.71, 4.10, 6.13)}
+        for al, row in table.items():
+            got = tuple(round(expected_tokens(al, kk), 2) for kk in (2, 4, 8))
+            print(f"alpha {al}: k=2,4,8 -> {got}")
+            assert got == row
+        assert round(expected_tokens(0.7, 4), 2) == 2.77 and round(expected_tokens(0.9, 8), 2) == 6.13
+        assert expected_tokens(0.3, 8) - expected_tokens(0.3, 4) < 0.01
+        """),
+        md("""
+        ## Exercise 18.1 — speculative decoding is exact (verified with a chi-squared test)
+
+        Two random bigram models over 6 tokens: a target p(·|prev) and a deliberately different draft
+        q(·|prev). Accept a drafted token with probability min(1, p/q); on rejection sample from
+        normalise(max(0, p − q)); if all k survive, take a bonus token from p. Compare the next-token
+        distribution after a fixed context with plain sampling from the target.
+        """),
+        code("""
+        torch.manual_seed(0)
+        V = 6
+        Pt = (torch.randn(V, V) * 1.5).softmax(-1)               # target: row = previous token
+        Qd = (torch.randn(V, V) * 1.5).softmax(-1)               # draft
+        def spec_step(prev, k=4):
+            out, cur, drafts, qs = [], prev, [], []
+            for _ in range(k):                                    # 1. draft k tokens
+                t = torch.multinomial(Qd[cur], 1).item(); drafts.append(t); qs.append(Qd[cur]); cur = t
+            ctx = [prev] + drafts
+            accepted = 0
+            for i, t in enumerate(drafts):                        # 2-3. verify left to right
+                p_i = Pt[ctx[i]]
+                if torch.rand(1).item() < min(1.0, (p_i[t] / qs[i][t]).item()):
+                    out.append(t); accepted += 1
+                else:
+                    resid = (p_i - qs[i]).clamp(min=0)
+                    out.append(torch.multinomial(resid / resid.sum(), 1).item())
+                    return out, accepted
+            out.append(torch.multinomial(Pt[drafts[-1]], 1).item())   # bonus token
+            return out, accepted
+        N = 20_000
+        firsts, acc = torch.zeros(V), 0
+        for _ in range(N):
+            o, a_ = spec_step(0)
+            firsts[o[0]] += 1; acc += a_
+        expected = Pt[0] * N
+        chi2 = ((firsts - expected) ** 2 / expected).sum().item()
+        print(f"chi-squared = {chi2:.2f} on 5 dof (p = 0.001 critical value 20.5)")
+        assert chi2 < 20.5                                       # indistinguishable from the target
+        naive = ((Qd[0] * N - expected) ** 2 / expected).sum().item()
+        assert naive > 1000                                      # while the draft itself is far off
+        alpha_theory = torch.minimum(Pt, Qd).sum(-1)             # P(accept) per context = sum min(p, q)
+        print(f"acceptance from context 0: theory {alpha_theory[0]:.3f}")
+        """),
+        md("## 18.4 — why weight quantization speeds up decode"),
+        code("""
+        P = 70e9
+        bf16, int4 = 2 * P, 0.5 * P
+        print(f"70B: {bf16 / 1e9:.0f} GB -> {int4 / 1e9:.0f} GB per forward; decode bound improves {bf16 / int4:.0f}x")
+        assert (bf16 / 1e9, int4 / 1e9) == (140, 35) and bf16 / int4 == 4
+        """),
+        md("## Quiz — 1000 users sharing a 2000-token system prompt: prefix caching"),
+        code("""
+        without, with_cache = 1000 * 2000, 2000
+        print(f"prefill tokens: {without:,} without prefix caching, {with_cache:,} with it")
+        assert without / with_cache == 1000
+        """),
+    ]
+
+
 # ============================================================ END NOTEBOOKS
 
 
