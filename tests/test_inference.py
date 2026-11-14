@@ -101,7 +101,7 @@ def test_grammar_masks():
 
 def test_ridge_points():
     assert [r(G.ridge(g)) for g in ("A100", "H100", "H200", "B200")] == [153, 295, 206, 281]
-    assert r(G.ridge("H100", "fp8"), 1) == 590.7
+    assert r(G.ridge("H100", "fp8"), 1) == 590.7 and r(G.ridge("H200", "fp8"), 1) == 412.3
     assert r(G.ridge("B200", "fp8"), 1) == 562.5 and G.ridge("B200", "fp4") == 1125.0
     # decode batch that saturates: bf16 weights (2 B) vs fp8 weights (1 B) on fp8 tensor cores
     assert r(G.decode_batch_to_saturate("H100")) == 295
