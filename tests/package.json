@@ -4,11 +4,13 @@
   },
   "scripts": {
     "check": "node check_ui.js && node check_numfmt.js && node check_responsive.js && node check_interaction.js",
-    "check:all": "node check_ui.js && node check_numfmt.js && node check_responsive.js && node check_interaction.js --all",
+    "check:all": "node check_ui.js && node check_numfmt.js && node check_responsive.js && node check_interaction.js --all && node shoot.js",
     "check:ui": "node check_ui.js",
     "check:responsive": "node check_responsive.js",
     "check:interaction": "node check_interaction.js",
     "check:interaction:all": "node check_interaction.js --all",
-    "check:numfmt": "node check_numfmt.js"
+    "check:numfmt": "node check_numfmt.js",
+    "check:shots": "node shoot.js",
+    "shots:full": "node shoot.js --full"
   }
 }

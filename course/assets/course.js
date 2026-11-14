@@ -985,12 +985,13 @@ function initScrollspy(sections, currentId) {
 function layoutMarginNotes() {
   const allNotes = [...document.querySelectorAll(".mn")];
   if (!allNotes.length) return;
-  allNotes.forEach(n => (n.style.marginTop = ""));
+  allNotes.forEach(n => { n.style.marginTop = ""; n.style.top = ""; });
   // Some notes (such as the chapter orientation) deliberately stay in the
   // prose flow. Collision-layout only the notes that actually occupy the
   // absolute margin column; one inline note must not disable the rest.
   const notes = allNotes.filter(n => getComputedStyle(n).position === "absolute");
   if (!notes.length) return;
+  const isNote = el => notes.includes(el);
 
   const main = document.querySelector("main");
   if (!main) return;
@@ -1009,7 +1010,15 @@ function layoutMarginNotes() {
   let prevBottom = -Infinity;
 
   for (const n of notes) {
-    const natural = n.offsetTop;
+    // Where the note would sit in the flow: just below the nearest in-flow
+    // block before it. Derived from that block, NOT from n.offsetTop: an
+    // absolutely positioned box's static position is not reliably updated
+    // when its own margin changes, so reading it back after a previous pass
+    // returned stale numbers and notes landed on top of code blocks.
+    let prev = n.previousElementSibling;
+    while (prev && isNote(prev)) prev = prev.previousElementSibling;
+    const ownMargin = parseFloat(getComputedStyle(n).marginTop) || 0;
+    const natural = (prev ? prev.offsetTop + prev.offsetHeight + (parseFloat(getComputedStyle(prev).marginBottom) || 0) : 0) + ownMargin;
     let top = Math.max(natural, prevBottom + GAP);
     // walk down past any breakout block this note would sit across
     for (let i = 0; i < wide.length; i++) {
@@ -1019,7 +1028,7 @@ function layoutMarginNotes() {
         i = -1;                       // re-check from the start after moving
       }
     }
-    n.style.marginTop = top > natural ? (top - natural) + "px" : "";
+    n.style.top = (top - ownMargin) + "px";      // explicit, so nothing is read back
     prevBottom = top + n.offsetHeight;
   }
 }
@@ -1103,6 +1112,21 @@ function initChapter(id) {
 
   // widgets and fonts change heights after first paint; re-flow the margin
   window.addEventListener("load", layoutMarginNotes);
+  // `load` is not the end: web fonts swap in after it, widgets redraw, and
+  // <details> open. Any of those moves the blocks a note must clear, and a
+  // note laid out against stale positions sits on top of a code block
+  // (tests/shoot.js found 31 such overlaps). So re-lay whenever main changes
+  // size. Notes are absolutely positioned, so moving them never resizes main:
+  // no feedback loop.
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(layoutMarginNotes);
+  const mainEl = document.querySelector("main");
+  if (mainEl && "ResizeObserver" in window) {
+    let raf = 0;
+    new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(layoutMarginNotes);
+    }).observe(mainEl);
+  }
   let rt;
   window.addEventListener("resize", () => {
     clearTimeout(rt);

@@ -76,10 +76,12 @@
      reading. Code, tables, figures and widgets BREAK OUT to --wide, which
      is where the extra screen width actually helps. */
   --measure: 37rem;          /* ~70 characters of Literata */
-  --margin-col: 15rem;       /* the live margin */
-  --gutter: 2.5rem;
+  --margin-col: 13rem;       /* the live margin (a rail only when it fits) */
+  --gutter: 2rem;
   --wide: calc(var(--measure) + var(--gutter) + var(--margin-col));
-  --breakout: var(--wide);   /* grows on large screens — see below */
+  /* The sheet: as wide as the screen allows, up to 74rem. Prose is centred
+     in it at --measure; code, tables and widgets use all of it. */
+  --breakout: 74rem;
   --rule: 1px;               /* hairlines: table rows, dividers */
   --rule-2: 2px;             /* structure: cards, boxes, buttons */
   --radius: 3px;             /* barely there — this is print, not glass */
@@ -383,7 +385,7 @@ body {
 }
 .topbar .spacer { flex: 1 1 auto; }
 .topbar .prog {
-  font-family: var(--mono); font-size: .68rem; font-weight: 500; letter-spacing: .02em;
+  font-family: var(--mono); font-size: .74rem; font-weight: 500; letter-spacing: .02em;
   color: color-mix(in srgb, var(--stamp-ink) 72%, transparent);
   white-space: nowrap;
   font-variant-numeric: tabular-nums lining-nums;
@@ -413,7 +415,7 @@ body {
 
 .focus-toggle {
   padding: .28rem .58rem;
-  font-family: var(--label); font-size: .62rem; font-weight: 700;
+  font-family: var(--label); font-size: .71rem; font-weight: 700;
   letter-spacing: .1em; text-transform: uppercase;
   color: var(--stamp-ink); background: transparent;
   border: var(--rule) solid color-mix(in srgb, var(--stamp-ink) 38%, transparent);
@@ -463,7 +465,7 @@ body {
 .sb-part { margin-bottom: .35rem; }
 .sb-part > .h {
   padding: .6rem .85rem .3rem;
-  font-family: var(--label); font-size: .66rem; font-weight: 700;
+  font-family: var(--label); font-size: .73rem; font-weight: 700;
   letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3);
 }
 .sb-ch {
@@ -552,9 +554,6 @@ main > .mathblock {
   max-width: 100%;             /* fill main (breakout-wide), never the viewport */
 }
 
-/* On large displays let that breakout keep growing. Prose does not. */
-@media (min-width: 100rem) { :root { --breakout: 64rem; } }
-@media (min-width: 120rem) { :root { --breakout: 74rem; } }
 /* nested content must not inherit the breakout */
 .box pre, .example pre, .exercise pre, .quiz pre,
 .reveal pre, .box .tw, .example .tw, .exercise .tw, .reveal .tw {
@@ -578,7 +577,7 @@ main > *,
    by body.side-collapsed once JS runs. */
 :root.pre-collapsed .sidebar { transform: translateX(-100%); transition: none; }
 :root.pre-collapsed body.has-side .wrap {
-  max-width: calc(var(--wide) + 2 * clamp(1rem, 4vw, 2.5rem));
+  max-width: calc(var(--breakout) + 2 * clamp(1rem, 4vw, 2.5rem));
   padding-left: clamp(1rem, 4vw, 2.5rem);
   transition: none;
 }
@@ -587,7 +586,7 @@ main > *,
 @media (max-width: 82rem) {
   body.has-side .wrap,
   body.has-side.side-collapsed .wrap {
-    max-width: calc(var(--wide) + 2 * clamp(1rem, 4vw, 2.5rem));
+    max-width: calc(var(--breakout) + 2 * clamp(1rem, 4vw, 2.5rem));
     padding-left: clamp(1rem, 4vw, 2.5rem);
   }
   .sidebar { transform: translateX(-100%); box-shadow: var(--shadow-lg); }
@@ -634,25 +633,83 @@ main::before {
    Every width below must be able to shrink to the viewport. */
 main > * { max-width: min(var(--measure), 100%); }
 
+/* CENTRING THE TEXT IN THE SHEET.
+   On big screens the breakout grows to 64rem and 74rem for code and widgets,
+   but prose must stay at the 37rem measure. Left-aligned, that left the
+   heading and every paragraph pinned to the left of a half-empty sheet.
+   Now main is padded on the left by --ext, chosen so that:
+     - the prose column sits dead centre when there is room for the margin
+       notes on its right (74rem: 18.5rem each side, notes need 17.5rem),
+     - otherwise it moves only as far right as still lets the notes fit
+       (64rem: notes flush with the sheet's right edge),
+     - and it is 0 whenever main is no wider than prose + notes.
+   Breakouts cancel the padding with a negative margin, so code, tables and
+   widgets still span the whole sheet. M, main's width, is read from the
+   .wrap container (cqw) because a child's % would see main minus padding.
+   Without container units (old browsers, no JS) --ext is invalid -> 0, which
+   is exactly the old left-aligned layout. */
+.wrap { container-type: inline-size; }
+main {
+  --M: min(var(--breakout), 100cqw);
+  --ext: max(0px, calc((var(--M) - var(--measure)) / 2));
+  padding-left: var(--ext);
+}
+main > pre,
+main > .tw,
+main > figure,
+main > .panel,
+main > [data-viz],
+main > .mathblock {
+  margin-left: calc(-1 * var(--ext));
+  max-width: calc(100% + var(--ext));
+}
+/* Boxes that are mostly READING (quizzes, exercises, worked examples, the
+   bite console) must not take the whole 74rem: that is ~150 characters a
+   line. They widen symmetrically past the prose by --k, at most 4.5rem a
+   side (46rem total), and never past the sheet (k <= ext). */
+main > .study-console,
+main > .home-study,
+main > .exercise,
+main > .quiz,
+main > .example {
+  --k: min(var(--ext), 4.5rem);
+  margin-left: calc(-1 * var(--k));
+  width: calc(min(var(--measure), 100%) + 2 * var(--k));
+  max-width: none;
+}
+
 /* The live margin. Absolutely positioned with NO `top`, so each note keeps its
    static position — i.e. it lines up with the paragraph it follows. */
+/* Margin notes are INLINE asides by default (a ruled block in the column)
+   and become a right-hand rail only when the centred prose leaves room for
+   them: (M - measure) / 2 >= gutter + margin-col, i.e. M >= 67rem. A
+   container query on .wrap, not a viewport query, because what matters is
+   the sheet width, which also depends on whether the sidebar is open. */
 .mn {
-  position: absolute;
-  /* anchored to the PROSE measure, not to main (which is now breakout-wide) */
-  left: calc(var(--measure) + var(--gutter));
-  width: var(--margin-col);
+  position: static; width: auto;
+  border-left: 3px solid var(--line-2);
+  padding: .05rem 0 .05rem .85rem;
+  margin: 1.2rem 0;
   font-family: var(--label);
   font-size: .8rem; line-height: 1.55; font-weight: 500;
   color: var(--ink-2);
-  border-top: var(--rule-2) solid var(--line-2);
-  padding-top: .45rem;
-  margin-top: .3rem;
+}
+@container (min-width: 67rem) {
+  main > .mn:not(.study-orient) {
+    position: absolute;
+    left: calc(var(--ext, 0px) + var(--measure) + var(--gutter));
+    width: var(--margin-col);
+    border-left: 0;
+    border-top: var(--rule-2) solid var(--line-2);
+    padding: .45rem 0 0;
+    margin: .3rem 0 0;
+  }
 }
 .mn a { color: var(--accent); border-bottom-color: transparent; }
 .mn a:hover { border-bottom-color: var(--accent); }
 .mn b { font-weight: 700; color: var(--ink-2); }
 .mn .k {
-  display: block; font-size: .66rem; font-weight: 700;
+  display: block; font-size: .73rem; font-weight: 700;
   letter-spacing: .13em; text-transform: uppercase;
   color: var(--stamp); margin-bottom: .3rem;
 }
@@ -671,16 +728,6 @@ main > .mn.study-orient {
   margin: 1rem 0 1.35rem !important;
 }
 
-/* Below the breakpoint the margin folds back into the column. */
-@media (max-width: 66rem) {
-  .wrap { max-width: calc(var(--measure) + 2 * clamp(1rem, 4vw, 2.5rem)); }
-  .mn {
-    position: static; width: auto;
-    border-top: 0; border-left: 3px solid var(--line-2);
-    padding: .05rem 0 .05rem .85rem;
-    margin: 1.2rem 0;
-  }
-}
 
 /* ----------------------------------------------------------- typography */
 
@@ -693,9 +740,9 @@ h1 {
 }
 /* the chapter number, set as a stamped badge rather than a caption */
 h1 .num {
-  display: inline-block;
+  display: block; width: fit-content;   /* its own line, above the title, never beside it */
   font-family: var(--label);
-  font-size: .68rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+  font-size: .74rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
   color: var(--stamp-ink); background: var(--stamp);
   border-radius: var(--radius);
   padding: .3rem .6rem .26rem;
@@ -756,7 +803,7 @@ hr {
 
 code {
   font-family: var(--mono);
-  font-size: .84em; font-weight: 500;
+  font-size: max(.84em, 11px); font-weight: 500;   /* never below 11px, even inside a small label */
   font-variant-numeric: tabular-nums lining-nums;
   background: var(--surface-2);
   color: var(--ink);
@@ -800,7 +847,7 @@ pre .sh { color: var(--syn-shape); font-style: normal; font-weight: 700; }
   background: var(--paper); border: var(--rule) solid var(--line-2);
   border-radius: var(--radius);
   color: var(--ink-3);
-  font-family: var(--label); font-size: .6rem; font-weight: 700;
+  font-family: var(--label); font-size: .7rem; font-weight: 700;
   letter-spacing: .12em; text-transform: uppercase;
   padding: .24rem .5rem; cursor: pointer;
   opacity: 0; transition: opacity .15s, color .15s, border-color .15s, background .15s;
@@ -828,7 +875,7 @@ pre:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
 .mathblock .lbl {
   display: block; margin-top: .75rem;
   font-family: var(--label); font-style: normal; font-weight: 600;
-  font-size: .68rem; letter-spacing: .1em; color: var(--ink-3);
+  font-size: .74rem; letter-spacing: .1em; color: var(--ink-3);
   text-transform: uppercase;
 }
 .frac { display: inline-block; vertical-align: middle; text-align: center; margin: 0 .22em; }
@@ -853,7 +900,7 @@ pre:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
 .box > .t {
   display: inline-block;
   font-family: var(--label);
-  font-size: .63rem; font-weight: 700; letter-spacing: .15em; text-transform: uppercase;
+  font-size: .715rem; font-weight: 700; letter-spacing: .15em; text-transform: uppercase;
   color: var(--box-hue);
   margin-bottom: .65rem;
 }
@@ -923,7 +970,7 @@ th, td {
 tbody tr:last-child td { border-bottom: 0; }
 th {
   font-family: var(--label);
-  font-size: .64rem; font-weight: 700; letter-spacing: .13em; text-transform: uppercase;
+  font-size: .72rem; font-weight: 700; letter-spacing: .13em; text-transform: uppercase;
   color: var(--stamp-ink); background: var(--stamp);
   border-bottom: 0;
   white-space: nowrap;
@@ -1039,7 +1086,7 @@ select, input[type=text], input[type=number] {
 .quiz > .qt {
   display: flex; align-items: center; gap: .55rem;
   font-family: var(--label);
-  font-size: .63rem; font-weight: 700; letter-spacing: .15em; text-transform: uppercase;
+  font-size: .715rem; font-weight: 700; letter-spacing: .15em; text-transform: uppercase;
   color: var(--stamp-ink); background: var(--stamp);
   border-radius: var(--radius);
   padding: .32rem .6rem;
@@ -1074,7 +1121,7 @@ select, input[type=text], input[type=number] {
   display: grid; place-items: center;
   border: 1.5px solid var(--line-2);
   border-radius: var(--radius);
-  font-family: var(--label); font-size: .64rem; font-weight: 700;
+  font-family: var(--label); font-size: .72rem; font-weight: 700;
   color: var(--ink-3);
 }
 .opt.correct { border-color: var(--ok); background: var(--ok-bg); }
@@ -1127,7 +1174,7 @@ select, input[type=text], input[type=number] {
 .study-kicker {
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   padding: .42rem .8rem;
-  font-family: var(--label); font-size: .62rem; font-weight: 700;
+  font-family: var(--label); font-size: .71rem; font-weight: 700;
   letter-spacing: .14em; text-transform: uppercase;
   color: var(--surface); background: var(--accent);
 }
@@ -1144,7 +1191,7 @@ select, input[type=text], input[type=number] {
 .study-actions { display: flex; align-items: center; justify-content: flex-end; gap: .6rem; flex-wrap: wrap; }
 .study-actions label {
   display: inline-flex; align-items: center; gap: .4rem;
-  font-family: var(--label); font-size: .66rem; font-weight: 700;
+  font-family: var(--label); font-size: .73rem; font-weight: 700;
   letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3);
 }
 .study-duration { min-height: 2rem; }
@@ -1167,7 +1214,7 @@ select, input[type=text], input[type=number] {
 }
 .study-nav button, .bite-footer button {
   padding: .34rem .55rem; cursor: pointer; white-space: nowrap;
-  font-family: var(--label); font-size: .65rem; font-weight: 700;
+  font-family: var(--label); font-size: .725rem; font-weight: 700;
   color: var(--ink-2); background: var(--surface);
   border: 1.5px solid var(--line-2); border-radius: var(--radius);
 }
@@ -1203,14 +1250,14 @@ select, input[type=text], input[type=number] {
 .study-step:hover { border-color: var(--accent); background: var(--accent-bg); }
 .study-step-mark {
   display: grid; place-items: center; width: 1.35rem; height: 1.35rem;
-  font-family: var(--mono); font-size: .62rem; font-weight: 700;
+  font-family: var(--mono); font-size: .71rem; font-weight: 700;
   border: 1.5px solid var(--line-2); border-radius: 50%; color: var(--ink-3);
 }
 .study-step-label {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--label); font-size: .74rem; font-weight: 600;
 }
-.study-step-time { font-family: var(--mono); font-size: .62rem; color: var(--ink-4); white-space: nowrap; }
+.study-step-time { font-family: var(--mono); font-size: .71rem; color: var(--ink-4); white-space: nowrap; }
 .study-step.is-done { border-color: var(--ok); background: var(--ok-bg); }
 .study-step.is-active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
 .study-step.is-done .study-step-mark { color: var(--surface); background: var(--ok); border-color: var(--ok); font-size: 0; }
@@ -1219,11 +1266,11 @@ select, input[type=text], input[type=number] {
 .section-tools {
   display: flex; align-items: center; justify-content: flex-end; gap: .45rem; flex-wrap: wrap;
   margin: -1.1rem 0 1.2rem; color: var(--ink-4);
-  font-family: var(--label); font-size: .66rem; font-weight: 600;
+  font-family: var(--label); font-size: .73rem; font-weight: 600;
 }
 .section-tools button, .ex-check {
   padding: .25rem .48rem; cursor: pointer;
-  font-family: var(--label); font-size: .64rem; font-weight: 700; letter-spacing: .03em;
+  font-family: var(--label); font-size: .72rem; font-weight: 700; letter-spacing: .03em;
   color: var(--ink-3); background: var(--surface);
   border: 1.5px solid var(--line-2); border-radius: var(--radius);
 }
@@ -1243,7 +1290,7 @@ select, input[type=text], input[type=number] {
 }
 .bite-footer > span {
   margin-right: auto;
-  font-family: var(--label); font-size: .66rem; font-weight: 700;
+  font-family: var(--label); font-size: .73rem; font-weight: 700;
   letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3);
 }
 
@@ -1255,32 +1302,19 @@ select, input[type=text], input[type=number] {
   border-radius: var(--radius-lg); box-shadow: var(--shadow);
 }
 .home-study-mark {
-  font-family: var(--label); font-size: .6rem; font-weight: 700;
+  font-family: var(--label); font-size: .7rem; font-weight: 700;
   letter-spacing: .12em; text-transform: uppercase; color: var(--surface);
   background: var(--accent); border-radius: var(--radius); padding: .25rem .45rem;
 }
 .home-study-copy { display: flex; flex-direction: column; min-width: 0; }
 .home-study-copy strong { font-family: var(--display); font-size: 1rem; line-height: 1.3; }
-.home-study-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .82rem; color: var(--ink-3); }
-.home-study-copy small { font-family: var(--mono); font-size: .62rem; color: var(--ink-4); margin-top: .15rem; }
+.home-study-copy span { font-size: .82rem; color: var(--ink-3); }
+.home-study-copy small { font-family: var(--mono); font-size: .71rem; color: var(--ink-4); margin-top: .15rem; }
 
 body.focus-mode .sidebar { transform: translateX(-100%); }
 body.focus-mode.has-side .wrap {
   max-width: calc(var(--breakout) + 2 * clamp(1rem, 4vw, 2.5rem));
   padding-left: clamp(1rem, 4vw, 2.5rem);
-}
-/* The 66rem fold above caps .wrap at the prose measure, but `.wrap` alone
-   lost to every body.has-side / focus-mode / pre-collapsed rule, so between
-   40rem and 66rem the column hugged the left of an empty half-page. Placed
-   after all of them so it wins on order as well as specificity. */
-@media (max-width: 66rem) {
-  .wrap,
-  body.has-side .wrap,
-  body.has-side.side-collapsed .wrap,
-  body.focus-mode.has-side .wrap,
-  :root.pre-collapsed body.has-side .wrap {
-    max-width: calc(var(--measure) + 2 * clamp(1rem, 4vw, 2.5rem));
-  }
 }
 body.focus-mode .scrim { display: none !important; }
 body.focus-mode main > .focus-hidden { display: none !important; }
@@ -1351,7 +1385,7 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
   border-bottom: var(--rule-2) solid var(--line-2);
 }
 .exercise > .eh .n {
-  font-family: var(--mono); font-size: .68rem; font-weight: 700;
+  font-family: var(--mono); font-size: .74rem; font-weight: 700;
   color: var(--surface); background: var(--dim-3);
   border-radius: var(--radius);
   padding: .12rem .42rem;
@@ -1360,7 +1394,7 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
 .exercise > .eh .ti { font-family: var(--display); font-weight: 700; font-size: 1rem; letter-spacing: -.02em; }
 .exercise > .eh .lvl {
   margin-left: auto;
-  font-family: var(--label); font-size: .62rem; font-weight: 700;
+  font-family: var(--label); font-size: .71rem; font-weight: 700;
   letter-spacing: .13em; text-transform: uppercase;
   color: var(--ink-3);
 }
@@ -1379,7 +1413,7 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
 }
 .example > .t {
   display: inline-block;
-  font-family: var(--label); font-size: .63rem; font-weight: 700;
+  font-family: var(--label); font-size: .715rem; font-weight: 700;
   letter-spacing: .15em; text-transform: uppercase;
   color: var(--dim-2); margin-bottom: .6rem;
 }
@@ -1389,7 +1423,7 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
   margin-bottom: .6rem; align-items: start;
 }
 .example .step > .i {
-  font-family: var(--mono); font-size: .68rem; font-weight: 700;
+  font-family: var(--mono); font-size: .74rem; font-weight: 700;
   color: var(--dim-2); padding-top: .2rem;
   font-variant-numeric: tabular-nums lining-nums;
 }
@@ -1426,7 +1460,7 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
   box-shadow: 1px 1px 0 var(--shadow-hue); transform: translate(3px, 3px);
 }
 .chapnav a .d {
-  font-family: var(--label); font-size: .62rem; font-weight: 700;
+  font-family: var(--label); font-size: .71rem; font-weight: 700;
   letter-spacing: .14em; text-transform: uppercase;
   color: var(--ink-3);
 }
@@ -1474,7 +1508,7 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
 }
 .stats div {
   flex: 1 1 8rem;
-  font-family: var(--label); font-size: .62rem; font-weight: 700;
+  font-family: var(--label); font-size: .71rem; font-weight: 700;
   letter-spacing: .13em; text-transform: uppercase; color: var(--ink-3);
   background: var(--surface);
   border: var(--rule-2) solid var(--line-2);
@@ -1505,7 +1539,7 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
   border-bottom: var(--rule-2) solid var(--line-2);
 }
 .part > .ph .pn {
-  font-family: var(--label); font-size: .62rem; font-weight: 700;
+  font-family: var(--label); font-size: .71rem; font-weight: 700;
   letter-spacing: .17em; text-transform: uppercase;
   color: var(--stamp-ink); background: var(--stamp);
   border-radius: var(--radius); padding: .22rem .5rem;
@@ -1552,7 +1586,7 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
 .ccard .txt .t { font-family: var(--display); font-weight: 700; font-size: .97rem; line-height: 1.35; letter-spacing: -.02em; }
 .ccard .txt .s { font-size: .84rem; line-height: 1.45; color: var(--ink-3); margin-top: .12rem; }
 .ccard .tag {
-  font-family: var(--mono); font-size: .66rem; color: var(--ink-4);
+  font-family: var(--mono); font-size: .73rem; color: var(--ink-4);
   white-space: nowrap;
   font-variant-numeric: tabular-nums lining-nums;
 }
@@ -1723,4 +1757,24 @@ b[data-axis].ax-cursor { outline: 2px dashed currentColor; outline-offset: 1px; 
   width: max-content;
   max-width: 100%;
   overflow-x: auto;
+}
+
+/* ------------------------------------------------------- touch targets
+   On a touch screen every control is at least 40px tall (Apple and Google
+   ask for 44 to 48; 40 keeps the bite footer on one line at 320px). Found by
+   tests/shoot.js: the bite navigation, section tools, exercise checks and the
+   focus toggle were 22-27px tall on phones. Inline axis badges in running
+   text are exempt, as WCAG 2.5.8 allows for targets inside a sentence. */
+@media (pointer: coarse) {
+  .topbar .home { display: inline-flex; align-items: center; min-height: 2.5rem; }
+  .focus-toggle, .theme-toggle, .menu-btn,
+  .study-nav button, .section-tools button, .ex-check,
+  main .btn, main select,
+  main input:not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
+    min-height: 2.5rem;
+  }
+  /* hover never happens on touch, so the copy button must simply be there */
+  main .btn { min-width: 2.5rem; }
+  pre .copy-btn { opacity: 1; min-height: 2rem; }
+  pre:has(> .copy-btn) { padding-top: 2.9rem; }   /* the button sits above the code, not on it */
 }

@@ -617,22 +617,23 @@ function vizSoftmax(el, d) {
     const bw = 52, H = 190;
     const W = n * bw + 60;
     wrap.innerHTML = "";
-    const sv = svgEl("svg", { viewBox: `0 0 ${W} ${H + 46}`, width: "100%", height: H + 46, preserveAspectRatio: "xMidYMid meet" });
+    const TOP = 14;   // headroom: the tallest bar's value label used to sit above the viewBox
+    const sv = svgEl("svg", { viewBox: `0 0 ${W} ${H + 46 + TOP}`, width: "100%", height: H + 46 + TOP, preserveAspectRatio: "xMidYMid meet" });
     const maxp = Math.max(...pf, 0.01);
     for (let i = 0; i < n; i++) {
       const h = (pf[i] / maxp) * H;
       const x = 40 + i * bw;
       const alive = keep.has(i);
       sv.appendChild(svgEl("rect", {
-        x, y: H - h + 8, width: bw - 12, height: Math.max(h, 1), rx: 3,
+        x, y: H - h + 8 + TOP, width: bw - 12, height: Math.max(h, 1), rx: 3,
         fill: alive ? C.accent : C.gridHi, opacity: alive ? .9 : .45,
       }));
-      const t1 = svgEl("text", { x: x + (bw - 12) / 2, y: H - h + 2, "text-anchor": "middle", "font-size": 10, fill: alive ? C.accent : C.faint, "font-family": "var(--mono)" });
+      const t1 = svgEl("text", { x: x + (bw - 12) / 2, y: H - h + 2 + TOP, "text-anchor": "middle", "font-size": 10, fill: alive ? C.accent : C.faint, "font-family": "var(--mono)" });
       t1.textContent = pf[i] < 0.001 ? "0" : pf[i].toFixed(3); sv.appendChild(t1);
-      const t2 = svgEl("text", { x: x + (bw - 12) / 2, y: H + 24, "text-anchor": "middle", "font-size": 10, fill: C.faint, "font-family": "var(--mono)" });
+      const t2 = svgEl("text", { x: x + (bw - 12) / 2, y: H + 24 + TOP, "text-anchor": "middle", "font-size": 10, fill: C.faint, "font-family": "var(--mono)" });
       t2.textContent = logits[i].toFixed(1); sv.appendChild(t2);
       if (labels[i]) {
-        const t3 = svgEl("text", { x: x + (bw - 12) / 2, y: H + 39, "text-anchor": "middle", "font-size": 10, fill: C.dim });
+        const t3 = svgEl("text", { x: x + (bw - 12) / 2, y: H + 39 + TOP, "text-anchor": "middle", "font-size": 10, fill: C.dim });
         t3.textContent = labels[i]; sv.appendChild(t3);
       }
     }
@@ -770,14 +771,22 @@ function vizRope(el, d) {
     sv.appendChild(svgEl("line", { x1: cx - R - 14, y1: cy, x2: cx + R + 14, y2: cy, stroke: C.grid }));
     sv.appendChild(svgEl("line", { x1: cx, y1: cy - R - 14, x2: cx, y2: cy + R + 14, stroke: C.grid }));
 
-    const arrow = (a, col, lbl, dash) => {
+    const arrow = (a, col, lbl, dash, below) => {
       const x = cx + R * Math.cos(a), y = cy - R * Math.sin(a);
       sv.appendChild(svgEl("line", { x1: cx, y1: cy, x2: x, y2: y, stroke: col, "stroke-width": 2.3, "stroke-dasharray": dash || "" }));
       sv.appendChild(svgEl("circle", { cx: x, cy: y, r: 4, fill: col }));
-      const t = svgEl("text", { x: x + (Math.cos(a) > 0 ? 9 : -9), y: y + (Math.sin(a) > 0 ? -7 : 14), "font-size": 11, fill: col, "font-family": "var(--mono)", "text-anchor": Math.cos(a) > 0 ? "start" : "end" });
+      // label beside the tip, on the outside. If that would run off the left
+      // edge (tip near 180deg) pin it to the edge and lift it clear of the tip;
+      // `below` tucks a label under the axis, inside the circle, so it cannot
+      // reach the text panel on the right.
+      const w = lbl.length * 6.7;
+      let lx = x + (Math.cos(a) > 0 ? 9 : -9), ly = y + (Math.sin(a) > 0 ? -7 : 14), anchor = Math.cos(a) > 0 ? "start" : "end";
+      if (anchor === "end" && lx - w < 2) { lx = 2; anchor = "start"; ly = y + (Math.sin(a) >= 0 ? -12 : 20); }
+      if (below) { lx = x - 6; ly = y + 16; anchor = "end"; }
+      const t = svgEl("text", { x: lx, y: ly, "font-size": 11, fill: col, "font-family": "var(--mono)", "text-anchor": anchor });
       t.textContent = lbl; sv.appendChild(t);
     };
-    arrow(0, C.faint, "original (m=0)", "4 3");
+    arrow(0, C.faint, "original (m=0)", "4 3", true);
     arrow(ang, C.accent, `rotated by mθ`);
 
     // arc
@@ -1103,7 +1112,7 @@ function vizFloat(el, d) {
       const g = document.createElement("div");
       g.style.cssText = "display:flex;flex-direction:column;gap:3px";
       const lab = document.createElement("div");
-      lab.style.cssText = `font-family:var(--label);font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:${col}`;
+      lab.style.cssText = `font-family:var(--label);font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:${col}`;
       lab.textContent = name + (count > 1 ? " · " + count : "");
       const cells = document.createElement("div");
       cells.style.cssText = `display:flex;gap:${n > 16 ? 1 : 2}px`;
