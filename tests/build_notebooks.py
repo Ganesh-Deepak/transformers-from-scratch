@@ -344,6 +344,395 @@ def _nb03():
     ]
 
 
+@notebook("04_embeddings")
+def _nb04():
+    return [
+        md("""
+        # Chapter 4 — Embeddings and the Residual Stream
+
+        Every number in Chapter 4, recomputed. Each cell **asserts** what it checks, so
+        `python tests/run_notebooks.py 04` fails if the chapter and the code disagree. GPT-2's weights
+        would need a download, so Exercise 4.2 (nearest neighbours) and the logit lens are not reproduced
+        here; Exercise 4.3 runs on this course's model (`tfs/model.py`) trained for a few seconds on the
+        bundled offline corpus.
+        """),
+        code(SETUP + "from tfs.model import Config, Model\n"),
+        md("## 4.1 — an embedding is a lookup: shapes and the GPT-2 table"),
+        code("""
+        V, C = 50257, 768
+        emb = nn.Embedding(V, C)
+        print(tuple(emb.weight.shape), f"{emb.weight.numel():,} parameters")
+        assert emb.weight.numel() == 38_597_376 and round(emb.weight.numel() / 1e6, 1) == 38.6
+        ids = torch.tensor([[15496, 995, 0], [464, 3797, 3332]])          # (B=2, T=3)
+        x = emb(ids)
+        assert ids.shape == (2, 3) and x.shape == (2, 3, 768)              # (B, T) -> (B, T, C)
+        onehot = torch.zeros(1, V); onehot[0, 15496] = 1.0
+        assert torch.allclose(onehot @ emb.weight, emb.weight[15496][None])  # identical answers
+        """),
+        md("## 4.1 — the worked example: the same row, two ways, and the waste"),
+        code("""
+        W = torch.arange(24, dtype=torch.float64).reshape(6, 4) / 10        # id i -> [0.4i, ..., 0.4i+0.3]
+        assert W[4].tolist() == [1.6, 1.7, 1.8, 1.9] and W[5].tolist() == [2.0, 2.1, 2.2, 2.3]
+        oh = torch.zeros(6, dtype=torch.float64); oh[3] = 1
+        print("matmul", (oh @ W).tolist(), " lookup", W[3].tolist())
+        assert torch.allclose(oh @ W, torch.tensor([1.2, 1.3, 1.4, 1.5], dtype=torch.float64))
+        assert torch.equal(oh @ W, W[3])
+        mults, zero = 6 * 4, 5 * 4
+        print(f"{zero} of {mults} multiplies by zero = {zero / mults:.0%}")
+        assert round(100 * zero / mults) == 83
+        gpt2 = 50257 * 768
+        print(f"GPT-2: matmul {gpt2:,} multiplies, lookup 768 reads -> {gpt2 // 768:,}x the arithmetic")
+        assert gpt2 == 38_597_376 and gpt2 // 768 == 50257 and 50257 - 1 == 50256
+        """),
+        md("""
+        ## 4.1 — the gradient reaches exactly one row per token, and what AdamW does afterwards
+
+        A token that appears once gets one gradient. Its row then keeps moving: on momentum, and from
+        weight decay, which shrinks it every step.
+
+        **DISCREPANCY (minor).** The chapter says the row "keeps drifting for a few hundred steps on
+        momentum". After the gradient stops, Adam's step is about m̂/√v̂, which decays like
+        (β₁/√β₂)ᵗ: under 1% of its first size after ~45 steps with PyTorch's default betas, and the
+        measurement below agrees. Momentum drift is over within tens of steps; what keeps moving the row
+        for hundreds of steps is weight decay (lr·λ·w every step).
+        """),
+        code("""
+        def rare_token_moves(weight_decay, betas, steps=400):
+            torch.manual_seed(0)
+            e = nn.Embedding(10, 4)
+            opt = torch.optim.AdamW(e.parameters(), lr=1e-2, weight_decay=weight_decay, betas=betas)
+            moves = []
+            for step in range(steps):
+                ids = torch.tensor([3]) if step == 0 else torch.tensor([1])   # token 3 appears once, ever
+                before = e.weight[3].detach().clone()
+                opt.zero_grad()
+                (e(ids) * torch.randn(1, 4)).sum().backward()
+                if step == 0:
+                    rows = (e.weight.grad.abs().sum(1) > 0).nonzero().flatten().tolist()
+                    assert rows == [3]                                     # exactly one row has a gradient
+                opt.step()
+                moves.append((e.weight[3].detach() - before).norm().item())
+            return moves
+
+        for betas in ((0.9, 0.999), (0.9, 0.95)):
+            m = rare_token_moves(0.0, betas)
+            gone = next(t for t, v in enumerate(m) if v < 0.01 * m[0])
+            print(f"betas {betas}: momentum drift falls below 1% of its first step after {gone} steps")
+            assert gone < 100                                              # tens of steps, not hundreds
+        m = rare_token_moves(0.1, (0.9, 0.95))
+        print(f"with weight decay 0.1: still moving {m[300]:.1e} per step at step 300")
+        assert m[300] > 1e-4                                               # decay keeps shrinking the row
+        """),
+        md("## 4.2 — weight tying: V·C parameters instead of 2·V·C"),
+        code("""
+        cfg = Config(vocab_size=1000, d_model=64, n_layer=2, n_head=4, n_kv_head=2, d_head=16, d_ff=128, max_T=64)
+        tied = Model(cfg)
+        untied = Model(Config(**{**cfg.__dict__, "tie_embed": False}))
+        n = lambda m: sum(p.numel() for p in m.parameters())
+        print("tied", n(tied), " untied", n(untied))
+        assert tied.head.weight is tied.embed.weight and tied.head.weight.shape == (1000, 64)  # both (V, C)
+        assert n(untied) - n(tied) == 1000 * 64 and n(tied) == cfg.n_params()
+        """),
+        md("## 4.3 — the residual stream has one shape on every line"),
+        code("""
+        shapes = []
+        hooks = [b.register_forward_hook(lambda mod, inp, out: shapes.append(tuple(out[0].shape)))
+                 for b in tied.blocks]
+        tied(torch.randint(0, 1000, (3, 17)))
+        for h in hooks: h.remove()
+        print(shapes)
+        assert shapes == [(3, 17, 64)] * cfg.n_layer                      # (B, T, C) after every block
+        """),
+        md("## 4.4 — why x + f(x): 0.9⁸⁰, and the 1 + f′(x) term"),
+        code("""
+        print(f"0.9**80 = {0.9 ** 80:.2e}")
+        assert round(0.9 ** 80, 4) == 0.0002
+        x = torch.tensor(2.0, requires_grad=True)
+        (x + torch.tanh(0.5 * x)).backward()
+        fprime = 0.5 * (1 - torch.tanh(torch.tensor(1.0)) ** 2)
+        assert torch.isclose(x.grad, 1 + fprime)                           # d(x + f)/dx = 1 + f'(x)
+        """),
+        md("## Quiz — how much of an 8B model is embedding tables?"),
+        code("""
+        table = 128256 * 4096
+        print(f"one table {table:,}; two {2 * table / 1e9:.2f} B = {2 * table / 8e9:.0%} of 8 B")
+        assert round(table / 1e6) == 525 and round(2 * table / 1e9, 2) == 1.05
+        assert round(100 * 2 * table / 8e9) == 13 and 2 * table / 1e9 > 1.0   # over 100% of a 1B model
+        """),
+        md("""
+        ## Exercise 4.1 — embedding = one-hot matmul, and the speed ratio
+
+        The chapter predicts the lookup is typically 100–1000× faster at V = 50,000. Timings depend on
+        the machine and its load: this notebook measured 120–1000× on a busy 8-core CPU. The assert is a
+        deliberately loose 30× so that a loaded machine does not fail it; the printed ratio is the result.
+        """),
+        code("""
+        import time
+        e10 = nn.Embedding(10, 4)
+        assert torch.equal(e10(torch.tensor([3])), F.one_hot(torch.tensor([3]), 10).float() @ e10.weight)
+        E = nn.Embedding(50000, 768)
+        ids = torch.randint(0, 50000, (8, 32))
+        def bench(fn, reps=5):
+            fn(); t = time.perf_counter()
+            for _ in range(reps): fn()
+            return (time.perf_counter() - t) / reps
+        with torch.no_grad():
+            assert torch.allclose(E(ids), F.one_hot(ids, 50000).float() @ E.weight)
+            t_lookup = bench(lambda: E(ids))
+            t_matmul = bench(lambda: F.one_hot(ids, 50000).float() @ E.weight)
+        print(f"lookup {t_lookup * 1e3:.3f} ms   one-hot matmul {t_matmul * 1e3:.1f} ms   ratio {t_matmul / t_lookup:,.0f}x")
+        assert t_matmul / t_lookup > 30
+        """),
+        md("""
+        ## Exercise 4.3 — break the residual stream
+
+        The same model with `x = attn(norm(x))` and `x = mlp(norm(x))` in every block (residual removed),
+        trained side by side on the bundled offline corpus. The no-residual model trains dramatically
+        worse, as the chapter says.
+
+        **DISCREPANCY.** Two of the exercise's predictions do not hold for this pre-norm (RMSNorm) model:
+        (1) the gap is not "marginal at 2 layers" — it is already large at 2 layers; (2) the no-residual
+        model's first-layer gradients are *not* orders of magnitude smaller — they are about as large or
+        larger. With a norm in front of every sublayer, each block rescales its input, so the gradient
+        does not vanish; what is lost is the identity path that carries each token's own embedding
+        forward. (The vanishing-gradient picture holds for an unnormalised stack — see the Chapter 10
+        notebook, Exercise 10.3.)
+        """),
+        code("""
+        from tfs.train import _fallback_corpus, get_batch
+        from tfs.tokenizer import CharTokenizer
+        text = _fallback_corpus()[:60000]
+        ctok = CharTokenizer(text)
+        data = torch.tensor(ctok.encode(text))
+
+        def no_residual(self, x, cos, sin, cache=None):
+            a, c = self.attn(self.n1(x), cos, sin, cache)
+            x = a                                       # was: x = x + a
+            x = self.mlp(self.n2(x))                    # was: x = x + self.mlp(self.n2(x))
+            return x, c
+
+        def run(n_layer, residual, steps=60):
+            torch.manual_seed(0)
+            m = Model(Config(vocab_size=ctok.vocab_size, d_model=48, n_layer=n_layer, n_head=4,
+                             n_kv_head=4, d_head=12, d_ff=128, max_T=64))
+            if not residual:
+                for b in m.blocks:
+                    b.forward = no_residual.__get__(b)
+            opt = torch.optim.AdamW(m.parameters(), lr=3e-3)
+            torch.manual_seed(1)
+            for step in range(steps):
+                x = get_batch(data, 16, 64)
+                _, loss, _ = m(x, targets=x)
+                opt.zero_grad(); loss.backward()
+                if step == 0:
+                    g0 = m.blocks[0].attn.q_proj.weight.grad.norm().item()
+                opt.step()
+            return loss.item(), g0
+
+        res = {(L, r): run(L, r) for L in (2, 4) for r in (True, False)}
+        for (L, r), (loss, g0) in res.items():
+            print(f"{L} layers  residual={r!s:5}  loss after 60 steps {loss:.3f}   block[0] grad {g0:.2e}")
+        for L in (2, 4):
+            assert res[L, False][0] > res[L, True][0] + 0.5            # dramatically worse, even at 2 layers
+            assert res[L, False][1] > 0.1 * res[L, True][1]            # first-layer grads NOT orders smaller
+        """),
+    ]
+
+
+@notebook("07_positions")
+def _nb07():
+    return [
+        md("""
+        # Chapter 7 — Position: Sinusoidal → Learned → RoPE → ALiBi
+
+        Every equation, worked example and exercise answer in Chapter 7, recomputed with
+        `tfs/model.py`'s RoPE (`build_rope_cache`, `rotate_half`, `apply_rope`). Each cell **asserts**
+        what it checks, so `python tests/run_notebooks.py 07` fails if the chapter and the code disagree.
+        """),
+        code(SETUP + "from tfs.model import build_rope_cache, rotate_half, apply_rope\n"),
+        md("""
+        ## 7.1 / Exercise 7.1 — attention is permutation-equivariant; RoPE and the causal mask break it
+        """),
+        code("""
+        torch.manual_seed(0)
+        B, T, d = 1, 6, 16
+        Wq, Wk, Wv = (torch.randn(d, d, dtype=torch.float64) / 4 for _ in range(3))
+        def attn(x, rope=False, causal=False):
+            q, k, v = (x @ Wq)[:, None], (x @ Wk)[:, None], (x @ Wv)[:, None]   # (B, 1, T, d)
+            if rope:
+                cos, sin = build_rope_cache(x.shape[1], d)
+                q, k = apply_rope(q, k, cos.double(), sin.double())
+            return F.scaled_dot_product_attention(q, k, v, is_causal=causal)[:, 0]
+        x = torch.randn(B, T, d, dtype=torch.float64)
+        perm = torch.randperm(T)
+        same = lambda kw: torch.allclose(attn(x, **kw)[:, perm], attn(x[:, perm], **kw))
+        print("no position, no mask:", same({}), "  + RoPE:", same({"rope": True}), "  + causal mask:", same({"causal": True}))
+        assert same({}) and not same({"rope": True}) and not same({"causal": True})
+        # and the per-position MLP cannot fix it: it commutes with any permutation
+        mlp = nn.Sequential(nn.Linear(d, 32), nn.GELU(), nn.Linear(32, d)).double()
+        assert torch.allclose(mlp(x)[:, perm], mlp(x[:, perm]))
+        """),
+        md("""
+        ## 7.2 — sinusoidal encoding: PE(pos + k) is a fixed linear map (a rotation) of PE(pos)
+        """),
+        code("""
+        def sinusoidal(T, d):
+            pos = torch.arange(T)[:, None]
+            i = torch.arange(0, d, 2)[None, :]
+            ang = pos / (10000 ** (i / d))
+            pe = torch.zeros(T, d)
+            pe[:, 0::2] = torch.sin(ang)
+            pe[:, 1::2] = torch.cos(ang)
+            return pe.double()
+        pe = sinusoidal(200, 16)
+        k = 7
+        w = 1 / 10000 ** (torch.arange(0, 16, 2).double() / 16)        # per-pair frequency
+        M = torch.zeros(16, 16, dtype=torch.float64)                    # block-diagonal 2x2 rotations by k*w
+        for j, a in enumerate(k * w):
+            c, s = torch.cos(a), torch.sin(a)
+            M[2 * j:2 * j + 2, 2 * j:2 * j + 2] = torch.tensor([[c, -s], [s, c]])
+        assert torch.allclose(pe[k:], pe[:-k] @ M, atol=1e-5)           # the same M for every position
+        print("PE[pos+7] == PE[pos] @ M for all", 200 - k, "positions")
+        """),
+        md("## 7.3 — a learned table has a hard ceiling (GPT-2: 1024 rows)"),
+        code("""
+        wpe = nn.Embedding(1024, 768)
+        assert wpe.weight.numel() == 1024 * 768                           # max_T * d parameters
+        try:
+            wpe(torch.tensor([1024])); raised = False
+        except IndexError:
+            raised = True
+        assert raised                                                      # position 1025 does not exist
+        cos, sin = build_rope_cache(40_000, 64)                             # RoPE: any position, no table
+        assert torch.isfinite(cos).all() and cos.shape == (40_000, 64)
+        """),
+        md("""
+        ## 7.4 — the 2-D case: Rₘᵀ Rₙ = Rₙ₋ₘ, so only the offset survives
+        """),
+        code("""
+        R = lambda a: torch.tensor([[math.cos(a), -math.sin(a)], [math.sin(a), math.cos(a)]], dtype=torch.float64)
+        for m, n in [(0, 3), (5, 2), (11, 40)]:
+            assert torch.allclose(R(m).T @ R(n), R(n - m))
+        assert torch.allclose(R(0.7).T @ R(0.7), torch.eye(2, dtype=torch.float64))   # orthogonal: length kept
+        """),
+        md("## 7.4 — the worked example (d_head = 8): frequencies, a rotating q, and the cancelling positions"),
+        code("""
+        theta = [10000 ** (-2 * i / 8) for i in range(4)]
+        for i, t in enumerate(theta):
+            print(f"pair i={i}: theta={t:.6f}   full turn every {2 * math.pi / t:,.2f} tokens")
+        assert [round(t, 6) for t in theta] == [1.0, 0.1, 0.01, 0.001]
+        assert [round(2 * math.pi / t, 2) for t in theta] == [6.28, 62.83, 628.32, 6283.19]
+        q1 = torch.tensor([1.0, 0.0], dtype=torch.float64)
+        rows = [(R(m) @ q1).tolist() for m in range(4)]
+        print([[round(v, 4) for v in r] for r in rows], [round(math.degrees(m), 1) for m in range(4)])
+        assert [[round(v, 4) for v in r] for r in rows] == [[1.0, 0.0], [0.5403, 0.8415], [-0.4161, 0.9093], [-0.99, 0.1411]]
+        assert [round(math.degrees(m), 1) for m in range(4)] == [0.0, 57.3, 114.6, 171.9]
+        q, k = torch.tensor([0.6, 0.8], dtype=torch.float64), torch.tensor([1.0, 0.0], dtype=torch.float64)
+        dots = [(R(m) @ q) @ (R(n) @ k) for m, n in [(0, 2), (1, 3), (5, 7), (10, 12)]]
+        print("offset 2:", [round(v.item(), 6) for v in dots], "  offset 3:", round(((R(1) @ q) @ (R(4) @ k)).item(), 6))
+        assert all(round(v.item(), 6) == 0.47775 for v in dots)
+        assert round(((R(1) @ q) @ (R(4) @ k)).item(), 6) == -0.481099
+        """),
+        md("""
+        ## The chapter's own code cell, in float32
+
+        **DISCREPANCY (wording).** The text says the four scores are "bit-identical because the gap was
+        always 2". Mathematically they are equal; computed in float32 (as the chapter's `rot` does, via
+        `torch.tensor`) they agree to ~3×10⁻⁸ but are *not* bit-identical. The chapter's own assert
+        (`< 1e-6`) is the right test; "bit-identical" is not.
+        """),
+        code("""
+        def rot(v, m, theta=1.0):
+            a = m * theta
+            return torch.tensor([v[0]*math.cos(a) - v[1]*math.sin(a),
+                                 v[0]*math.sin(a) + v[1]*math.cos(a)])
+        q, k = torch.tensor([0.6, 0.8]), torch.tensor([1.0, 0.0])
+        vals = [torch.dot(rot(q, m), rot(k, n)).item() for m, n in [(0, 2), (1, 3), (5, 7), (10, 12)]]
+        print([f"{v:.10f}" for v in vals])
+        assert all(round(v, 6) == 0.47775 for v in vals)                  # the printed claim
+        assert abs(torch.dot(rot(q, 0), rot(k, 2)) - torch.dot(rot(q, 10), rot(k, 12))) < 1e-6
+        assert len(set(vals)) > 1                                         # ... but not bit-identical
+        """),
+        md("""
+        ## Exercise 7.2 — the relative-position property for the real implementation (d = 64)
+
+        **Minor wording.** The chapter expects the three offset-3 scores to "agree to ~6 decimal places".
+        In float32 with scores around ±6 they agree to ~6 *significant figures* (differences of ~1e-5);
+        six decimal places is beyond float32 at that magnitude. The offset-4 score differs in the first digit.
+        """),
+        code("""
+        torch.manual_seed(0)
+        d = 64
+        cos, sin = build_rope_cache(200, d)
+        q, k = torch.randn(1, 1, 1, d), torch.randn(1, 1, 1, d)
+        def score(m, n):
+            qm = q * cos[m] + rotate_half(q) * sin[m]
+            kn = k * cos[n] + rotate_half(k) * sin[n]
+            return (qm * kn).sum().item()
+        s = [score(5, 8), score(50, 53), score(100, 103)]
+        print(s, score(5, 9))
+        assert max(s) - min(s) < 1e-4 * max(1.0, abs(s[0]))               # agree to ~6 significant digits
+        assert abs(score(5, 9) - s[0]) > 1e-3                              # offset 4 is different
+        # apply_rope on (B, nh, T, hd) does the same thing at every position
+        qq, kk = apply_rope(q.expand(1, 1, 200, d), k.expand(1, 1, 200, d), cos, sin)
+        assert abs((qq[0, 0, 5] * kk[0, 0, 8]).sum().item() - s[0]) < 1e-5
+        """),
+        md("""
+        ## 7.4 — two conventions, both correct: half-split (Llama/HF) vs adjacent pairs (the paper)
+
+        They differ by a fixed permutation of the feature axis, so one equals the other in a permuted
+        basis — and they are not interchangeable on the same weights.
+        """),
+        code("""
+        def rope_adjacent(x, pos, base=10000.0):
+            d = x.shape[-1]
+            inv = 1.0 / base ** (torch.arange(0, d, 2).float() / d)
+            a = pos[:, None].float() * inv                               # (T, d/2)
+            x1, x2 = x[..., 0::2], x[..., 1::2]
+            out = torch.empty_like(x)
+            out[..., 0::2] = x1 * a.cos() - x2 * a.sin()
+            out[..., 1::2] = x1 * a.sin() + x2 * a.cos()
+            return out
+        d, T = 16, 10
+        x = torch.randn(T, d)
+        cos, sin = build_rope_cache(T, d)
+        half = x * cos + rotate_half(x) * sin
+        P = torch.cat([torch.arange(0, d, 2), torch.arange(1, d, 2)])     # adjacent -> half-split layout
+        inv = torch.argsort(P)
+        assert torch.allclose(rope_adjacent(x[:, inv], torch.arange(T))[:, P], half, atol=1e-6)   # equivalent
+        assert not torch.allclose(rope_adjacent(x, torch.arange(T)), half, atol=1e-3)            # not interchangeable
+        print("half-split RoPE == adjacent-pair RoPE in the permuted basis; on the same weights they differ")
+        """),
+        md("""
+        ## 7.5 — ALiBi: a per-head linear distance penalty with geometric slopes
+        """),
+        code("""
+        n_head, T = 8, 6
+        slopes = torch.tensor([2 ** (-8 * (h + 1) / n_head) for h in range(n_head)])
+        print("slopes", slopes.tolist())
+        assert slopes[:3].tolist() == [0.5, 0.25, 0.125]                     # 1/2, 1/4, 1/8, ...
+        i, j = torch.arange(T)[:, None], torch.arange(T)[None, :]
+        bias = slopes[:, None, None] * (j - i)                                # (H, T, T)
+        assert (bias.masked_select((j <= i).expand(n_head, T, T)) <= 0).all()   # a penalty, never a bonus
+        assert torch.equal(bias[:, 3, 1], bias[:, 5, 3])                      # depends only on j - i
+        """),
+        md("""
+        ## Exercise 7.3 — the RoPE wavelength spectrum at d_head = 128, base 10,000 vs 500,000
+        """),
+        code("""
+        d = 128
+        for base, want_long, want_n in ((10_000, 5.4e4, 18), (500_000, 2.6e6, 32)):
+            wl = [2 * math.pi * base ** (2 * i / d) for i in range(d // 2)]
+            n_long = sum(w > 4096 for w in wl)
+            cut = (d / 2) * math.log(4096 / (2 * math.pi)) / math.log(base)     # the closed form
+            print(f"base {base:>7,}: shortest {wl[0]:.2f}, longest {wl[-1]:.3g} tokens, "
+                  f"{n_long}/64 pairs longer than 4096 (closed form: i > {cut:.2f})")
+            assert round(wl[0], 2) == 6.28 and round(wl[-1], -int(math.log10(want_long)) + 1) == want_long
+            assert n_long == want_n == sum(i > cut for i in range(d // 2))
+        """),
+    ]
+
+
 # ============================================================ END NOTEBOOKS
 
 
