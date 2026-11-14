@@ -999,8 +999,9 @@ function layoutMarginNotes() {
   // Elements that break out of the prose measure now reach INTO the margin
   // column, so a note must clear them vertically as well as clearing each other.
   // main is now breakout-wide, so compare against the PROSE measure instead
-  const measurePx = parseFloat(
-    getComputedStyle(document.documentElement).getPropertyValue("--measure")) * 16;
+  // --measure is a clamp() now, so measure it instead of parsing it
+  const prose = main.querySelector(":scope > p");
+  const measurePx = prose ? prose.offsetWidth : 592;
   const wide = [...main.children].filter(el => {
     if (el.classList.contains("mn")) return false;
     return el.offsetWidth > measurePx + 4;

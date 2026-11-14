@@ -48,6 +48,7 @@ let VIEWPORTS = [
   { name: "laptop",     w: 1280, h: 800 },
   { name: "desktop",    w: 1440, h: 900,  side: "open" },
   { name: "wide",       w: 1920, h: 1080, side: "open" },
+  { name: "large",      w: 1800, h: 1000, side: "collapsed" },
   { name: "wide-closed",w: 1920, h: 1080, side: "collapsed" },
   { name: "ultra",      w: 2560, h: 1440, side: "collapsed" },
 ];

@@ -75,13 +75,14 @@
      Prose stays near 70 characters because long lines genuinely hurt
      reading. Code, tables, figures and widgets BREAK OUT to --wide, which
      is where the extra screen width actually helps. */
-  --measure: 37rem;          /* ~70 characters of Literata */
+  --measure: 37rem;   /* fallback outside main; main sets the real one */
   --margin-col: 13rem;       /* the live margin (a rail only when it fits) */
   --gutter: 2rem;
   --wide: calc(var(--measure) + var(--gutter) + var(--margin-col));
-  /* The sheet: as wide as the screen allows, up to 74rem. Prose is centred
-     in it at --measure; code, tables and widgets use all of it. */
-  --breakout: 74rem;
+  /* The sheet: as wide as the screen allows, up to 66rem. Prose is centred
+     in it at --measure; code, tables and widgets use all of it. 74rem was
+     tried and left a narrow text strip floating in a sea of paper. */
+  --breakout: 66rem;
   --rule: 1px;               /* hairlines: table rows, dividers */
   --rule-2: 2px;             /* structure: cards, boxes, buttons */
   --radius: 3px;             /* barely there — this is print, not glass */
@@ -634,21 +635,26 @@ main::before {
 main > * { max-width: min(var(--measure), 100%); }
 
 /* CENTRING THE TEXT IN THE SHEET.
-   On big screens the breakout grows to 64rem and 74rem for code and widgets,
-   but prose must stay at the 37rem measure. Left-aligned, that left the
-   heading and every paragraph pinned to the left of a half-empty sheet.
-   Now main is padded on the left by --ext, chosen so that:
-     - the prose column sits dead centre when there is room for the margin
-       notes on its right (74rem: 18.5rem each side, notes need 17.5rem),
-     - otherwise it moves only as far right as still lets the notes fit
-       (64rem: notes flush with the sheet's right edge),
-     - and it is 0 whenever main is no wider than prose + notes.
+   The sheet (up to 66rem) is wider than the prose measure (37-48rem), and
+   left-aligned prose sat pinned to the left of a half-empty sheet. main is
+   padded on the left by --ext = (M - measure) / 2, so the prose column is
+   dead centre, and 0 whenever main is no wider than the measure.
    Breakouts cancel the padding with a negative margin, so code, tables and
    widgets still span the whole sheet. M, main's width, is read from the
    .wrap container (cqw) because a child's % would see main minus padding.
    Without container units (old browsers, no JS) --ext is invalid -> 0, which
    is exactly the old left-aligned layout. */
 .wrap { container-type: inline-size; }
+/* The prose column is sized to the SHEET, not the browser window: 64% of
+   it, between 37rem and 46rem, and the body type grows with it (17 -> 19px)
+   so a line stays ~72-78 characters. A fixed 37rem looked like a thin strip
+   floating in the middle of the page; a viewport-based width still did that
+   on laptops, where the sidebar and gutters eat the extra window. cqw is the
+   .wrap container, whose content box never exceeds the 66rem sheet. */
+main {
+  --measure: clamp(37rem, 64cqw, 46rem);
+  font-size: clamp(1.0625rem, .75rem + .9cqw, 1.1875rem);
+}
 main {
   --M: min(var(--breakout), 100cqw);
   --ext: max(0px, calc((var(--M) - var(--measure)) / 2));
@@ -664,7 +670,7 @@ main > .mathblock {
   max-width: calc(100% + var(--ext));
 }
 /* Boxes that are mostly READING (quizzes, exercises, worked examples, the
-   bite console) must not take the whole 74rem: that is ~150 characters a
+   bite console) must not take the whole sheet: that is ~130 characters a
    line. They widen symmetrically past the prose by --k, at most 4.5rem a
    side (46rem total), and never past the sheet (k <= ext). */
 main > .study-console,
@@ -682,9 +688,10 @@ main > .example {
    static position — i.e. it lines up with the paragraph it follows. */
 /* Margin notes are INLINE asides by default (a ruled block in the column)
    and become a right-hand rail only when the centred prose leaves room for
-   them: (M - measure) / 2 >= gutter + margin-col, i.e. M >= 67rem. A
-   container query on .wrap, not a viewport query, because what matters is
-   the sheet width, which also depends on whether the sidebar is open. */
+   them: (M - measure) / 2 >= gutter + margin-col. With the sheet capped at
+   66rem that never holds, so today notes are always inline; the rail is kept
+   for a wider sheet. A container query on .wrap, because what matters is the
+   sheet width, which also depends on whether the sidebar is open. */
 .mn {
   position: static; width: auto;
   border-left: 3px solid var(--line-2);
