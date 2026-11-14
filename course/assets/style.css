@@ -87,12 +87,20 @@
 
   /* -- light theme (default) — kraft stock, oxblood ink ------------------ */
   --paper: #E7D8BC;     /* kraft — warm, printed, unmistakably not white */
-  --surface: #FBF4E4;   /* cream card stock: lifts off the kraft */
+  --surface: #FFFBF3;   /* cream card stock: lifts off the sheet */
   --surface-2: #DCCBA9; /* recessed kraft: wells, hovers, table stripes */
+  /* the READING SHEET: solid paper under every line of text. The halftone
+     stays on the kraft desk around it, never under letterforms: dots behind
+     small type were the main reason the light theme was hard to read. In
+     dark the sheet is the ground itself, so dark mode is unchanged except
+     that the dots no longer sit under the text there either. */
+  --sheet: #F8F0E0;
+  --sheet-edge: #5A241F;
+  --sheet-shadow: 9px 9px 0 rgba(90, 36, 31, .22);
   --ink: #2B1512;       /* near-black oxblood */
   --ink-2: #563A31;
-  --ink-3: #775446;
-  --ink-4: #9A7B66;
+  --ink-3: #664436;
+  --ink-4: #7E604F;
   --line: #C9B492;      /* hairline on kraft */
   --line-2: #8C5F4B;    /* structural border: warm brown */
 
@@ -134,7 +142,7 @@
   --stop-bg: #F6DCD3;
 
   /* syntax */
-  --syn-comment: #8A6A58;
+  --syn-comment: #76584A;
   --syn-key: #9C1A66;
   --syn-str: #2F6B22;
   --syn-num: #A8500A;
@@ -157,6 +165,9 @@
     --paper: #14100F;
     --surface: #282120;
     --surface-2: #3A312B;
+    --sheet: #14100F;
+    --sheet-edge: transparent;
+    --sheet-shadow: none;
     --ink: #F9F0E4;
     --ink-2: #DBCBB8;
     --ink-3: #AC998B;
@@ -204,12 +215,15 @@
 /* -- explicit toggle must win in BOTH directions ------------------------ */
 :root[data-theme="light"] {
   --paper: #E7D8BC;
-  --surface: #FBF4E4;
+  --surface: #FFFBF3;
   --surface-2: #DCCBA9;
+  --sheet: #F8F0E0;
+  --sheet-edge: #5A241F;
+  --sheet-shadow: 9px 9px 0 rgba(90, 36, 31, .22);
   --ink: #2B1512;
   --ink-2: #563A31;
-  --ink-3: #775446;
-  --ink-4: #9A7B66;
+  --ink-3: #664436;
+  --ink-4: #7E604F;
   --line: #C9B492;
   --line-2: #8C5F4B;
   --stamp: #5A241F;
@@ -235,7 +249,7 @@
   --ok-bg: #DDE8CC;
   --warn-bg: #F3E2C0;
   --stop-bg: #F6DCD3;
-  --syn-comment: #8A6A58;
+  --syn-comment: #76584A;
   --syn-key: #9C1A66;
   --syn-str: #2F6B22;
   --syn-num: #A8500A;
@@ -248,6 +262,9 @@
   --paper: #14100F;
   --surface: #282120;
   --surface-2: #3A312B;
+  --sheet: #14100F;
+  --sheet-edge: transparent;
+  --sheet-shadow: none;
   --ink: #F9F0E4;
   --ink-2: #DBCBB8;
   --ink-3: #AC998B;
@@ -428,9 +445,7 @@ body {
   overflow-y: auto; overscroll-behavior: contain;
   padding: 1.1rem 0 4rem;
   border-right: var(--rule-2) solid var(--line-2);
-  background: var(--paper);
-  background-image: radial-gradient(var(--dot) 1px, transparent 1.1px);
-  background-size: 5px 5px;
+  background: var(--paper);    /* solid: no halftone under navigation text */
 }
 .sidebar::-webkit-scrollbar { width: 7px; }
 
@@ -448,19 +463,19 @@ body {
 .sb-part { margin-bottom: .35rem; }
 .sb-part > .h {
   padding: .6rem .85rem .3rem;
-  font-family: var(--label); font-size: .6rem; font-weight: 700;
-  letter-spacing: .16em; text-transform: uppercase; color: var(--ink-4);
+  font-family: var(--label); font-size: .66rem; font-weight: 700;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3);
 }
 .sb-ch {
   display: grid; grid-template-columns: 1.7rem 1fr; align-items: baseline;
-  padding: .3rem .85rem; gap: .1rem;
-  font-size: .82rem; line-height: 1.35;
+  padding: .32rem .85rem; gap: .1rem;
+  font-size: .88rem; line-height: 1.38;
   color: var(--ink-2); text-decoration: none; border: 0;
   border-left: 3px solid transparent;
 }
 .sb-ch:hover { background: var(--surface-2); color: var(--ink); border-bottom: 0; }
 .sb-ch .n {
-  font-family: var(--mono); font-size: .68rem; font-weight: 700; color: var(--ink-4);
+  font-family: var(--mono); font-size: .72rem; font-weight: 700; color: var(--ink-4);
   font-variant-numeric: tabular-nums lining-nums;
 }
 .sb-ch.done .n { color: var(--accent); }
@@ -481,8 +496,8 @@ body {
 .sb-sections { margin: .15rem 0 .5rem; }
 .sb-sec {
   display: block; padding: .2rem .85rem .2rem 2.5rem;
-  font-size: .76rem; line-height: 1.35;
-  color: var(--ink-3); text-decoration: none; border: 0;
+  font-size: .82rem; line-height: 1.38;
+  color: var(--ink-2); text-decoration: none; border: 0;
   border-left: 3px solid transparent;
 }
 .sb-sec:hover { color: var(--accent); border-bottom: 0; background: var(--surface-2); }
@@ -590,6 +605,30 @@ main {
   width: 100%;
   max-width: min(var(--breakout), 100%);
   min-width: 0;
+  isolation: isolate;          /* keeps the sheet below main's own content */
+}
+/* The reading sheet: solid paper under the whole column, margin notes and
+   breakout widgets included, with the oxblood rule and a hard offset shadow
+   so it reads as a printed page laid on the kraft desk. A pseudo-element,
+   not a background on main, so main's box and every width above (and the
+   live margin's `left`) stay exactly as they were.
+   It overhangs into .wrap's side padding by `--sheet-pad`, which is always
+   less than that padding, so it can never widen the page. On a phone it
+   goes full bleed and drops the frame: a 2px border at the screen edge is
+   noise, not structure. */
+main { --sheet-pad: max(.75rem, calc(clamp(1rem, 4vw, 2.5rem) - .85rem)); }
+main::before {
+  content: ""; position: absolute; z-index: -1;
+  inset: -2.4rem calc(-1 * var(--sheet-pad)) -3rem;
+  background: var(--sheet);
+  border: var(--rule-2) solid var(--sheet-edge);
+  border-radius: var(--radius);
+  box-shadow: var(--sheet-shadow);
+  pointer-events: none;
+}
+@media (max-width: 40rem) {
+  main { --sheet-pad: clamp(1rem, 4vw, 2.5rem); }
+  main::before { border-inline: 0; border-radius: 0; box-shadow: none; }
 }
 /* min() is load-bearing: a bare `37rem` is 592px, which overflows any phone.
    Every width below must be able to shrink to the viewport. */
@@ -603,8 +642,8 @@ main > * { max-width: min(var(--measure), 100%); }
   left: calc(var(--measure) + var(--gutter));
   width: var(--margin-col);
   font-family: var(--label);
-  font-size: .75rem; line-height: 1.55; font-weight: 500;
-  color: var(--ink-3);
+  font-size: .8rem; line-height: 1.55; font-weight: 500;
+  color: var(--ink-2);
   border-top: var(--rule-2) solid var(--line-2);
   padding-top: .45rem;
   margin-top: .3rem;
@@ -613,8 +652,8 @@ main > * { max-width: min(var(--measure), 100%); }
 .mn a:hover { border-bottom-color: var(--accent); }
 .mn b { font-weight: 700; color: var(--ink-2); }
 .mn .k {
-  display: block; font-size: .6rem; font-weight: 700;
-  letter-spacing: .14em; text-transform: uppercase;
+  display: block; font-size: .66rem; font-weight: 700;
+  letter-spacing: .13em; text-transform: uppercase;
   color: var(--stamp); margin-bottom: .3rem;
 }
 /* divider between fused sections of one margin note */
@@ -678,7 +717,7 @@ h3 {
 }
 h4 {
   font-family: var(--label);
-  font-size: .7rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  font-size: .76rem; font-weight: 700; letter-spacing: .13em; text-transform: uppercase;
   color: var(--ink-3);
   margin: 1.9rem 0 .5rem;
 }
@@ -690,7 +729,7 @@ li, td, th, dd { overflow-wrap: break-word; }
   margin-bottom: 1.9rem;
   text-wrap: pretty;
 }
-.tiny { font-size: .82rem; line-height: 1.55; color: var(--ink-3); }
+.tiny { font-size: .86rem; line-height: 1.55; color: var(--ink-3); }
 
 a {
   color: var(--accent);
@@ -1229,6 +1268,19 @@ body.focus-mode .sidebar { transform: translateX(-100%); }
 body.focus-mode.has-side .wrap {
   max-width: calc(var(--breakout) + 2 * clamp(1rem, 4vw, 2.5rem));
   padding-left: clamp(1rem, 4vw, 2.5rem);
+}
+/* The 66rem fold above caps .wrap at the prose measure, but `.wrap` alone
+   lost to every body.has-side / focus-mode / pre-collapsed rule, so between
+   40rem and 66rem the column hugged the left of an empty half-page. Placed
+   after all of them so it wins on order as well as specificity. */
+@media (max-width: 66rem) {
+  .wrap,
+  body.has-side .wrap,
+  body.has-side.side-collapsed .wrap,
+  body.focus-mode.has-side .wrap,
+  :root.pre-collapsed body.has-side .wrap {
+    max-width: calc(var(--measure) + 2 * clamp(1rem, 4vw, 2.5rem));
+  }
 }
 body.focus-mode .scrim { display: none !important; }
 body.focus-mode main > .focus-hidden { display: none !important; }

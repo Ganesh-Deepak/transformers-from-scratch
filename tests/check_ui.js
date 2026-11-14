@@ -99,7 +99,15 @@ for (const theme of ["light", "dark"]) {
   const pairs = [
     ["ink on paper", t["--ink"], t["--paper"], 4.5],
     ["ink-2 on paper", t["--ink-2"], t["--paper"], 4.5],
-    ["ink-3 on paper", t["--ink-3"], t["--paper"], 3.0],
+    // ink-3 carries real reading text (margin notes, captions, labels), so
+    // it is held to the body-text bar, not the large-text one. The 3.0 bar it
+    // used to have let 10px labels ship at 4.7:1 on a dotted ground.
+    ["ink-3 on paper", t["--ink-3"], t["--paper"], 4.5],
+    ["ink-4 on paper", t["--ink-4"], t["--paper"], 3.0],
+    // the reading sheet sits under every line of chapter text
+    ["ink on sheet", t["--ink"], t["--sheet"], 4.5],
+    ["ink-3 on sheet", t["--ink-3"], t["--sheet"], 4.5],
+    ["accent on sheet", t["--accent"], t["--sheet"], 4.5],
     ["accent on paper", t["--accent"], t["--paper"], 4.5],
     ["accent on surface", t["--accent"], t["--surface"], 4.5],
     ["dim-1 on paper", t["--dim-1"], t["--paper"], 3.0],
