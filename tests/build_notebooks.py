@@ -733,6 +733,440 @@ def _nb07():
     ]
 
 
+@notebook("08_the_block")
+def _nb08():
+    return [
+        md("""
+        # Chapter 8 — The Transformer Block
+
+        Every number in Chapter 8, recomputed with `tfs/model.py` (`RMSNorm`, `SwiGLU`, `Block`,
+        `Config.n_params`). Each cell **asserts** what it checks, so `python tests/run_notebooks.py 08`
+        fails if the chapter and the code disagree. Exercise 8.4 needs GPT-2's weights and is not
+        reproduced.
+        """),
+        code(SETUP + "from tfs.model import Config, Model, RMSNorm, SwiGLU\n"),
+        md("""
+        ## 8.2 — the worked example: LayerNorm and RMSNorm on x = [3, 1, 4, 8]
+
+        **DISCREPANCY (typo).** The chapter's code-cell comment prints the RMSNorm output as
+        `[ 0.633, 0.211, 0.843, 1.687]`; the prose above it (correctly) says `0.632`.
+        3 / √22.5 = 0.63246, which rounds to 0.632 with or without the 1e-5 epsilon.
+        """),
+        code("""
+        x = torch.tensor([3., 1., 4., 8.])
+        mu, var = x.mean(), x.var(unbiased=False)
+        assert mu.item() == 4 and var.item() == 6.5 and round(var.sqrt().item(), 4) == 2.5495
+        ln = (x - mu) / torch.sqrt(var + 1e-5)
+        ms = x.pow(2).mean()
+        assert ms.item() == 22.5 and round(ms.sqrt().item(), 4) == 4.7434
+        rms = x * torch.rsqrt(ms + 1e-5)
+        r3 = lambda t: [round(v, 3) for v in t.tolist()]
+        print("LN ", r3(ln), "  RMS", r3(rms))
+        assert r3(ln) == [-0.392, -1.177, 0.0, 1.569]
+        assert r3(rms) == [0.632, 0.211, 0.843, 1.687]                               # not 0.633
+        assert abs(ln.mean()) < 1e-6 and abs(ln.std(unbiased=False) - 1) < 1e-4
+        assert round(rms.mean().item(), 3) == 0.843 and abs(rms.pow(2).mean().sqrt() - 1) < 1e-4
+        cos = F.cosine_similarity(ln, rms, dim=0).item()
+        print(f"cosine(LN, RMS) = {cos:.4f}")
+        assert round(cos, 2) == 0.54
+        # the module in tfs/model.py gives the same RMSNorm
+        assert torch.allclose(RMSNorm(4, eps=1e-5)(x), rms, atol=1e-6)
+        # shift every element: LayerNorm is unchanged, RMSNorm moves
+        ln2 = (x + 10 - (x + 10).mean()) / torch.sqrt((x + 10).var(unbiased=False) + 1e-5)
+        assert torch.allclose(ln, ln2, atol=1e-5) and not torch.allclose(RMSNorm(4)(x + 10), RMSNorm(4)(x), atol=1e-2)
+        """),
+        md("""
+        ## 8.2 — how close LN and RMSNorm are on realistic vectors (d = 768)
+
+        The chapter: median cosine 0.9997 over 2000 random zero-mean vectors, worst case 0.994, and 0.45
+        once the mean is pushed 2σ off zero (1/√5 = 0.447 analytically).
+        """),
+        code("""
+        torch.manual_seed(0)
+        def cos_ln_rms(v):
+            l = F.layer_norm(v, (v.shape[-1],), eps=1e-5)
+            r = v * torch.rsqrt(v.pow(2).mean(-1, keepdim=True) + 1e-5)
+            return F.cosine_similarity(l, r, dim=-1)
+        c = cos_ln_rms(torch.randn(2000, 768))
+        c_shift = cos_ln_rms(torch.randn(2000, 768) + 2.0)
+        print(f"median {c.median():.4f}  worst {c.min():.4f}  shifted by 2 sigma: {c_shift.median():.3f}")
+        assert round(c.median().item(), 4) == 0.9997 and 0.99 < c.min().item() < 0.999
+        assert round(c_shift.median().item(), 2) == 0.45 and abs(c_shift.median().item() - 1 / math.sqrt(5)) < 0.01
+        """),
+        md("""
+        ## 8.2 — LayerNorm ≠ BatchNorm: a token's output never depends on the rest of the batch
+        """),
+        code("""
+        torch.manual_seed(0)
+        a, others = torch.randn(1, 5, 32), torch.randn(7, 5, 32)
+        lnm = nn.LayerNorm(32)
+        assert torch.allclose(lnm(a), lnm(torch.cat([a, others]))[:1], atol=1e-6)
+        bn = nn.BatchNorm1d(32).train()
+        alone = bn(a.reshape(-1, 32))
+        assert not torch.allclose(alone, bn(torch.cat([a, others]).reshape(-1, 32))[:5], atol=1e-3)
+        """),
+        md("""
+        ## 8.2 — pre-LN never normalises the stream, so its magnitude grows with depth (hence a final norm)
+        """),
+        code("""
+        torch.manual_seed(0)
+        m = Model(Config(vocab_size=256, d_model=64, n_layer=8, n_head=4, n_kv_head=2, d_head=16, d_ff=128, max_T=64))
+        rms_by_layer = []
+        hooks = [b.register_forward_hook(lambda mod, i, o: rms_by_layer.append(o[0].pow(2).mean().sqrt().item()))
+                 for b in m.blocks]
+        m(torch.randint(0, 256, (4, 64)))
+        for h in hooks: h.remove()
+        print("stream RMS after each block:", [f"{v:.5f}" for v in rms_by_layer])
+        assert rms_by_layer == sorted(rms_by_layer) and rms_by_layer[-1] > rms_by_layer[0]
+        assert isinstance(m.norm, RMSNorm)                     # the final norm before the LM head
+        """),
+        md("## 8.3 — the MLP is a per-position function: changing other tokens cannot change its output"),
+        code("""
+        cfg = Config(vocab_size=256, d_model=64, n_layer=1, n_head=4, n_kv_head=2, d_head=16, d_ff=172, max_T=64)
+        mlp = SwiGLU(cfg)
+        h = torch.randn(1, 10, 64)
+        h2 = h.clone(); h2[0, 3:] = torch.randn(7, 64)
+        assert torch.allclose(mlp(h)[0, :3], mlp(h2)[0, :3])
+        """),
+        md("## 8.3 — two-thirds of the model is in the MLP: 12C² per layer, GPT-2 small, Llama-2-7B"),
+        code("""
+        C = 768
+        attn, mlp4 = 4 * C * C, 8 * C * C
+        assert mlp4 == 2 * attn and attn + mlp4 == 12 * C * C
+        body = 12 * 12 * C ** 2
+        print(f"GPT-2 small: 12*12*768^2 = {body / 1e6:.1f}M + 38.6M embedding = {(body + 50257 * 768) / 1e6:.1f}M")
+        assert round(body / 1e6) == 85 and round((body + 50257 * 768) / 1e6) == 124
+        llama = Config(vocab_size=32000, d_model=4096, n_layer=32, n_head=32, n_kv_head=32, d_head=128,
+                       d_ff=11008, tie_embed=False)
+        per = 3 * 4096 * 11008
+        print(f"Llama-2-7B: {llama.n_params():,} params; MLP {per / 1e6:.2f}M/layer x32 = {32 * per / 1e9:.2f}B"
+              f" = {32 * per / llama.n_params():.1%} (of 6.7B: {32 * per / 6.7e9:.1%})")
+        assert llama.n_params() == 6_738_415_616
+        assert round(per / 1e6, 2) == 135.27 and round(4096 * 11008 / 1e6, 2) == 45.09
+        assert round(32 * per / 1e9, 2) == 4.33 and round(100 * 32 * per / 6.7e9) == 65
+        assert 11008 / 4096 == 2.6875 and 11008 % 256 == 0
+        """),
+        md("## Exercise 8.3 — `swiglu_ff_dim`, and Llama-2-70B's 28672"),
+        code("""
+        def swiglu_ff_dim(d_model, multiple_of=256, ffn_dim_multiplier=None):
+            hidden = int(2 * 4 * d_model / 3)
+            if ffn_dim_multiplier is not None:
+                hidden = int(ffn_dim_multiplier * hidden)
+            return multiple_of * ((hidden + multiple_of - 1) // multiple_of)
+        print(swiglu_ff_dim(4096), swiglu_ff_dim(8192), swiglu_ff_dim(8192, 4096, 1.3))
+        assert swiglu_ff_dim(4096) == 11008 and swiglu_ff_dim(8192) == 22016
+        assert swiglu_ff_dim(8192, multiple_of=4096, ffn_dim_multiplier=1.3) == 28672   # Llama-2-70B's config
+        # parameter match: SwiGLU at (8/3)C has the parameters of a GELU MLP at 4C
+        assert abs(3 * 4096 * swiglu_ff_dim(4096) / (2 * 4096 * 4 * 4096) - 1) < 0.01
+        """),
+        md("""
+        ## Exercise 8.1 — both norms on a random (4, 128, 512) input, verified and timed
+
+        The chapter: cosine typically > 0.98; RMSNorm "usually 20–40% faster in a pure-Python benchmark".
+        The speed ratio depends heavily on the machine and on how `var` is implemented; on this CPU the
+        hand-written RMSNorm is several times faster than the hand-written LayerNorm, while PyTorch's
+        fused `nn.LayerNorm` beats both. The assert is only that the hand-written RMSNorm is faster.
+        """),
+        code("""
+        import time
+        class LayerNorm(nn.Module):
+            def __init__(self, d, eps=1e-5):
+                super().__init__()
+                self.g = nn.Parameter(torch.ones(d)); self.b = nn.Parameter(torch.zeros(d)); self.eps = eps
+            def forward(self, x):
+                mu = x.mean(-1, keepdim=True)
+                var = x.var(-1, keepdim=True, unbiased=False)
+                return (x - mu) / torch.sqrt(var + self.eps) * self.g + self.b
+        torch.manual_seed(0)
+        x = torch.randn(4, 128, 512)
+        mine, ref, rn = LayerNorm(512), nn.LayerNorm(512), RMSNorm(512)
+        with torch.no_grad():
+            assert torch.allclose(mine(x), ref(x), atol=1e-5)
+            lo, ro = mine(x), rn(x)
+            assert lo.mean(-1).abs().max() < 1e-5 and (lo.std(-1, unbiased=False) - 1).abs().max() < 1e-3
+            assert (ro.pow(2).mean(-1).sqrt() - 1).abs().max() < 1e-3
+            cs = F.cosine_similarity(lo, ro, dim=-1)
+            print(f"cosine LN vs RMS: min {cs.min():.4f}")
+            assert cs.min() > 0.98
+            def bench(f, reps=200):
+                for _ in range(5): f(x)
+                t = time.perf_counter()
+                for _ in range(reps): f(x)
+                return (time.perf_counter() - t) / reps
+            t_ln, t_rms = bench(mine), bench(lambda v: v * torch.rsqrt(v.pow(2).mean(-1, keepdim=True) + 1e-6))
+        print(f"hand-written LN {t_ln * 1e3:.2f} ms   hand-written RMS {t_rms * 1e3:.2f} ms   ({t_ln / t_rms:.1f}x)")
+        assert t_rms < t_ln
+        """),
+        md("""
+        ## Exercise 8.2 — pre-LN vs post-LN gradients across 24 layers
+
+        Built with PyTorch's standard `nn.TransformerEncoderLayer` (`norm_first=False` is post-LN,
+        `True` is pre-LN; LayerNorm, default init), one forward + backward on random data, gradient norm
+        of each layer's attention input projection.
+
+        **DISCREPANCY (magnitude).** The direction matches the chapter: post-LN gradients are largest at
+        the top and smaller at layer 0, pre-LN gradients are roughly flat. But the size of the effect is
+        ~5–10×, not "2–4 orders of magnitude". (With this course's own init — weights at std 0.02 and
+        un-normalised embeddings — a post-LN variant does show a ~10³ ratio, but only because layer 0
+        alone sees the tiny raw embedding; layers 1–23 are flat. That is an init artefact, not geometric
+        decay.) The well-known result (Xiong et al. 2020) is the direction; the "2–4 orders" figure
+        should be softened or re-measured.
+        """),
+        code("""
+        def grad_profile(norm_first, L=24, d=64):
+            torch.manual_seed(0)
+            layer = nn.TransformerEncoderLayer(d, 4, 4 * d, dropout=0.0, batch_first=True, norm_first=norm_first)
+            enc = nn.TransformerEncoder(layer, L, enable_nested_tensor=False)
+            out = enc(torch.randn(8, 32, d))
+            if norm_first:
+                out = F.layer_norm(out, (d,))                 # pre-LN needs its final norm
+            (out @ torch.randn(d)).pow(2).mean().backward()
+            return [l.self_attn.in_proj_weight.grad.norm().item() for l in enc.layers]
+        post, pre = grad_profile(False), grad_profile(True)
+        print("post-LN", " ".join(f"{v:.1e}" for v in post[::4]), f"  top/bottom {post[-1] / post[0]:.1f}x")
+        print("pre-LN ", " ".join(f"{v:.1e}" for v in pre[::4]), f"  top/bottom {pre[-1] / pre[0]:.1f}x")
+        assert post[-1] / post[0] > 2                          # post-LN: smaller at layer 0 ...
+        assert post[-1] / post[0] < 100                        # ... but not by 2-4 orders of magnitude
+        assert 0.3 < pre[-1] / pre[0] < 3                      # pre-LN: roughly flat
+        """),
+    ]
+
+
+@notebook("10_backprop")
+def _nb10():
+    return [
+        md("""
+        # Chapter 10 — The Backward Pass, Derived
+
+        Every hand-derived gradient in Chapter 10, checked against autograd, plus every worked number and
+        exercise answer. Each cell **asserts** what it checks, so `python tests/run_notebooks.py 10` fails
+        if the chapter and the code disagree. Float64 throughout unless a cell says otherwise, as the
+        chapter recommends.
+        """),
+        code(SETUP + "torch.set_default_dtype(torch.float64)\n"),
+        md("## 10.1 — matmul: the shapes force dA = dC Bᵀ and dB = Aᵀ dC"),
+        code("""
+        A = torch.randn(4, 3, requires_grad=True); Bm = torch.randn(3, 5, requires_grad=True)
+        Cm = A @ Bm; g = torch.randn_like(Cm)
+        Cm.backward(g)
+        assert A.grad.shape == A.shape == (4, 3) and Bm.grad.shape == (3, 5)
+        assert torch.allclose(A.grad, g @ Bm.detach().T) and torch.allclose(Bm.grad, A.detach().T @ g)
+        """),
+        md("## 10.2 — the softmax Jacobian at x = [1.0, 2.0, 0.5]"),
+        code("""
+        x = torch.tensor([1.0, 2.0, 0.5])
+        s = x.softmax(0)
+        J_auto = torch.autograd.functional.jacobian(lambda t: t.softmax(0), x)
+        J_formula = torch.diag(s) - torch.outer(s, s)
+        print("s =", [round(v, 4) for v in s.tolist()])
+        print(J_formula.numpy().round(4))
+        assert [round(v, 4) for v in s.tolist()] == [0.2312, 0.6285, 0.1402]
+        assert torch.allclose(J_auto, J_formula)
+        assert J_formula.numpy().round(4).tolist() == [[0.1778, -0.1453, -0.0324],
+                                                       [-0.1453, 0.2335, -0.0881],
+                                                       [-0.0324, -0.0881, 0.1206]]
+        assert torch.allclose(J_formula, J_formula.T) and torch.allclose(J_formula.sum(1), torch.zeros(3))
+        """),
+        md("## 10.2 — the vector-Jacobian product, which is what actually runs"),
+        code("""
+        def softmax_backward(s, g):
+            return s * (g - (g * s).sum(-1, keepdim=True))
+        x = torch.tensor([1.0, 2.0, 0.5], requires_grad=True)
+        s = x.softmax(0); g = torch.tensor([0.3, -1.2, 0.7])
+        s.backward(g)
+        assert torch.allclose(x.grad, softmax_backward(s.detach(), g), atol=1e-6)
+        assert torch.allclose(x.grad, J_formula.T @ g)                     # = J^T g, never forming J
+        """),
+        md("## 10.3 — cross-entropy + softmax collapses to p − y (logits [2.0, 1.0, 0.1], class 0)"),
+        code("""
+        z = torch.tensor([[2.0, 1.0, 0.1]], requires_grad=True)
+        F.cross_entropy(z, torch.tensor([0])).backward()
+        p = z.detach().softmax(-1)[0]
+        y = torch.tensor([1.0, 0, 0])
+        print("p", [round(v, 4) for v in p.tolist()], " p - y", [round(v, 4) for v in (p - y).tolist()])
+        assert [round(v, 4) for v in p.tolist()] == [0.659, 0.2424, 0.0986]
+        assert [round(v, 4) for v in (p - y).tolist()] == [-0.341, 0.2424, 0.0986]
+        assert torch.allclose(z.grad[0], p - y)
+        """),
+        md("## 10.4 — RMSNorm's correction term, at x = [3, 1, 4, 8], g = [1, 0, 0, 0]"),
+        code("""
+        def rmsnorm_backward(x, g, gamma, eps=0.0):
+            d = x.shape[-1]
+            r = x.pow(2).mean(-1, keepdim=True).add(eps).sqrt()
+            gg = g * gamma
+            return (gg - x * (gg * x).sum(-1, keepdim=True) / (d * r ** 2)) / r
+        x = torch.tensor([3., 1., 4., 8.], requires_grad=True)
+        gamma = torch.ones(4); g = torch.tensor([1., 0., 0., 0.])
+        (x / x.pow(2).mean().sqrt() * gamma).backward(g)
+        print("autograd", [round(v, 6) for v in x.grad.tolist()])
+        assert round(x.pow(2).mean().sqrt().item(), 4) == 4.7434
+        assert [round(v, 6) for v in x.grad.tolist()] == [0.189737, -0.007027, -0.028109, -0.056218]
+        assert torch.allclose(x.grad, rmsnorm_backward(x.detach(), g, gamma), atol=1e-12)
+        print("dot(grad, x) =", torch.dot(x.grad, x.detach()).item())
+        assert abs(torch.dot(x.grad, x.detach())) < 1e-12                   # orthogonal to x
+        # and the same holds for the float32 module in tfs/model.py, with a learned gamma
+        from tfs.model import RMSNorm
+        xr = torch.randn(5, 16, dtype=torch.float32, requires_grad=True)
+        nrm = RMSNorm(16, eps=0.0).float()
+        with torch.no_grad(): nrm.g.uniform_(0.5, 1.5)
+        gr = torch.randn(5, 16, dtype=torch.float32)
+        nrm(xr).backward(gr)
+        assert torch.allclose(xr.grad, rmsnorm_backward(xr.detach(), gr, nrm.g.detach()), atol=1e-5)
+        """),
+        md("## 10.5 — attention backward: dQ, dK, dV against autograd (T = 4, d = 3)"),
+        code("""
+        def attention_backward(q, k, v, P, dO):
+            dk_ = q.shape[-1]
+            dV = P.transpose(-2, -1) @ dO
+            dP = dO @ v.transpose(-2, -1)
+            dS = P * (dP - (dP * P).sum(-1, keepdim=True))
+            dQ = dS @ k / dk_ ** 0.5
+            dK = dS.transpose(-2, -1) @ q / dk_ ** 0.5
+            return dQ, dK, dV
+        torch.manual_seed(0)
+        q, k, v = (torch.randn(4, 3, requires_grad=True) for _ in range(3))
+        P = (q @ k.T / 3 ** 0.5).softmax(-1)
+        O = P @ v
+        dO = torch.randn_like(O)
+        O.backward(dO)
+        mine = attention_backward(q.detach(), k.detach(), v.detach(), P.detach(), dO)
+        for auto, man in zip((q.grad, k.grad, v.grad), mine):
+            assert torch.allclose(auto, man, atol=1e-5)
+        print("dQ, dK, dV all match autograd")
+        """),
+        md("## 10.6 — the residual connection over depth: 0.9ᴸ, and 1 + f′"),
+        code("""
+        for L, want, weaker in ((20, 0.1216, 8), (50, 0.0052, 190), (100, 0.0000266, 37_600)):
+            print(f"{L:3d} layers: 0.9^{L} = {0.9 ** L:.7f}  ({1 / 0.9 ** L:,.0f}x weaker)")
+            assert round(0.9 ** L, 7 if L == 100 else 4) == want
+            assert abs(1 / 0.9 ** L - weaker) / weaker < 0.03            # 8x, ~190x, ~37,600x
+        x = torch.tensor(2.0, requires_grad=True)
+        (x + 0.3 * x ** 2).backward()
+        assert abs(x.grad.item() - 2.2) < 1e-12                           # 1 + f'(2) = 1 + 1.2
+        """),
+        md("## Exercise 10.1 — the chapter's `check` harness on every layer, including a linear layer"),
+        code("""
+        def check(fn_forward, manual_backward, *inputs):
+            ins = [t.clone().requires_grad_(True) for t in inputs]
+            out = fn_forward(*ins)
+            g = torch.randn_like(out)
+            out.backward(g)
+            mine = manual_backward(*[t.detach() for t in inputs], g)
+            for auto, man in zip([t.grad for t in ins], mine):
+                assert torch.allclose(auto, man, atol=1e-5), (auto, man)
+            return "ok"
+        torch.manual_seed(0)
+        X, W, b = torch.randn(6, 5), torch.randn(5, 4), torch.randn(4)
+        assert check(lambda x, w, b: x @ w + b, lambda x, w, b, g: (g @ w.T, x.T @ g, g.sum(0)), X, W, b) == "ok"
+        assert check(lambda x: x.softmax(-1), lambda x, g: (softmax_backward(x.softmax(-1), g),), torch.randn(3, 7)) == "ok"
+        ga = torch.rand(8) + 0.5
+        assert check(lambda x: x / x.pow(2).mean(-1, keepdim=True).sqrt() * ga,
+                     lambda x, g: (rmsnorm_backward(x, g, ga),), torch.randn(3, 8)) == "ok"
+        def attn_fwd(q, k, v):
+            return (q @ k.transpose(-2, -1) / q.shape[-1] ** 0.5).softmax(-1) @ v
+        def attn_bwd(q, k, v, g):
+            P = (q @ k.transpose(-2, -1) / q.shape[-1] ** 0.5).softmax(-1)
+            return attention_backward(q, k, v, P, g)
+        assert check(attn_fwd, attn_bwd, *(torch.randn(2, 6, 4) for _ in range(3))) == "ok"
+        print("linear, softmax, RMSNorm, attention: ok")
+        """),
+        md("""
+        ## Exercise 10.2 — gradient checking with central differences
+
+        **Minor correction.** The chapter says forward differences give ~1e-6 error and central
+        differences ~1e-12 at ε = 1e-6. The truncation errors are O(ε) and O(ε²), as stated, but in
+        float64 the central difference is limited by rounding, ~machine-ε/ε ≈ 1e-10: measured below it
+        lands at ~1e-11 to 1e-10, not 1e-12. Still four orders better than the forward difference, which
+        is the point. In float32 the same check is useless, as the chapter warns.
+        """),
+        code("""
+        def grad_check(f, x, eps=1e-6, dtype=torch.float64):
+            x = x.to(dtype)
+            num = torch.zeros_like(x)
+            for i in range(x.numel()):
+                xp, xm = x.clone(), x.clone()
+                xp.view(-1)[i] += eps; xm.view(-1)[i] -= eps
+                num.view(-1)[i] = (f(xp) - f(xm)) / (2 * eps)
+            xa = x.clone().requires_grad_(True); f(xa).backward()
+            return ((num - xa.grad).norm() / (num.norm() + xa.grad.norm())).item()
+        torch.manual_seed(0)
+        loss = lambda t: (t.softmax(-1) * torch.arange(6.0, dtype=t.dtype)).sum() + t.pow(2).mean().sqrt()
+        rel64 = grad_check(loss, torch.randn(6))
+        rel32 = grad_check(loss, torch.randn(6), eps=1e-3, dtype=torch.float32)
+        print(f"relative error: float64 {rel64:.1e}   float32 {rel32:.1e}")
+        assert rel64 < 1e-7 and rel32 > 1e-5
+        x1 = torch.tensor(1.0)
+        fwd = ((torch.sin(x1 + 1e-6) - torch.sin(x1)) / 1e-6 - math.cos(1)).abs().item()
+        cen = ((torch.sin(x1 + 1e-6) - torch.sin(x1 - 1e-6)) / 2e-6 - math.cos(1)).abs().item()
+        print(f"d sin/dx at 1: forward-difference error {fwd:.1e}, central {cen:.1e}")
+        assert 1e-7 < fwd < 1e-5 and cen < 1e-9 and fwd / cen > 1e3
+        """),
+        md("""
+        ## Exercise 10.3 — a 40-layer tanh stack, with and without the residual
+
+        Gradient of the loss with respect to each layer's input (the signal backprop carries).
+
+        **DISCREPANCY (init-dependent figure).** The chapter expects "4–6 orders of magnitude between
+        layer 40 and layer 1" without residuals. The size depends entirely on the weight scale, which the
+        exercise does not fix: with PyTorch's default `nn.Linear` init (std ≈ 1/√(3d)) the decay is
+        ~10 orders of magnitude; with std = 1/√d it is barely one. The qualitative result holds either way:
+        geometric decay without the residual, and with it the gradient does not decay at all (it grows a
+        little toward layer 1).
+        """),
+        code("""
+        def profile(residual, std=None, d=64, L=40):
+            torch.manual_seed(0)
+            Ws = [nn.Linear(d, d, bias=False) for _ in range(L)]
+            if std is not None:
+                for W in Ws: nn.init.normal_(W.weight, 0, std)
+            h = torch.randn(32, d, requires_grad=True); hs = []
+            for W in Ws:
+                hs.append(h); h.retain_grad()
+                h = h + torch.tanh(W(h)) if residual else torch.tanh(W(h))
+            (h @ torch.randn(d)).sum().backward()
+            return [t.grad.norm().item() for t in hs]                      # layer 1 ... layer 40
+        for name, std in (("default init", None), ("std 1/sqrt(d)", 1 / 8)):
+            plain, res = profile(False, std), profile(True, std)
+            orders = math.log10(plain[-1] / plain[0])
+            print(f"{name:14}: no residual, layer40/layer1 = 10^{orders:.1f};  residual: {res[0] / res[-1]:.1f}x")
+            assert res[0] >= res[-1]                                        # residual: no vanishing
+            if std is None:
+                assert orders > 6                                           # more than the chapter's 4-6
+            else:
+                assert orders < 4                                           # less than the chapter's 4-6
+        """),
+        md("""
+        ## Exercise 10.4 — break cross-entropy on purpose
+
+        `a` (logits) and `c` (`log(softmax)` then `nll_loss`) agree; `b` softmaxes twice. At ×50 the small
+        probabilities underflow to exactly 0, so `c` hits log(0) = −inf, while the fused `a` stays finite.
+        """),
+        code("""
+        torch.set_default_dtype(torch.float32)              # the failure is a float32 one
+        torch.manual_seed(0)
+        logits = torch.randn(4, 10, requires_grad=True)
+        target = torch.randint(0, 10, (4,))
+        def loss_and_grad(fn):
+            if logits.grad is not None: logits.grad = None
+            out = fn(); out.backward()
+            return out.item(), logits.grad.clone()
+        a, ga = loss_and_grad(lambda: F.cross_entropy(logits, target))
+        b, gb = loss_and_grad(lambda: F.cross_entropy(logits.softmax(-1), target))
+        c, gc = loss_and_grad(lambda: F.nll_loss(logits.softmax(-1).log(), target))
+        print(f"a {a:.4f}  b {b:.4f}  c {c:.4f};  |grad a - grad b| = {(ga - gb).norm():.3f}")
+        assert abs(a - c) < 1e-5 and torch.allclose(ga, gc, atol=1e-6)
+        assert abs(a - b) > 0.1 and (ga - gb).norm() > 0.1
+        assert b > math.log(10) - 0.2 * math.log(10)                       # double softmax: nearly uniform
+        big = (logits.detach() * 50).requires_grad_(True)
+        t_low = big.argmin(-1)                                              # targets whose probability underflows
+        a50 = F.cross_entropy(big, t_low)
+        c50 = F.nll_loss(big.softmax(-1).log(), t_low)
+        print(f"x50: a = {a50.item():.1f}   c = {c50.item()}   zeros in softmax: {(big.softmax(-1) == 0).sum().item()}")
+        assert (big.softmax(-1) == 0).any() and math.isinf(c50.item()) and math.isfinite(a50.item())
+        """),
+    ]
+
+
 # ============================================================ END NOTEBOOKS
 
 
