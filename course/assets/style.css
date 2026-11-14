@@ -105,13 +105,20 @@
   --accent-2: #4E1F6E;
   --accent-bg: #EADCF2;
 
-  /* dimension family — SEMANTIC: colour tells you which tensor axis.
-     Maximally hue-separated so the axis is readable at a glance. */
-  --dim-1: #B4430A;     /* orange  — Q / axis 0 / batch   */
-  --dim-2: #1B4FA8;     /* blue    — K / axis 1 / time    */
-  --dim-3: #A3176B;     /* magenta — V / axis 2 / feature */
-  --dim-4: #3F6B14;     /* green   — O / output           */
-  --dim-5: #0B6A62;
+  /* axis family — SEMANTIC: colour tells you WHICH AXIS (axes.js).
+     Re-stepped in Phase 2 with the dataviz validator, because the Phase 1
+     set failed it: to a deuteranope, feature and head-dim were the SAME grey
+     (OKLab dE 1.7) and batch and head the same olive. Hue families are kept;
+     lightness and chroma moved. Every pair now clears the colour-blind target
+     (dE >= 8 under protan and deutan, all pairs, since all five co-occur in
+     one shape) and the normal-vision floor (dE >= 15), and each colour stays
+     >= 15 from the violet accent and the oxblood stamp. check_ui.js enforces
+     all of it. */
+  --dim-1: #C25D35;     /* orange  — batch    */
+  --dim-2: #1B64DE;     /* blue    — time     */
+  --dim-3: #B815B0;     /* magenta — feature  */
+  --dim-4: #43590F;     /* green   — head     */
+  --dim-5: #08897A;     /* teal    — head dim */
   --dim-1-bg: #F7E0CE;
   --dim-2-bg: #DCE4F4;
   --dim-3-bg: #F4DAE7;
@@ -163,11 +170,16 @@
     --accent: #CBA4FF;
     --accent-2: #E2CAFF;
     --accent-bg: #32234E;
-    --dim-1: #FF9A3C;
-    --dim-2: #6FB4FF;
-    --dim-3: #FF7BC0;
-    --dim-4: #A8E05F;
-    --dim-5: #4FE0C6;
+    /* dark axis colours: brighter than the dataviz validator's dark
+       lightness band (0.48-0.67) on purpose. The band is for filled chart
+       marks; these are mostly text glyphs and thin strokes, where the muted
+       in-band set read as murky (the "dull" dark mode already rejected once).
+       Every separation floor still passes: colour-blind dE 15.6, normal 15.7. */
+    --dim-1: #B9892D;
+    --dim-2: #2594FB;
+    --dim-3: #CE509D;
+    --dim-4: #87E028;
+    --dim-5: #35E1C5;
     --dim-1-bg: #4A2B12;
     --dim-2-bg: #1B3159;
     --dim-3-bg: #4A2135;
@@ -207,11 +219,11 @@
   --accent: #6A2E93;
   --accent-2: #4E1F6E;
   --accent-bg: #EADCF2;
-  --dim-1: #B4430A;
-  --dim-2: #1B4FA8;
-  --dim-3: #A3176B;
-  --dim-4: #3F6B14;
-  --dim-5: #0B6A62;
+  --dim-1: #C25D35;
+  --dim-2: #1B64DE;
+  --dim-3: #B815B0;
+  --dim-4: #43590F;
+  --dim-5: #08897A;
   --dim-1-bg: #F7E0CE;
   --dim-2-bg: #DCE4F4;
   --dim-3-bg: #F4DAE7;
@@ -249,11 +261,11 @@
   --accent: #CBA4FF;
   --accent-2: #E2CAFF;
   --accent-bg: #32234E;
-  --dim-1: #FF9A3C;
-  --dim-2: #6FB4FF;
-  --dim-3: #FF7BC0;
-  --dim-4: #A8E05F;
-  --dim-5: #4FE0C6;
+  --dim-1: #B9892D;
+  --dim-2: #2594FB;
+  --dim-3: #CE509D;
+  --dim-4: #87E028;
+  --dim-5: #35E1C5;
   --dim-1-bg: #4A2B12;
   --dim-2-bg: #1B3159;
   --dim-3-bg: #4A2135;

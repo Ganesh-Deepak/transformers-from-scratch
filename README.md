@@ -102,6 +102,11 @@ where the argument needs them, not appended as an appendix:
 
 These are the answer to "I can't picture tensor dimensions." Drag the sliders.
 
+Five of them are **wired to the axis highlighter** (`axes.js`): `heads`, `tensor`, `attention`, `gqa` and
+`trace`. Hover, tap or tab to an axis anywhere — a shape in the prose, a code block, or a label inside a
+widget — and every occurrence lights at once, including the rows, columns or slices that axis occupies in the
+diagrams. Colour means *which axis* everywhere; widgets that draw no transformer axis use no axis colour.
+
 | Widget | Chapter | What it makes concrete |
 |---|---|---|
 | **float** | 0, 12 | Every bit of fp32, bf16, fp16, fp8 and fp4, clickable; the decode, the gap, and the range formulas with this format's numbers substituted |

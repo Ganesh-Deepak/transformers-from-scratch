@@ -117,28 +117,48 @@ for (const theme of ["light", "dark"]) {
     ok(r >= min, label.padEnd(20), `${r.toFixed(2)}:1 (need ${min})`);
   }
 
-  /* The dimension hues must be mutually distinguishable. Since colour here
-     encodes WHICH TENSOR AXIS, two axes that look alike is the exact failure
-     the palette exists to prevent — so separation is checked by HUE ANGLE,
-     not luminance. Two colours can share a luminance and still be obviously
-     different (blue vs orange); they cannot share a hue and be told apart. */
+  /* The axis hues must be mutually distinguishable — for EVERY reader. This
+     used to check HSV hue angle >= 30deg, and that passed a palette in which
+     feature and head-dim were the same grey to a deuteranope (OKLab dE 1.7).
+     Hue angle is not perceptual and knows nothing about colour blindness.
+     These are the dataviz validator's criteria instead: OKLab distance x100,
+     under the Machado-2009 protan and deutan simulations, over ALL pairs
+     (all five axes appear together inside one shape). */
   const dims = ["--dim-1", "--dim-2", "--dim-3", "--dim-4", "--dim-5"].map(k => t[k]);
-  const hueOf = hex => {
-    const c = hex.replace("#", "");
-    const [r, g, b] = [0, 2, 4].map(i => parseInt(c.substr(i, 2), 16) / 255);
-    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
-    if (!d) return 0;
-    const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
-    return (Math.round(h * 60) + 360) % 360;
+  const s2l = c => c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  const linRGB = hex => [1, 3, 5].map(i => s2l(parseInt(hex.slice(i, i + 2), 16) / 255));
+  const MACHADO = {
+    protan: [[0.152286, 1.052583, -0.204868], [0.114503, 0.786281, 0.099216], [-0.003882, -0.048116, 1.051998]],
+    deutan: [[0.367322, 0.860646, -0.227968], [0.280085, 0.672501, 0.047413], [-0.011820, 0.042940, 0.968881]],
   };
-  let minHue = 360, worst = "";
-  for (let i = 0; i < dims.length; i++)
-    for (let j = i + 1; j < dims.length; j++) {
-      let d = Math.abs(hueOf(dims[i]) - hueOf(dims[j]));
-      d = Math.min(d, 360 - d);
-      if (d < minHue) { minHue = d; worst = `dim-${i + 1}/dim-${j + 1}`; }
-    }
-  ok(minHue >= 30, "axis hues at least 30deg apart", `closest ${worst} at ${minHue}deg`);
+  const oklab = ([r, g, b]) => {
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const q = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return [0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * q,
+            1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * q,
+            0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * q];
+  };
+  const sim = (hex, kind) => { const v = linRGB(hex); if (!kind) return v;
+    return MACHADO[kind].map(r => Math.max(0, Math.min(1, r[0] * v[0] + r[1] * v[1] + r[2] * v[2]))); };
+  const dE = (a, b, kind) => { const x = oklab(sim(a, kind)), y = oklab(sim(b, kind));
+    return 100 * Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]); };
+  let cvd = [99, ""], normal = [99, ""];
+  for (let i = 0; i < 5; i++) for (let j = i + 1; j < 5; j++) {
+    const tag = `dim-${i + 1}/dim-${j + 1}`;
+    for (const kind of ["protan", "deutan"]) { const d = dE(dims[i], dims[j], kind); if (d < cvd[0]) cvd = [d, `${tag} ${kind}`]; }
+    const d = dE(dims[i], dims[j]); if (d < normal[0]) normal = [d, tag];
+  }
+  ok(cvd[0] >= 8, "axis hues distinct to colour-blind readers (all pairs, dE >= 8)",
+     `worst ${cvd[1]} ${cvd[0].toFixed(1)}`);
+  ok(normal[0] >= 15, "axis hues distinct with normal vision (all pairs, dE >= 15)",
+     `worst ${normal[1]} ${normal[0].toFixed(1)}`);
+  const chroma = hex => { const [, a, b] = oklab(linRGB(hex)); return Math.hypot(a, b); };
+  const grey = dims.filter(h => chroma(h) < 0.10);
+  ok(!grey.length, "no axis hue reads as grey (OKLCH chroma >= 0.10)", grey.join(" "));
+  const near = dims.map((h, i) => [i + 1, Math.min(dE(h, t["--accent"]), dE(h, t["--stamp"]))]).filter(x => x[1] < 15);
+  ok(!near.length, "axis hues stay clear of the accent and the stamp (dE >= 15)",
+     near.map(x => `dim-${x[0]} ${x[1].toFixed(1)}`).join(" "));
   let minDelta = 99;
   for (let i = 0; i < dims.length; i++)
     for (let j = i + 1; j < dims.length; j++)
@@ -158,6 +178,19 @@ for (const theme of ["light", "dark"]) {
    during a renumber. A test whose expected value comes from the thing under
    test proves nothing.
    -------------------------------------------------------------------------- */
+console.log("\n=== AXIS MODEL ==================================");
+{
+  /* Colour means WHICH AXIS. The widgets used to colour by tensor identity
+     (Q orange, K blue, V magenta, O green) through colour keys named q/k/v/o,
+     so "orange" meant batch in the prose and queries in the diagrams. Those
+     keys were removed: a widget must name the axis it draws, or use a non-axis
+     colour. This keeps them from quietly coming back. */
+  const viz = fs.readFileSync(path.join(ROOT, "assets", "viz.js"), "utf8");
+  const old = viz.match(/\bC\.[qkvo]\b/g) || [];
+  ok(old.length === 0, "no widget uses the old Q/K/V/O colour keys", old.length ? old.length + " uses" : "");
+  ok(!/function hues\(/.test(viz), "no index palette built from the axis colours");
+}
+
 console.log("\n=== MANIFEST INTEGRITY ==========================");
 {
   const src = fs.readFileSync(path.join(ROOT, "assets", "chapters.js"), "utf8");

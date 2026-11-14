@@ -463,6 +463,142 @@ else {
   ok(fx.invalid === "true" && fx.unchanged === "0.5", "invalid input is flagged and ignored");
 }
 
+
+/* ---------------------------- 8. Phase 2: widgets on the axis bus -------- */
+console.log("\n widgets coupled to the axis highlighter");
+
+/* helpers: how lit is an axis inside a widget, and on the page's badges */
+const W_HELP = [
+  "var visibleBands = function (w) { return [].slice.call(w.querySelectorAll('rect[pointer-events=\"none\"]')).filter(function (r) { return r.getAttribute('opacity') === '1'; }).length; };",
+  "var proseBadge = function (a) { return [].slice.call(document.querySelectorAll('main > p b[data-axis=\"' + a + '\"], main li b[data-axis=\"' + a + '\"], .qq b[data-axis=\"' + a + '\"]'))[0] || document.querySelector('pre b[data-axis=\"' + a + '\"]'); };",
+  "var op = function (el) { return getComputedStyle(el).opacity; };",
+].join("\n");
+
+const hx = run([W_HELP,
+  "var r = {};",
+  "var w = document.querySelector('[data-viz=\"heads\"]');",
+  "r.idleBands = visibleBands(w);",
+  // widget -> page: click the widget's own T label
+  "var tLabel = [].slice.call(w.querySelectorAll('text[data-axis=\"time\"]')).filter(function (t) { return /T=/.test(t.textContent); })[0];",
+  "tLabel.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));",
+  "r.pinnedAfterWidgetClick = document.documentElement.getAttribute('data-ax-pinned');",
+  "r.bandsWhenTimePinned = visibleBands(w);",
+  "var pb = proseBadge('time'); var pbOther = proseBadge('batch');",
+  "r.proseTimeOpacity = op(pb); r.proseBatchOpacity = op(pbOther);",
+  "r.widgetTLabelDecor = tLabel.getAttribute('text-decoration');",
+  "var dmLabel = [].slice.call(w.querySelectorAll('text[data-axis=\"feat\"]'))[0];",
+  "r.otherLabelOpacity = dmLabel.getAttribute('opacity');",
+  // survives a redraw (n_head change) without losing the pin or leaking listeners
+  "var sel = w.querySelector('select'); sel.value = '4'; sel.dispatchEvent(new Event('change', { bubbles: true }));",
+  "sel.value = '6'; sel.dispatchEvent(new Event('change', { bubbles: true }));",
+  "r.bandsAfterRedraw = visibleBands(w);",
+  "r.expectedTimeBands = 4 + 4 + 4 * 6;",       // T rows in step 1, step 2, and per head in step 3 (nh = 6)
+  // and a theme toggle
+  "document.querySelector('.theme-toggle').click();",
+  "w = document.querySelector('[data-viz=\"heads\"]');",
+  "r.bandsAfterTheme = visibleBands(w);",
+  "r.nheadAfterTheme = w.querySelector('select').value;",
+  // page -> widget: clear, then hover a prose badge for head-dim
+  "key(document.body, 'Escape');",
+  "r.bandsAfterEscape = visibleBands(w);",
+  "var hd = proseBadge('headdim'); hd.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));",
+  "r.bandsOnProseHover = visibleBands(w);",
+  "hd.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));",
+  "r.bandsAfterUnhover = visibleBands(w);",
+  // keyboard: tab stop on a widget axis label, Enter pins, arrows do not change chapter
+  "var nhLabel = [].slice.call(w.querySelectorAll('text[data-axis=\"head\"][tabindex=\"0\"]'))[0];",
+  "nhLabel.focus(); r.focusOk = document.activeElement === nhLabel;",
+  "key(nhLabel, 'Enter'); r.pinnedByKeyboard = document.documentElement.getAttribute('data-ax-pinned');",
+  "key(nhLabel, 'ArrowRight'); r.navs = window.__navs.length;",
+  "return r;",
+].join("\n"), "ch06-mha.html");
+if (hx.error) ok(false, "heads scenario ran", hx.error);
+else {
+  ok(hx.idleBands === 0, "heads: no bands lit while idle", String(hx.idleBands));
+  ok(hx.pinnedAfterWidgetClick === "time", "heads: clicking the widget's T pins time on the page bus", hx.pinnedAfterWidgetClick);
+  ok(hx.bandsWhenTimePinned === 4 + 4 + 4 * 3, "heads: every time row lights, in all three steps",
+     `${hx.bandsWhenTimePinned} bands (want ${4 + 4 + 4 * 3})`);
+  ok(hx.proseTimeOpacity === "1" && +hx.proseBatchOpacity < 0.5, "heads: the prose badges respond to the widget",
+     `T ${hx.proseTimeOpacity}, B ${hx.proseBatchOpacity}`);
+  ok(hx.widgetTLabelDecor === "underline" && +hx.otherLabelOpacity < 0.5, "heads: active label underlines, others recede (not colour-only)",
+     `${hx.widgetTLabelDecor} / ${hx.otherLabelOpacity}`);
+  ok(hx.bandsAfterRedraw === hx.expectedTimeBands, "heads: the pin survives redrawing at n_head = 6",
+     `${hx.bandsAfterRedraw} (want ${hx.expectedTimeBands})`);
+  ok(hx.bandsAfterTheme === hx.expectedTimeBands && hx.nheadAfterTheme === "6", "heads: and survives a theme toggle",
+     `${hx.bandsAfterTheme} bands, n_head ${hx.nheadAfterTheme}`);
+  ok(hx.bandsAfterEscape === 0, "heads: Escape clears the widget too", String(hx.bandsAfterEscape));
+  ok(hx.bandsOnProseHover > 0 && hx.bandsAfterUnhover === 0, "heads: hovering a prose hd badge lights the widget's head-dim columns",
+     `${hx.bandsOnProseHover} on, ${hx.bandsAfterUnhover} after`);
+  ok(hx.focusOk && hx.pinnedByKeyboard === "head", "heads: an axis label is a tab stop and Enter pins it", hx.pinnedByKeyboard);
+  ok(hx.navs === 0, "heads: arrow keys on a widget label do not change chapter");
+}
+
+const tz = run([W_HELP,
+  "var w = document.querySelector('[data-viz=\"tensor\"]');",
+  "var labs = [].slice.call(w.querySelectorAll('text[data-axis]')).map(function (t) { return t.getAttribute('data-axis'); });",
+  "window.tfsAxis.toggle('time'); var t = visibleBands(w); window.tfsAxis.clear();",
+  "window.tfsAxis.toggle('batch'); var b = visibleBands(w);",
+  "return { labels: labs, timeBands: t, batchBands: b };",
+].join("\n"), "ch01-tensors.html");
+if (tz.error) ok(false, "tensor scenario ran", tz.error);
+else {
+  ok(tz.labels.join(",") === "batch,time,feat", "tensor: labels resolve batch / time / channel -> feat (axis identity, not Q/K/V)", tz.labels.join(","));
+  ok(tz.timeBands === 4 && tz.batchBands === 2, "tensor: time lights 4 rows, batch lights 2 slabs", `${tz.timeBands} / ${tz.batchBands}`);
+}
+
+const ze = run("var w = document.querySelector('[data-viz=\"tensor\"]'); return { labels: [].slice.call(w.querySelectorAll('text[data-axis]')).map(function (t) { return t.getAttribute('data-axis'); }) };",
+               "ch04-embeddings.html");
+if (ze.error) ok(false, "ch04 tensor scenario ran", ze.error);
+else ok(ze.labels.join(",") === "batch,time,feat", "tensor (Ch 4): token -> time, embedding -> feat", ze.labels.join(","));
+
+const at = run([W_HELP,
+  "var w = document.querySelector('[data-viz=\"attention\"]');",
+  "var marks = [].slice.call(w.querySelectorAll('[data-axis]')).map(function (e) { return e.getAttribute('data-axis'); });",
+  "var tok = w.querySelector('text[data-axis=\"time\"]'); tok.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));",
+  "var active = document.documentElement.getAttribute('data-ax');",
+  "var box = w.querySelector('input[type=checkbox]'); box.click();",          // redraw with the hover still active
+  "var stillUnderlined = w.querySelectorAll('text[data-axis=\"time\"][text-decoration=\"underline\"]').length;",
+  "return { kinds: Array.from(new Set(marks)), active: active, underlined: stillUnderlined, total: w.querySelectorAll('text[data-axis]').length };",
+].join("\n"), "ch05-attention.html");
+if (at.error) ok(false, "attention scenario ran", at.error);
+else {
+  ok(at.kinds.join(",") === "time", "attention: both query and key positions are the time axis, and nothing else", at.kinds.join(","));
+  ok(at.active === "time", "attention: hovering a token label drives the page bus", at.active);
+  ok(at.underlined === at.total && at.total > 0, "attention: still applied after a redraw", `${at.underlined}/${at.total}`);
+}
+
+const gq = run([W_HELP,
+  "var w = document.querySelector('[data-viz=\"gqa\"]');",
+  "window.tfsAxis.toggle('head');",
+  "var before = visibleBands(w);",
+  "var sl = w.querySelector('input[type=range]'); sl.value = '0'; sl.dispatchEvent(new Event('input', { bubbles: true }));",   // MQA: 1 kv head
+  "return { before: before, after: visibleBands(w) };",
+].join("\n"), "ch16-gqa-mla.html");
+if (gq.error) ok(false, "gqa scenario ran", gq.error);
+else ok(gq.before === 8 + 4 && gq.after === 8 + 1, "gqa: head lights every query and KV head, through the slider",
+        `${gq.before} -> ${gq.after} (want 12 -> 9)`);
+
+const tc = run([
+  "var w = document.querySelector('[data-viz=\"trace\"]');",
+  "var nx = w.querySelector('.btn.primary'); for (var k = 0; k < 7; k++) nx.click();",
+  "var shape = [].slice.call(w.querySelectorAll('.shp b[data-axis]')).map(function (b) { return b.textContent + ':' + b.getAttribute('data-axis'); });",
+  "window.tfsAxis.toggle('time');",
+  "var t = [].slice.call(w.querySelectorAll('b[data-axis=\"time\"]')).map(function (b) { return getComputedStyle(b).opacity; });",
+  "nx.click();",
+  "var next = [].slice.call(w.querySelectorAll('b[data-axis=\"time\"]')).map(function (b) { return getComputedStyle(b).opacity; });",
+  "var focusable = w.querySelectorAll('.shp[tabindex=\"0\"]').length;",
+  "return { shape: shape, timeOpacity: t, nextStepTime: next, focusable: focusable };",
+].join("\n"), "ch09-architectures.html");
+if (tc.error) ok(false, "trace scenario ran", tc.error);
+else {
+  ok(tc.shape.slice(0, 4).join(" ") === "2:batch 8:head 6:time 64:headdim", "trace: (2, 8, 6, 64) resolves through the page's declared config",
+     tc.shape.slice(0, 4).join(" "));
+  ok(tc.timeOpacity.length > 0 && tc.timeOpacity.every(o => o === "1"), "trace: pinned time lights in the shape line and the explanation",
+     tc.timeOpacity.join(","));
+  ok(tc.nextStepTime.length > 0 && tc.nextStepTime.every(o => o === "1"), "trace: the next step's badges arrive already lit");
+  ok(tc.focusable > 0, "trace: the redrawn badges get keyboard focus (tfsEnhance)", String(tc.focusable));
+}
+
 /* ------------------------------- 5. every chapter, condensed -------------- */
 if (ALL) {
   console.log("\n every chapter: navigation + timer lifecycle");

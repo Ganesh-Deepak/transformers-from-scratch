@@ -51,7 +51,7 @@ var TFS_AXES = {
 var TFS_AXIS_SYMBOLS = {
   batch:   ["B", "batch"],
   time:    ["T", "T_q", "T_kv", "S", "L", "time", "token", "tokens", "seq", "n_ctx"],
-  feat:    ["C", "d_model", "n_embd", "E", "feature", "features", "channel", "channels"],
+  feat:    ["C", "d_model", "n_embd", "E", "feature", "features", "channel", "channels", "embedding", "embed", "d_embed"],
   head:    ["H", "nh", "n_head", "n_heads", "head", "heads", "n_kv_head", "n_kv_heads"],
   headdim: ["hd", "d_head", "head_dim", "d_k", "d_v", "hs"],
   vocab:   ["V", "n_vocab", "vocab"],
@@ -263,6 +263,10 @@ function tfsResolveAxis(part) {
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", enhance);
   else enhance();
+  /* Widgets redraw their own DOM (a slider move, a theme change), which
+     creates fresh badges after enhance() has run. They call this to give the
+     new badges the same focus and keyboard affordances. Idempotent. */
+  window.tfsEnhance = enhance;
 
   document.addEventListener("focusout", function (e) {
     var badge = e.target.closest ? e.target.closest(".shp") : null;

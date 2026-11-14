@@ -19,10 +19,17 @@ function readTheme() {
   const s = getComputedStyle(document.documentElement);
   const v = (n, fb) => (s.getPropertyValue(n) || "").trim() || fb;
   Object.assign(C, {
-    q:      v("--dim-1", "#B4430A"),
-    k:      v("--dim-2", "#1B4FA8"),
-    v:      v("--dim-3", "#A3176B"),
-    o:      v("--dim-4", "#3F6B14"),
+    // Axis colours by AXIS NAME. There are deliberately no q/k/v/o keys any
+    // more: under the axis-identity model an axis colour may only ever mean
+    // its axis, so a widget has to say which axis it is drawing.
+    axis: {
+      batch:   v("--dim-1", "#C25D35"),
+      time:    v("--dim-2", "#1B64DE"),
+      feat:    v("--dim-3", "#B815B0"),
+      head:    v("--dim-4", "#43590F"),
+      headdim: v("--dim-5", "#08897A"),
+    },
+    stamp:  v("--stamp", "#5A241F"),
     accent: v("--accent", "#6A2E93"),
     grid:   v("--line", "#C9B492"),
     gridHi: v("--line-2", "#8C5F4B"),
@@ -36,10 +43,6 @@ function readTheme() {
     ok:     v("--ok", "#2F6B22"),
   });
   return C;
-}
-/* hue family used where a widget needs N distinguishable colours */
-function hues() {
-  return [C.q, C.k, C.v, C.o, C.accent, C.danger, C.ok, C.dim];
 }
 /* deterministic pseudo-random so numbers are stable across reloads (mulberry32) */
 function rng(seed) {
@@ -85,6 +88,345 @@ function toggle(row, label, checked, onchange) {
   row.appendChild(l);
   l.querySelector("input").onchange = e => onchange(e.target.checked);
   return l;
+}
+
+/* ============================================================
+   AXIS COUPLING (Phase 2) — widgets join the axes.js highlight bus.
+
+   An axis colour may appear in a widget ONLY where it means that axis.
+   The old Q/K/V/O colour keys (q, k, v, o on the colour table) are gone, so a
+   widget cannot quietly keep the tensor-identity model: it must name the
+   axis (C.axis.time) or use a non-axis colour (accent, stamp, ink).
+
+   Three kinds of mark a widget can register:
+     label  axis-coloured text the reader can hover, tap or focus to drive the
+            bus; it emphasises itself when its axis is active
+     guide  a bracket/rule showing an axis's extent; thickens when active
+     band   an outline over the rows / columns / slices that ARE that axis;
+            invisible until its axis is active
+   Not colour-only, like the badges: on activation everything else recedes
+   (opacity), labels underline and bold, guides double in width, and bands
+   appear — each readable with the hue removed.
+   ============================================================ */
+const AXIS_KEYS = ["batch", "time", "feat", "head", "headdim", "vocab"];
+const axisCol = a => (C.axis && C.axis[a]) || C.dim;
+const axisName = a => (window.TFS_AXES && TFS_AXES[a] ? TFS_AXES[a].label : a);
+const resolveAxis = name => (typeof tfsResolveAxis === "function" ? tfsResolveAxis(name) : null);
+
+/* a shape as badge HTML: parts = [[text, axisKeyOrNull], ...] */
+function shapeHTML(parts) {
+  return '<span class="shp">(' + parts.map(([t, a]) =>
+    a ? `<b data-axis="${a}">${t}</b>` : `${t}`).join(", ") + ")</span>";
+}
+
+/* one coupler per widget host, reused across redraws and theme rebuilds so
+   the bus listener is attached exactly once */
+const COUPLERS = new WeakMap();
+function coupler(host) {
+  let cp = COUPLERS.get(host);
+  if (cp) { cp.reset(); return cp; }
+  const marks = [];
+  const reduce = !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const apply = () => {
+    const active = window.tfsAxis ? window.tfsAxis.active() : [];
+    const any = active.length > 0;
+    for (const m of marks) {
+      if (!m.node.isConnected) continue;
+      const on = active.indexOf(m.axis) !== -1;
+      if (m.kind === "band") m.node.setAttribute("opacity", on ? 1 : 0);
+      else if (m.kind === "guide") {
+        m.node.setAttribute("stroke-width", on ? m.w * 2.2 : m.w);
+        m.node.setAttribute("opacity", any && !on ? .28 : 1);
+      } else {
+        m.node.setAttribute("font-weight", on ? 800 : m.fw);
+        m.node.setAttribute("text-decoration", on ? "underline" : "none");
+        m.node.setAttribute("opacity", any && !on ? .32 : 1);
+      }
+    }
+  };
+  document.addEventListener("tfs:axis", apply);
+  cp = {
+    reset() { marks.length = 0; },
+    apply() { apply(); if (window.tfsEnhance) window.tfsEnhance(); },
+    band(node, axis) {
+      node.setAttribute("opacity", 0);
+      node.setAttribute("pointer-events", "none");
+      if (!reduce) node.style.transition = "opacity .12s";
+      marks.push({ node, axis, kind: "band" }); return node;
+    },
+    guide(node, axis) {
+      marks.push({ node, axis, kind: "guide", w: +node.getAttribute("stroke-width") || 1.5 });
+      return node;
+    },
+    /* focusable: the few labels that name an axis get a tab stop; repeated
+       per-token labels stay mouse/touch only so the tab order stays short */
+    label(node, axis, focusable) {
+      node.setAttribute("data-axis", axis);
+      node.style.cursor = "pointer";
+      if (focusable) {
+        node.setAttribute("tabindex", "0");
+        node.setAttribute("role", "button");
+        node.setAttribute("aria-label", `${axisName(axis)} axis — highlight it everywhere on the page`);
+        node.addEventListener("focus", () => window.tfsAxis && window.tfsAxis.hover(axis));
+        node.addEventListener("blur", () => window.tfsAxis && window.tfsAxis.unhover(axis));
+        node.addEventListener("keydown", e => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          if (window.tfsAxis) window.tfsAxis.toggle(axis);
+        });
+      }
+      marks.push({ node, axis, kind: "label", fw: node.getAttribute("font-weight") || 600 });
+      return node;
+    },
+  };
+  COUPLERS.set(host, cp);
+  return cp;
+}
+
+/* SVG helpers shared by the coupled widgets */
+function svgText(sv, x, y, txt, col, opt = {}) {
+  const t = svgEl("text", { x, y, "text-anchor": opt.anchor || "start", "font-size": opt.size || 11,
+    fill: col, "font-family": "var(--mono)", "font-weight": opt.weight || 600 });
+  t.textContent = txt; sv.appendChild(t); return t;
+}
+/* text whose shape parts are axis tspans: parts like [["B", "batch"], ["12", null]] */
+function svgShape(sv, cp, x, y, prefix, parts, suffix, opt = {}) {
+  const t = svgEl("text", { x, y, "font-size": opt.size || 11, fill: C.dim, "font-family": "var(--mono)", "font-weight": 600 });
+  const add = (s, a) => {
+    const sp = svgEl("tspan", a ? { fill: axisCol(a) } : {});
+    sp.textContent = s; t.appendChild(sp);
+    if (a) cp.label(sp, a, false);
+  };
+  add(prefix + "(");
+  parts.forEach(([s, a], i) => { add(s, a); if (i < parts.length - 1) add(", "); });
+  add(")" + (suffix || ""));
+  sv.appendChild(t); return t;
+}
+/* a bracket along one side of a block, with its axis label */
+function svgBracket(sv, cp, axis, x1, y1, x2, y2, side, text, focusable) {
+  const col = axisCol(axis), tick = 5;
+  let path, lx, ly, anchor = "middle";
+  if (side === "left") { path = `M${x1 + tick} ${y1} H${x1} V${y2} H${x1 + tick}`; lx = x1 - 6; ly = (y1 + y2) / 2 + 4; anchor = "end"; }
+  else if (side === "top") { path = `M${x1} ${y1 + tick} V${y1} H${x2} V${y1 + tick}`; lx = (x1 + x2) / 2; ly = y1 - 6; }
+  else { path = `M${x1} ${y1 - tick} V${y1} H${x2} V${y1 - tick}`; lx = (x1 + x2) / 2; ly = y1 + 14; }
+  cp.guide(sv.appendChild(svgEl("path", { d: path, fill: "none", stroke: col, "stroke-width": 1.6 })), axis);
+  cp.label(svgText(sv, lx, ly, text, col, { anchor, size: 11, weight: 700 }), axis, focusable);
+}
+function svgBand(sv, cp, axis, x, y, w, h) {
+  const col = axisCol(axis);
+  return cp.band(sv.appendChild(svgEl("rect", { x: x - 1.5, y: y - 1.5, width: w + 1, height: h + 1, rx: 4,
+    fill: col, "fill-opacity": .14, stroke: col, "stroke-width": 2.2 })), axis);
+}
+
+/* ============================================================
+   2. TENSOR — a rank-3 tensor as labelled slabs (coupled)
+   ============================================================ */
+function vizTensor(el, d) {
+  const dims = (d.dims || "2,4,3").split(",").map(Number);
+  const names = (d.names || "batch,time,channel").split(",");
+  panel(el, d.title || `Tensor of shape (${dims.join(", ")})`,
+    d.sub || "Each small square is one number. Rightmost axis is contiguous in memory. Hover or tap an axis label.");
+  const cp = coupler(el);
+  const wrap = document.createElement("div"); wrap.style.overflowX = "auto"; el.appendChild(wrap);
+  const note = document.createElement("div");
+  note.style.cssText = "margin-top:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-2);line-height:1.8";
+  el.appendChild(note);
+  const [B, T, Ch] = dims.length === 3 ? dims : dims.length === 2 ? [1, ...dims] : [1, 1, dims[0]];
+  const ax = (dims.length === 3 ? names : ["", ...names]).map(n => resolveAxis(n));
+  const [aB, aT, aC] = ax;
+  const cs = 22, dx = 13, dy = -9;
+  // left margin sized to the longest left-hand label, so it is never clipped;
+  // the stats block sits after the slabs instead of at a fixed offset
+  const leftLabel = dims.length === 3 ? `axis 1: ${names[1]} = ${T}` : `${names[0] || "rows"} = ${T}`;
+  const ox = 24 + leftLabel.length * 6.8, oy = 58 + (B - 1) * Math.abs(dy);
+  const statsX = ox + Ch * cs + (B - 1) * Math.abs(dx) + 34;
+  const bottomLabel = dims.length === 3 ? `axis 2: ${names[2]} = ${Ch}  ← contiguous` : "";
+  const W = Math.max(statsX + 130, ox + Ch * cs / 2 + bottomLabel.length * 3.5 + 20), H = T * cs + (B - 1) * Math.abs(dy) + 110;
+  const sv = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H });
+
+  for (let b = B - 1; b >= 0; b--) {
+    const sx = ox + b * dx, sy = oy + b * dy;
+    for (let t = 0; t < T; t++) for (let c = 0; c < Ch; c++) {
+      sv.appendChild(svgEl("rect", {
+        x: sx + c * cs, y: sy + t * cs, width: cs - 2, height: cs - 2, rx: 3,
+        fill: C.cell, stroke: b === 0 ? C.gridHi : C.grid, "stroke-width": b === 0 ? 1.3 : 1, opacity: 1 - b * 0.13,
+      }));
+    }
+    if (B > 1) svgText(sv, sx - 8, sy + 12, `[${b}]`, C.faint, { anchor: "end", size: 10, weight: 400 });
+    // batch: each slab IS one batch element
+    if (aB) svgBand(sv, cp, aB, sx, sy, Ch * cs - 2, T * cs - 2);
+  }
+  // time: rows of the front slab; feature: its columns
+  for (let t = 0; t < T; t++) if (aT) svgBand(sv, cp, aT, ox, oy + t * cs, Ch * cs - 2, cs - 2);
+  for (let c = 0; c < Ch; c++) if (aC) svgBand(sv, cp, aC, ox + c * cs, oy, cs - 2, T * cs - 2);
+
+  const lab = (axis, txt, x, y, anchor) => axis
+    ? cp.label(svgText(sv, x, y, txt, axisCol(axis), { anchor, weight: 700 }), axis, true)
+    : svgText(sv, x, y, txt, C.dim, { anchor, weight: 600 });
+  if (dims.length === 3) {
+    lab(aB, `axis 0: ${names[0]} = ${B}`, ox + (B - 1) * dx / 2 + 40, oy + (B - 1) * dy - 22, "start");
+    lab(aT, `axis 1: ${names[1]} = ${T}`, ox - 14, oy + T * cs / 2 + 4, "end");
+    lab(aC, `axis 2: ${names[2]} = ${Ch}  ← contiguous`, ox + Ch * cs / 2, oy + T * cs + 22, "middle");
+    if (aT) cp.guide(sv.appendChild(svgEl("path", { d: `M${ox - 6} ${oy} V${oy + T * cs - 2}`, stroke: axisCol(aT), "stroke-width": 1.6 })), aT);
+    if (aC) cp.guide(sv.appendChild(svgEl("path", { d: `M${ox} ${oy + T * cs + 4} H${ox + Ch * cs - 2}`, stroke: axisCol(aC), "stroke-width": 1.6 })), aC);
+  } else {
+    lab(aT, `${names[0] || "rows"} = ${T}`, ox - 14, oy + T * cs / 2 + 4, "end");
+    lab(aC, `${names[1] || "cols"} = ${Ch}`, ox + Ch * cs / 2, oy + T * cs + 22, "middle");
+  }
+  const n = dims.reduce((a, b) => a * b, 1);
+  svgText(sv, statsX, oy + 4, `numel = ${n}`, C.dim, { weight: 600 });
+  svgText(sv, statsX, oy + 22, `rank  = ${dims.length}`, C.dim, { weight: 600 });
+  svgText(sv, statsX, oy + 40, `${(n * 4 / 1024).toFixed(2)} KB @ fp32`, C.faint, { size: 10, weight: 400 });
+  wrap.appendChild(sv);
+  note.innerHTML = `shape ${shapeHTML(names.map((nm, i) => [`${nm}=${dims[i]}`, resolveAxis(nm)]))}`;
+  cp.apply();
+}
+
+/* ============================================================
+   6. HEADS — the reshape dance, coloured by AXIS (coupled)
+   The cells carry their flat index, so "nothing moved, it was only
+   re-labelled" is visible without any colour. The axes are the brackets.
+   ============================================================ */
+function vizHeads(el, d) {
+  const T = +d.t || 4, dmodel = +d.dmodel || 12;
+  panel(el, "The reshape dance: (B, T, d_model) → (B, n_head, T, d_head)",
+    "Nothing is computed. Each cell shows its position in memory; watch the same numbers get re-labelled. Hover, tap or tab to an axis.");
+  const cp = coupler(el);
+  const row = ctlRow(el);
+  let nh = +d.nh || 3;
+  const wrap = document.createElement("div"); wrap.style.overflowX = "auto"; el.appendChild(wrap);
+  const code = document.createElement("div");
+  code.style.cssText = "margin-top:12px;font-family:var(--mono);font-size:12.5px;color:var(--ink-2);line-height:1.9";
+  el.appendChild(code);
+  const opts = [1, 2, 3, 4, 6, 12].filter(x => dmodel % x === 0);
+  const sel = document.createElement("label");
+  sel.innerHTML = "n_head " + `<select>${opts.map(o => `<option ${o === nh ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+  row.appendChild(sel);
+  sel.querySelector("select").onchange = e => { nh = +e.target.value; draw(); };
+
+  function draw() {
+    cp.reset();
+    const dh = dmodel / nh, cs = 24, gap = 12, gap3 = 30;
+    const x0 = 52, y0 = 58;
+    const x2 = x0 + dmodel * cs + 92;
+    const w2 = nh * (dh * cs + gap) - gap;
+    const y3 = y0 + T * cs + 74;
+    const w3 = nh * (dh * cs + gap3) - gap3;
+    const W = Math.max(x2 + w2, x0 + w3) + 24, Hh = y3 + 44 + T * cs + 40;
+    wrap.innerHTML = "";
+    const sv = svgEl("svg", { viewBox: `0 0 ${W} ${Hh}`, width: W, height: Hh });
+
+    const cell = (x, y, v) => {
+      sv.appendChild(svgEl("rect", { x, y, width: cs - 2, height: cs - 2, rx: 3, fill: C.cell, stroke: C.grid }));
+      svgText(sv, x + (cs - 2) / 2, y + (cs - 2) / 2 + 3.5, String(v), C.dim, { anchor: "middle", size: 9.5, weight: 500 });
+    };
+
+    // ---- step 1: (B, T, d_model): rows are time, columns are features
+    svgShape(sv, cp, x0 - 40, 16, "1. after W_q   ", [["B", "batch"], ["T", "time"], ["d_model", "feat"]], ` = (1, ${T}, ${dmodel})`);
+    for (let t = 0; t < T; t++) for (let c = 0; c < dmodel; c++) cell(x0 + c * cs, y0 + t * cs, t * dmodel + c);
+    for (let t = 0; t < T; t++) svgBand(sv, cp, "time", x0, y0 + t * cs, dmodel * cs - 2, cs - 2);
+    for (let c = 0; c < dmodel; c++) svgBand(sv, cp, "feat", x0 + c * cs, y0, cs - 2, T * cs - 2);
+    svgBracket(sv, cp, "time", x0 - 8, y0, 0, y0 + T * cs - 2, "left", `T=${T}`, true);
+    svgBracket(sv, cp, "feat", x0, y0 + T * cs + 4, x0 + dmodel * cs - 2, 0, "bottom", `d_model = ${dmodel}`, true);
+    svgText(sv, x0 + dmodel * cs + 30, y0 + T * cs / 2 + 7, "→", C.dim, { size: 22, anchor: "middle" });
+    svgText(sv, x0 + dmodel * cs + 30, y0 + T * cs / 2 + 26, ".view", C.faint, { size: 10, anchor: "middle", weight: 400 });
+
+    // ---- step 2: (B, T, nh, hd): the feature axis is SPLIT into head x head-dim
+    svgShape(sv, cp, x2, 16, "2. ", [["B", "batch"], ["T", "time"], ["nh", "head"], ["hd", "headdim"]], ` = (1, ${T}, ${nh}, ${dh})`);
+    for (let h = 0; h < nh; h++) {
+      const gx = x2 + h * (dh * cs + gap);
+      for (let t = 0; t < T; t++) for (let i = 0; i < dh; i++) cell(gx + i * cs, y0 + t * cs, t * dmodel + h * dh + i);
+      for (let i = 0; i < dh; i++) svgBand(sv, cp, "headdim", gx + i * cs, y0, cs - 2, T * cs - 2);
+      svgBand(sv, cp, "head", gx, y0, dh * cs - 2, T * cs - 2);
+      svgText(sv, gx + (dh * cs - 2) / 2, y0 + T * cs + 30, `h${h}`, C.faint, { anchor: "middle", size: 10, weight: 500 });
+    }
+    for (let t = 0; t < T; t++) svgBand(sv, cp, "time", x2, y0 + t * cs, w2, cs - 2);
+    svgBracket(sv, cp, "time", x2 - 8, y0, 0, y0 + T * cs - 2, "left", `T`, false);
+    svgBracket(sv, cp, "head", x2, y0 - 12, x2 + w2, 0, "top", `nh = ${nh}`, true);
+    svgBracket(sv, cp, "headdim", x2, y0 + T * cs + 4, x2 + dh * cs - 2, 0, "bottom", `hd = ${dh}`, true);
+
+    // ---- step 3: .transpose(1, 2) -> (B, nh, T, hd): heads become the outer axis
+    svgShape(sv, cp, x0 - 40, y3 - 6, "3. .transpose(1, 2)   ", [["B", "batch"], ["nh", "head"], ["T", "time"], ["hd", "headdim"]],
+      `   ← T moved from position 1 to position 2`);
+    const yb = y3 + 30;
+    for (let h = 0; h < nh; h++) {
+      const bx = x0 + h * (dh * cs + gap3);
+      for (let t = 0; t < T; t++) for (let i = 0; i < dh; i++) cell(bx + i * cs, yb + t * cs, t * dmodel + h * dh + i);
+      for (let t = 0; t < T; t++) svgBand(sv, cp, "time", bx, yb + t * cs, dh * cs - 2, cs - 2);
+      for (let i = 0; i < dh; i++) svgBand(sv, cp, "headdim", bx + i * cs, yb, cs - 2, T * cs - 2);
+      svgBand(sv, cp, "head", bx, yb, dh * cs - 2, T * cs - 2);
+      sv.appendChild(svgEl("rect", { x: bx - 5, y: yb - 5, width: dh * cs + 6, height: T * cs + 8, rx: 6,
+        fill: "none", stroke: C.gridHi, "stroke-width": 1.2, "stroke-dasharray": "4 3" }));
+      svgText(sv, bx + (dh * cs - 2) / 2, yb + T * cs + 22, `head ${h}: (T, hd)`, C.faint, { anchor: "middle", size: 10, weight: 500 });
+    }
+    svgBracket(sv, cp, "head", x0, yb - 14, x0 + w3, 0, "top", `nh = ${nh} independent (T, hd) matrices`, false);
+    wrap.appendChild(sv);
+
+    code.innerHTML =
+      `<span style="color:${C.faint}"># B=1, T=${T}, d_model=${dmodel}, n_head=${nh}, d_head=${dmodel}/${nh}=${dh}</span><br>` +
+      `q = q.view${shapeHTML([["B", "batch"], ["T", "time"], ["nh", "head"], ["hd", "headdim"]])}.transpose(1, 2)` +
+      `&nbsp;&nbsp;<span style="color:${C.faint}">#</span> ${shapeHTML([["B", "batch"], ["nh", "head"], ["T", "time"], ["hd", "headdim"]])}<br>` +
+      `<b style="color:${C.accent}">Key insight:</b> d_model is <i>partitioned</i>, not duplicated: the cell numbers ` +
+      `0…${T * dmodel - 1} each appear exactly once in every step. Total parameters and FLOPs are the same as one big ` +
+      `head — you just get ${nh} independent attention patterns for free.`;
+    cp.apply();
+  }
+  draw();
+}
+
+/* ============================================================
+   11. GQA — query heads grouped onto shared K/V heads (coupled)
+   Group identity is shown by alternating fill and by the connecting
+   lines, NOT by axis colours; the only axis here is "head".
+   ============================================================ */
+function vizGQA(el, d) {
+  panel(el, "MHA → GQA → MQA is one slider", "Query heads are grouped; each group shares one K/V head.");
+  const cp = coupler(el);
+  const row = ctlRow(el);
+  const nh = +d.nh || 8;
+  let g = +d.groups || 4;
+  const wrap = document.createElement("div"); el.appendChild(wrap);
+  const note = document.createElement("div");
+  note.style.cssText = "margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--ink-2);line-height:1.85";
+  el.appendChild(note);
+  const divisors = [];
+  for (let i = 1; i <= nh; i++) if (nh % i === 0) divisors.push(i);
+  slider(row, "n_kv_heads", 0, divisors.length - 1, divisors.indexOf(g), i => { g = divisors[i]; draw(); });
+
+  function draw() {
+    cp.reset();
+    const per = nh / g;
+    const cw = 60, W = nh * cw + 40, Hh = 200;
+    wrap.innerHTML = "";
+    const sv = svgEl("svg", { viewBox: `0 0 ${W} ${Hh}`, width: "100%", height: Hh, preserveAspectRatio: "xMidYMid meet" });
+    const shade = j => (j % 2 ? C.cell : C.paper);
+    svgBracket(sv, cp, "head", 20, 30, 20 + nh * cw - 8, 0, "top", `query heads · n_head = ${nh}`, true);
+    for (let h = 0; h < nh; h++) {
+      const grp = Math.floor(h / per);
+      sv.appendChild(svgEl("rect", { x: 20 + h * cw, y: 36, width: cw - 8, height: 34, rx: 6, fill: shade(grp), stroke: C.gridHi, "stroke-width": 1.4 }));
+      svgBand(sv, cp, "head", 20 + h * cw, 36, cw - 8, 34);
+      svgText(sv, 20 + h * cw + (cw - 8) / 2, 57, "Q" + h, C.fg, { anchor: "middle", size: 12 });
+    }
+    for (let j = 0; j < g; j++) {
+      const x = 20 + j * per * cw, w = per * cw - 8;
+      for (let h = j * per; h < (j + 1) * per; h++)
+        sv.appendChild(svgEl("line", { x1: 20 + h * cw + (cw - 8) / 2, y1: 70, x2: x + w / 2, y2: 120, stroke: C.gridHi, "stroke-width": 1.2, opacity: .7 }));
+      sv.appendChild(svgEl("rect", { x, y: 120, width: w, height: 34, rx: 6, fill: shade(j), stroke: C.gridHi, "stroke-width": 1.4 }));
+      svgBand(sv, cp, "head", x, 120, w, 34);
+      svgText(sv, x + w / 2, 141, `K${j} / V${j}`, C.fg, { anchor: "middle", size: 12 });
+    }
+    svgBracket(sv, cp, "head", 20, 160, 20 + nh * cw - 8, 0, "bottom", `kv heads · n_kv_heads = ${g}`, true);
+    wrap.appendChild(sv);
+    const name = g === nh ? "MHA (Multi-Head Attention)" : g === 1 ? "MQA (Multi-Query Attention)" : "GQA (Grouped-Query Attention)";
+    note.innerHTML =
+      `<b style="color:${C.accent}">${name}</b> — ${nh} query heads, ${g} KV head${g > 1 ? "s" : ""}, ${per} quer${per > 1 ? "ies" : "y"} per group.<br>` +
+      `K and V: ${shapeHTML([["B", "batch"], [`n_kv_heads=${g}`, "head"], ["T", "time"], ["hd", "headdim"]])} — ` +
+      `the cache is <b style="color:${C.accent}">${(nh / g).toFixed(0)}× smaller</b> than MHA. Q projection is unchanged; only W_k and W_v shrink.<br>` +
+      `<span style="color:${C.faint}">In code the K/V tensors are repeat_interleave'd back up to ${nh} heads before the matmul — ` +
+      `or, in a fused kernel, simply re-read. The saving is memory and bandwidth, not FLOPs.</span>`;
+    cp.apply();
+  }
+  draw();
 }
 
 /* ============================================================
@@ -147,8 +489,8 @@ function vizMatmul(el, d) {
     const y0 = 34;
 
     // A
-    grid(sv, 10, y0, A, m, k, C.q, hi, -1);
-    label(sv, 10 + aw / 2, 22, `A  (${m}, ${k})`, C.q, 12);
+    grid(sv, 10, y0, A, m, k, C.stamp, hi, -1);
+    label(sv, 10 + aw / 2, 22, `A  (${m}, ${k})`, C.stamp, 12);
     label(sv, 10 + aw / 2, y0 + m * cs + 18, `${k} columns`, C.faint, 10);
 
     // ×
@@ -156,8 +498,8 @@ function vizMatmul(el, d) {
 
     // B
     const bx = 10 + aw + gap;
-    grid(sv, bx, y0, B, k, n, C.k, -1, hj);
-    label(sv, bx + bw / 2, 22, `B  (${k}, ${n})`, C.k, 12);
+    grid(sv, bx, y0, B, k, n, C.dim, -1, hj);
+    label(sv, bx + bw / 2, 22, `B  (${k}, ${n})`, C.dim, 12);
     label(sv, bx + bw / 2, y0 + k * cs + 18, `${k} rows`, C.faint, 10);
 
     // =
@@ -171,77 +513,26 @@ function vizMatmul(el, d) {
       const on = i === hi && j === hj;
       g.appendChild(svgEl("rect", {
         x: cx + j * cs, y: y0 + i * cs, width: cs - 2, height: cs - 2, rx: 4,
-        fill: on ? C.o + "44" : C.cell, stroke: on ? C.o : C.grid, "stroke-width": on ? 2 : 1,
+        fill: on ? C.accent + "44" : C.cell, stroke: on ? C.accent : C.grid, "stroke-width": on ? 2 : 1,
       }));
       const t = svgEl("text", {
         x: cx + j * cs + (cs - 2) / 2, y: y0 + i * cs + (cs - 2) / 2 + 4, "text-anchor": "middle",
-        "font-size": 11, "font-family": "var(--mono)", fill: on ? C.o : C.faint, "font-weight": on ? 800 : 400,
+        "font-size": 11, "font-family": "var(--mono)", fill: on ? C.accent : C.faint, "font-weight": on ? 800 : 400,
       });
       t.textContent = Cm[i][j]; g.appendChild(t);
     }
     sv.appendChild(g);
-    label(sv, cx + cw / 2, 22, `C  (${m}, ${n})`, C.o, 12);
+    label(sv, cx + cw / 2, 22, `C  (${m}, ${n})`, C.accent, 12);
     wrap.appendChild(sv);
 
     const terms = A[hi].map((a, t) => `${a}×${B[t][hj]}`).join(" + ");
     const prods = A[hi].map((a, t) => a * B[t][hj]).join(" + ");
     expl.innerHTML =
-      `<span style="color:${C.o}">C[${hi},${hj}]</span> = dot( <span style="color:${C.q}">A[${hi},:]</span> , <span style="color:${C.k}">B[:,${hj}]</span> )<br>` +
-      `&nbsp;&nbsp;= ${terms}<br>&nbsp;&nbsp;= ${prods} = <b style="color:${C.o}">${Cm[hi][hj]}</b><br>` +
+      `<span style="color:${C.accent}">C[${hi},${hj}]</span> = dot( <span style="color:${C.stamp}">A[${hi},:]</span> , <span style="color:${C.dim}">B[:,${hj}]</span> )<br>` +
+      `&nbsp;&nbsp;= ${terms}<br>&nbsp;&nbsp;= ${prods} = <b style="color:${C.accent}">${Cm[hi][hj]}</b><br>` +
       `<span style="color:${C.faint}">The shared dimension k=${k} is summed away. It does not appear in the output shape.</span>`;
   }
   draw();
-}
-
-/* ============================================================
-   2. TENSOR — isometric view of a rank-1/2/3 tensor
-   ============================================================ */
-function vizTensor(el, d) {
-  const dims = (d.dims || "2,4,3").split(",").map(Number);
-  const names = (d.names || "batch,time,channel").split(",");
-  panel(el, d.title || `Tensor of shape (${dims.join(", ")})`,
-    d.sub || "Each small square is one number. Rightmost axis is contiguous in memory.");
-
-  const wrap = document.createElement("div"); wrap.style.overflowX = "auto"; el.appendChild(wrap);
-  const [B, T, Ch] = dims.length === 3 ? dims : dims.length === 2 ? [1, ...dims] : [1, 1, dims[0]];
-  const cs = 22, dx = 13, dy = -9;
-  const W = Ch * cs + (B - 1) * Math.abs(dx) + 200, H = T * cs + (B - 1) * Math.abs(dy) + 90;
-  const sv = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: Math.min(W, 820), height: H });
-  const ox = 60, oy = 50 + (B - 1) * Math.abs(dy);
-
-  for (let b = B - 1; b >= 0; b--) {
-    const sx = ox + b * dx, sy = oy + b * dy;
-    const alpha = 1 - b * 0.13;
-    for (let t = 0; t < T; t++) for (let c = 0; c < Ch; c++) {
-      sv.appendChild(svgEl("rect", {
-        x: sx + c * cs, y: sy + t * cs, width: cs - 2, height: cs - 2, rx: 3,
-        fill: C.cell, stroke: b === 0 ? C.accent : C.grid, "stroke-width": b === 0 ? 1.3 : 1,
-        opacity: alpha,
-      }));
-    }
-    if (B > 1) {
-      const t = svgEl("text", { x: sx - 8, y: sy + 12, "text-anchor": "end", "font-size": 10, fill: C.faint, "font-family": "var(--mono)" });
-      t.textContent = `[${b}]`; sv.appendChild(t);
-    }
-  }
-  const lab = (x, y, txt, col, size = 11, anchor = "middle") => {
-    const t = svgEl("text", { x, y, "text-anchor": anchor, "font-size": size, fill: col, "font-family": "var(--mono)", "font-weight": 600 });
-    t.textContent = txt; sv.appendChild(t);
-  };
-  // axis labels
-  if (dims.length === 3) {
-    lab(ox + (B - 1) * dx / 2 + 40, oy + (B - 1) * dy - 22, `axis 0: ${names[0]} = ${B}`, C.v, 11, "start");
-    lab(ox - 14, oy + T * cs / 2, `axis 1`, C.k, 11, "end");
-    lab(ox - 14, oy + T * cs / 2 + 13, `${names[1]}=${T}`, C.k, 10, "end");
-    lab(ox + Ch * cs / 2, oy + T * cs + 20, `axis 2: ${names[2]} = ${Ch}  ← contiguous`, C.q, 11);
-  } else {
-    lab(ox - 14, oy + T * cs / 2, `${names[0] || "rows"}=${T}`, C.k, 10, "end");
-    lab(ox + Ch * cs / 2, oy + T * cs + 20, `${names[1] || "cols"}=${Ch}`, C.q, 11);
-  }
-  lab(W - 150, oy + 4, `numel = ${dims.reduce((a, b) => a * b, 1)}`, C.dim, 11, "start");
-  lab(W - 150, oy + 22, `rank  = ${dims.length}`, C.dim, 11, "start");
-  lab(W - 150, oy + 40, `${(dims.reduce((a, b) => a * b, 1) * 4 / 1024).toFixed(2)} KB @ fp32`, C.faint, 10, "start");
-  wrap.appendChild(sv);
 }
 
 /* ============================================================
@@ -271,11 +562,11 @@ function vizBroadcast(el, d) {
     const div = document.createElement("div");
     div.style.cssText = "margin-bottom:16px;padding:11px 13px;background:var(--surface);border:1px solid " + (okAll ? C.grid : C.danger) + ";";
     div.innerHTML =
-      `<div><span style="display:inline-block;width:52px;color:${C.q}">A</span>${rowHtml(pa, C.q)}  <span style="color:${C.faint}">← (${a.join(", ")})</span></div>` +
-      `<div><span style="display:inline-block;width:52px;color:${C.k}">B</span>${rowHtml(pb, C.k)}  <span style="color:${C.faint}">← (${b.join(", ")})</span></div>` +
+      `<div><span style="display:inline-block;width:52px;color:${C.stamp}">A</span>${rowHtml(pa, C.stamp)}  <span style="color:${C.faint}">← (${a.join(", ")})</span></div>` +
+      `<div><span style="display:inline-block;width:52px;color:${C.dim}">B</span>${rowHtml(pb, C.dim)}  <span style="color:${C.faint}">← (${b.join(", ")})</span></div>` +
       `<div style="border-top:1px solid ${C.grid};margin:6px 0 4px"></div>` +
-      `<div><span style="display:inline-block;width:52px;color:${okAll ? C.o : C.danger}">${okAll ? "out" : "ERROR"}</span>` +
-      outs.map(o => cell(o.v, o.ok ? C.o : C.danger)).join("") +
+      `<div><span style="display:inline-block;width:52px;color:${okAll ? C.accent : C.danger}">${okAll ? "out" : "ERROR"}</span>` +
+      outs.map(o => cell(o.v, o.ok ? C.accent : C.danger)).join("") +
       (okAll ? `  <span style="color:${C.faint}">← (${outs.map(o => o.v).join(", ")})</span>`
              : `  <span style="color:${C.danger}">incompatible: neither is 1 and they differ</span>`) + `</div>`;
     box.appendChild(div);
@@ -368,6 +659,7 @@ function vizAttention(el, d) {
   const toks = (d.tokens || "The cat sat on the warm mat").split(" ").slice(0, T);
   panel(el, "Attention matrix: from scores to weights",
     "Row i = 'what token i attends to'. Every row of the final matrix sums to 1.");
+  const cp = coupler(el);
   const row = ctlRow(el);
   let causal = d.causal !== "false", scale = true, dk = +d.dk || 64;
 
@@ -387,8 +679,9 @@ function vizAttention(el, d) {
   slider(row, "d_k", 4, 256, dk, v => { dk = v; draw(); });
 
   function draw() {
+    cp.reset();
     const cs = 40, pad = 96;
-    const W = pad + T * cs + 30, Hh = pad + T * cs + 20;
+    const W = pad + T * cs + 50, Hh = pad + T * cs + 20;   // room for the row-sum column
     wrap.innerHTML = "";
     const sv = svgEl("svg", { viewBox: `0 0 ${W} ${Hh}`, width: W, height: Hh });
 
@@ -405,17 +698,17 @@ function vizAttention(el, d) {
     for (let j = 0; j < T; j++) {
       const t = svgEl("text", {
         x: pad + j * cs + cs / 2, y: pad - 10, "text-anchor": "start", "font-size": 11,
-        fill: C.k, "font-family": "var(--mono)",
+        fill: axisCol("time"), "font-family": "var(--mono)",
         transform: `rotate(-52 ${pad + j * cs + cs / 2} ${pad - 10})`,
       });
-      t.textContent = toks[j] || "t" + j; sv.appendChild(t);
+      t.textContent = toks[j] || "t" + j; sv.appendChild(t); cp.label(t, "time", false);
     }
-    const kl = svgEl("text", { x: pad + T * cs / 2, y: 16, "text-anchor": "middle", "font-size": 11, fill: C.k, "font-family": "var(--mono)", "font-weight": 700 });
-    kl.textContent = "KEYS  (what is available to look at) →"; sv.appendChild(kl);
+    const kl = svgEl("text", { x: pad + T * cs / 2, y: 16, "text-anchor": "middle", "font-size": 11, fill: axisCol("time"), "font-family": "var(--mono)", "font-weight": 700 });
+    kl.textContent = "KEYS · time  (what is available to look at) →"; sv.appendChild(kl); cp.label(kl, "time", true);
 
     for (let i = 0; i < T; i++) {
-      const t = svgEl("text", { x: pad - 10, y: pad + i * cs + cs / 2 + 4, "text-anchor": "end", "font-size": 11, fill: C.q, "font-family": "var(--mono)" });
-      t.textContent = toks[i] || "t" + i; sv.appendChild(t);
+      const t = svgEl("text", { x: pad - 10, y: pad + i * cs + cs / 2 + 4, "text-anchor": "end", "font-size": 11, fill: axisCol("time"), "font-family": "var(--mono)" });
+      t.textContent = toks[i] || "t" + i; sv.appendChild(t); cp.label(t, "time", false);
       for (let j = 0; j < T; j++) {
         const p = P[i][j];
         const masked = causal && j > i;
@@ -433,104 +726,21 @@ function vizAttention(el, d) {
         });
         t2.textContent = masked ? "−∞" : p.toFixed(2); sv.appendChild(t2);
       }
-      const rs = svgEl("text", { x: pad + T * cs + 6, y: pad + i * cs + cs / 2 + 4, "font-size": 9.5, fill: C.o, "font-family": "var(--mono)" });
+      const rs = svgEl("text", { x: pad + T * cs + 6, y: pad + i * cs + cs / 2 + 4, "font-size": 9.5, fill: C.faint, "font-family": "var(--mono)" });
       rs.textContent = "Σ" + P[i].reduce((a, b) => a + b, 0).toFixed(2); sv.appendChild(rs);
     }
-    const ql = svgEl("text", { x: 14, y: pad + T * cs / 2, "text-anchor": "middle", "font-size": 11, fill: C.q, "font-family": "var(--mono)", "font-weight": 700, transform: `rotate(-90 14 ${pad + T * cs / 2})` });
-    ql.textContent = "← QUERIES (who is asking)"; sv.appendChild(ql);
+    const ql = svgEl("text", { x: 14, y: pad + T * cs / 2, "text-anchor": "middle", "font-size": 11, fill: axisCol("time"), "font-family": "var(--mono)", "font-weight": 700, transform: `rotate(-90 14 ${pad + T * cs / 2})` });
+    ql.textContent = "← QUERIES · time (who is asking)"; sv.appendChild(ql); cp.label(ql, "time", true);
     wrap.appendChild(sv);
 
     const maxOff = Math.max(...P.flat());
     note.innerHTML =
-      `shape of this matrix: <b style="color:${C.accent}">(T=${T}, T=${T})</b> — one row per query, one column per key.<br>` +
+      `shape of this matrix: ${shapeHTML([[`T=${T}`, "time"], [`T=${T}`, "time"]])} — one row per query position, one column per key position: <b>both axes are time</b>.<br>` +
       (causal ? `Causal mask ON: position i cannot see j &gt; i. Those cells got −∞ <i>before</i> softmax, so they become exactly 0.<br>` :
                 `<span style="color:${C.danger}">Causal mask OFF</span>: every token sees the future. Fine for BERT, catastrophic for a generator.<br>`) +
       (scale ? `Scaled by 1/√d_k with d_k=${dk} → scores stay in a range where softmax has usable gradients. Peak weight ${maxOff.toFixed(2)}.` :
                `<span style="color:${C.danger}">Unscaled</span>: raw dot products grow like d_k, softmax saturates, gradients vanish. Peak weight ${maxOff.toFixed(2)}.`);
-  }
-  draw();
-}
-
-/* ============================================================
-   6. HEADS — the multi-head reshape dance
-   ============================================================ */
-function vizHeads(el, d) {
-  const B = 1, T = +d.t || 4, dmodel = +d.dmodel || 12;
-  panel(el, "The reshape dance: (B, T, d_model) → (B, n_head, T, d_head)",
-    "Nothing is computed here. The same numbers are just re-labelled and re-ordered so each head sees its own slice.");
-  const row = ctlRow(el);
-  let nh = +d.nh || 3;
-  const wrap = document.createElement("div"); wrap.style.overflowX = "auto"; el.appendChild(wrap);
-  const code = document.createElement("div");
-  code.style.cssText = "margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--ink-2);line-height:1.9";
-  el.appendChild(code);
-  const opts = [1, 2, 3, 4, 6, 12].filter(x => dmodel % x === 0);
-  const sel = document.createElement("label");
-  sel.innerHTML = "n_head " + `<select>${opts.map(o => `<option ${o === nh ? "selected" : ""}>${o}</option>`).join("")}</select>`;
-  row.appendChild(sel);
-  sel.querySelector("select").onchange = e => { nh = +e.target.value; draw(); };
-
-  const HUE = hues();
-
-  function draw() {
-    const dh = dmodel / nh, cs = 24;
-    wrap.innerHTML = "";
-    const W = 700, Hh = 250;
-    const sv = svgEl("svg", { viewBox: `0 0 ${W} ${Hh}`, width: W, height: Hh });
-    const lab = (x, y, txt, col, size = 11, anchor = "start", w = 600) => {
-      const t = svgEl("text", { x, y, "text-anchor": anchor, "font-size": size, fill: col, "font-family": "var(--mono)", "font-weight": w });
-      t.textContent = txt; sv.appendChild(t);
-    };
-
-    // STEP 1: (T, d_model) flat
-    lab(10, 18, `1. after W_q:  (B=1, T=${T}, d_model=${dmodel})`, C.dim, 11);
-    for (let t = 0; t < T; t++) for (let c = 0; c < dmodel; c++) {
-      const h = Math.floor(c / dh);
-      sv.appendChild(svgEl("rect", { x: 10 + c * cs, y: 28 + t * cs, width: cs - 2, height: cs - 2, rx: 3, fill: HUE[h % 12] + "26", stroke: HUE[h % 12] + "88" }));
-    }
-    lab(10 + dmodel * cs / 2, 28 + T * cs + 16, `d_model = ${dmodel} contiguous features`, C.faint, 10, "middle", 400);
-
-    // arrow
-    const ay = 28 + T * cs / 2;
-    lab(10 + dmodel * cs + 22, ay + 4, "→", C.dim, 20);
-
-    // STEP 2: split into heads
-    const x2 = 10 + dmodel * cs + 52;
-    lab(x2, 18, `2. .view(B, T, ${nh}, ${dh})`, C.dim, 11);
-    for (let hh = 0; hh < nh; hh++) {
-      for (let t = 0; t < T; t++) for (let c = 0; c < dh; c++) {
-        sv.appendChild(svgEl("rect", {
-          x: x2 + hh * (dh * cs + 12) + c * cs, y: 28 + t * cs,
-          width: cs - 2, height: cs - 2, rx: 3, fill: HUE[hh % 12] + "26", stroke: HUE[hh % 12] + "88",
-        }));
-      }
-      lab(x2 + hh * (dh * cs + 12) + dh * cs / 2 - 4, 28 + T * cs + 16, `h${hh}`, HUE[hh % 12], 10, "middle");
-    }
-
-    // STEP 3
-    const y3 = 28 + T * cs + 44;
-    lab(10, y3 + 14, `3. .transpose(1, 2)  →  (B, n_head=${nh}, T=${T}, d_head=${dh})   ← each head is now its own independent (T, d_head) matrix`, C.accent, 11);
-    for (let hh = 0; hh < nh; hh++) {
-      const bx = 10 + hh * (dh * cs + 30);
-      for (let t = 0; t < T; t++) for (let c = 0; c < dh; c++) {
-        sv.appendChild(svgEl("rect", {
-          x: bx + c * cs, y: y3 + 26 + t * cs, width: cs - 2, height: cs - 2, rx: 3,
-          fill: HUE[hh % 12] + "26", stroke: HUE[hh % 12] + "88",
-        }));
-      }
-      sv.appendChild(svgEl("rect", {
-        x: bx - 5, y: y3 + 21, width: dh * cs + 6, height: T * cs + 8, rx: 6,
-        fill: "none", stroke: HUE[hh % 12], "stroke-width": 1.4, "stroke-dasharray": "4 3",
-      }));
-      lab(bx + dh * cs / 2 - 4, y3 + 26 + T * cs + 16, `head ${hh}: (${T}, ${dh})`, HUE[hh % 12], 10, "middle");
-    }
-    wrap.appendChild(sv);
-
-    code.innerHTML =
-      `<span style="color:${C.faint}"># B=1, T=${T}, d_model=${dmodel}, n_head=${nh}, d_head=${dmodel}/${nh}=${dh}</span><br>` +
-      `q = q.view(B, T, ${nh}, ${dh}).transpose(1, 2)&nbsp;&nbsp;<span style="color:${C.faint}"># (1, ${nh}, ${T}, ${dh})</span><br>` +
-      `<b style="color:${C.o}">Key insight:</b> d_model is <i>partitioned</i>, not duplicated. ` +
-      `Total parameters and FLOPs are the same as one big head — you just get ${nh} independent attention patterns for free.`;
+    cp.apply();
   }
   draw();
 }
@@ -568,13 +778,13 @@ function vizRope(el, d) {
       t.textContent = lbl; sv.appendChild(t);
     };
     arrow(0, C.faint, "original (m=0)", "4 3");
-    arrow(ang, C.q, `rotated by mθ`);
+    arrow(ang, C.accent, `rotated by mθ`);
 
     // arc
     const steps = 26, pts = [];
     for (let s = 0; s <= steps; s++) { const a = ang * s / steps; pts.push(`${cx + 34 * Math.cos(a)},${cy - 34 * Math.sin(a)}`); }
-    sv.appendChild(svgEl("polyline", { points: pts.join(" "), fill: "none", stroke: C.o, "stroke-width": 1.6 }));
-    const at = svgEl("text", { x: cx + 42 * Math.cos(ang / 2), y: cy - 42 * Math.sin(ang / 2) + 4, "font-size": 11, fill: C.o, "font-family": "var(--mono)" });
+    sv.appendChild(svgEl("polyline", { points: pts.join(" "), fill: "none", stroke: C.stamp, "stroke-width": 1.6 }));
+    const at = svgEl("text", { x: cx + 42 * Math.cos(ang / 2), y: cy - 42 * Math.sin(ang / 2) + 4, "font-size": 11, fill: C.stamp, "font-family": "var(--mono)" });
     at.textContent = `mθ`; sv.appendChild(at);
 
     // right panel: relative-position property
@@ -582,10 +792,10 @@ function vizRope(el, d) {
     const rows = [
       [`θ_i = base^(−2i/d_head)`, C.dim],
       [`    = ${base}^(−${2 * pairIdx}/${dhead}) = ${theta.toExponential(3)}`, C.faint],
-      [`m·θ_i = ${m} × ${theta.toExponential(3)} = ${ang.toFixed(4)} rad`, C.q],
+      [`m·θ_i = ${m} × ${theta.toExponential(3)} = ${ang.toFixed(4)} rad`, C.accent],
       [``, C.dim],
       [`Rotate q by mθ, k by nθ. Then:`, C.dim],
-      [`⟨R(m)q, R(n)k⟩ = ⟨q, R(n−m)k⟩`, C.o],
+      [`⟨R(m)q, R(n)k⟩ = ⟨q, R(n−m)k⟩`, C.stamp],
       [``, C.dim],
       [`The dot product depends ONLY on (n−m).`, C.accent],
       [`That is relative position, for free,`, C.accent],
@@ -601,7 +811,7 @@ function vizRope(el, d) {
     wrap.appendChild(sv);
 
     const wavelength = 2 * Math.PI / theta;
-    note.innerHTML = `Pair i=${pairIdx} of d_head=${dhead} completes one full turn every <b style="color:${C.o}">${wavelength.toFixed(1)}</b> tokens. ` +
+    note.innerHTML = `Pair i=${pairIdx} of d_head=${dhead} completes one full turn every <b style="color:${C.stamp}">${wavelength.toFixed(1)}</b> tokens. ` +
       `Pair 0 turns every 6.3 tokens; pair ${dhead / 2 - 1} turns every ~${(2 * Math.PI / Math.pow(base, -2 * (dhead / 2 - 1) / dhead)).toExponential(1)} tokens. ` +
       `That spread is what lets one mechanism encode both "next word" and "10k tokens ago".`;
   }
@@ -649,10 +859,10 @@ function vizKV(el, d) {
     out.innerHTML =
       `<div style="color:var(--ink-2);font-size:12px;margin-bottom:10px">` +
       `bytes = 2 (K and V) × n_layers × n_kv_heads × d_head × seq_len × batch × dtype_bytes &nbsp;<span style="color:var(--ink-3)">(fp16 = 2 bytes)</span></div>` +
-      bar(`MHA (${nh} KV heads)`, mha, mha, C.q) +
-      bar(`GQA (${kvh} KV heads)`, gqa, mha, C.k) +
-      bar(`MQA (1 KV head)`, mqa, mha, C.v) +
-      bar(`MLA (576/token/layer)`, mla, mha, C.o) +
+      bar(`MHA (${nh} KV heads)`, mha, mha, C.accent) +
+      bar(`GQA (${kvh} KV heads)`, gqa, mha, C.accent) +
+      bar(`MQA (1 KV head)`, mqa, mha, C.accent) +
+      bar(`MLA (576/token/layer)`, mla, mha, C.accent) +
       `<div style="margin-top:12px;color:var(--ink-3);font-size:11.5px;line-height:1.7">` +
       `For reference: one H100 has 80 GB total, and the <i>weights</i> of a 70B fp16 model already take ~140 GB (so it needs ≥2 GPUs). ` +
       `Everything left over is cache — and cache is what limits how many concurrent users you can serve.</div>`;
@@ -668,6 +878,18 @@ function vizTrace(el, d) {
   el.querySelector("script")?.remove();
   panel(el, d.title || "Forward pass, one shape at a time", "Step through. The shape line is the thing to memorise.");
   let i = 0;
+  let amap = {};
+  try { amap = JSON.parse(d.axismap || "{}"); } catch (e) { amap = {}; }
+  /* "(2, 8, 6, 64)" -> badges, by value via data-axismap; "(B=2, T=6)" by symbol */
+  const shapeLine = txt => txt.replace(/\(([^()]*)\)/g, (m, inner) => {
+    if (!inner.trim()) return m;
+    const parts = inner.split(/\s*,\s*/).map(tok => {
+      const sym = tok.split("=")[0].trim();
+      const a = amap[tok.trim()] || resolveAxis(sym);
+      return [tok.trim(), a || null];
+    });
+    return parts.some(p => p[1]) ? shapeHTML(parts) : m;
+  });
   const body = document.createElement("div"); el.appendChild(body);
   const row = ctlRow(el); row.style.marginTop = "14px"; row.style.marginBottom = "0";
   const prev = document.createElement("button"); prev.className = "btn"; prev.textContent = "← back";
@@ -684,14 +906,15 @@ function vizTrace(el, d) {
       steps.map((_, j) => `<span style="width:26px;height:5px;background:${j <= i ? C.accent : "var(--line)"}"></span>`).join("") +
       `</div>` +
       `<div style="font-weight:700;font-size:1.02rem;margin-bottom:7px">${s.name}</div>` +
-      `<div style="font-family:var(--mono);font-size:13.5px;background:var(--surface);border:1px solid var(--line);border-left:3px solid ${C.o};padding:11px 14px;margin-bottom:11px">` +
-      `<span style="color:var(--ink-3)">shape</span> &nbsp;<b style="color:${C.o}">${s.shape}</b>` +
+      `<div style="font-family:var(--mono);font-size:13.5px;background:var(--surface);border:1px solid var(--line);border-left:3px solid ${C.stamp};padding:11px 14px;margin-bottom:11px">` +
+      `<span style="color:var(--ink-3)">shape</span> &nbsp;<span style="font-weight:700;color:var(--ink)">${shapeLine(s.shape)}</span>` +
       (s.op ? `<br><span style="color:var(--ink-3)">op&nbsp;&nbsp;&nbsp;</span> &nbsp;<span style="color:${C.accent}">${s.op}</span>` : "") +
-      (s.params ? `<br><span style="color:var(--ink-3)">params</span> &nbsp;<span style="color:${C.v}">${s.params}</span>` : "") +
+      (s.params ? `<br><span style="color:var(--ink-3)">params</span> &nbsp;<span style="color:${C.dim}">${s.params}</span>` : "") +
       `</div>` +
-      `<div style="color:var(--ink-2);font-size:.92rem;line-height:1.7">${s.why}</div>`;
+      `<div style="color:var(--ink-2);font-size:.92rem;line-height:1.7">${/[<>]/.test(s.why) ? s.why : shapeLine(s.why)}</div>`;
     cnt.textContent = `step ${i + 1} / ${steps.length}`;
     prev.disabled = i === 0; next.disabled = i === steps.length - 1;
+    if (window.tfsEnhance) window.tfsEnhance();
   }
   render();
 }
@@ -730,71 +953,16 @@ function vizOnline(el, d) {
       hist.map((h, t) => `<tr${t === hist.length - 1 ? ' style="background:var(--surface-2)"' : ""}>
         <td>${t}</td><td class="num">${h.x.toFixed(1)}</td>
         <td class="num" style="color:${C.faint}">${h.mPrev === -Infinity ? "−∞" : h.mPrev.toFixed(2)}</td>
-        <td class="num" style="color:${C.k}">${h.mNew.toFixed(2)}</td>
-        <td class="num" style="color:${C.q}">${h.corr.toFixed(4)}</td>
-        <td class="num" style="color:${C.o}">${h.lNew.toFixed(4)}</td></tr>`).join("") +
+        <td class="num" style="color:${C.dim}">${h.mNew.toFixed(2)}</td>
+        <td class="num" style="color:${C.fg}">${h.corr.toFixed(4)}</td>
+        <td class="num" style="color:${C.accent}">${h.lNew.toFixed(4)}</td></tr>`).join("") +
       `</tbody></table>
       <div style="margin-top:11px;font-family:var(--mono);font-size:12px;color:var(--ink-2);line-height:1.8">
-        streaming ℓ = <b style="color:${C.o}">${lPrev.toFixed(6)}</b><br>
-        one-shot  ℓ = <b style="color:${C.k}">${ref.toFixed(6)}</b><br>
+        streaming ℓ = <b style="color:${C.accent}">${lPrev.toFixed(6)}</b><br>
+        one-shot  ℓ = <b style="color:${C.dim}">${ref.toFixed(6)}</b><br>
         <span style="color:${C.accent}">Identical — to floating-point rounding. That equality is the whole theorem behind FlashAttention:
         you can compute an exact softmax without ever holding the full row in memory.</span>
       </div>`;
-  }
-  draw();
-}
-
-/* ============================================================
-   11. GQA GROUPING — which query heads share which KV head
-   ============================================================ */
-function vizGQA(el, d) {
-  panel(el, "MHA → GQA → MQA is one slider", "Query heads are grouped; each group shares one K/V head.");
-  const row = ctlRow(el);
-  const nh = +d.nh || 8;
-  let g = +d.groups || 4;
-  const wrap = document.createElement("div"); el.appendChild(wrap);
-  const note = document.createElement("div");
-  note.style.cssText = "margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--ink-2);line-height:1.85";
-  el.appendChild(note);
-  const divisors = [];
-  for (let i = 1; i <= nh; i++) if (nh % i === 0) divisors.push(i);
-  slider(row, "n_kv_heads", 0, divisors.length - 1, divisors.indexOf(g), i => { g = divisors[i]; draw(); });
-
-  function draw() {
-    const per = nh / g;
-    const cw = 60, W = nh * cw + 40, Hh = 178;
-    wrap.innerHTML = "";
-    const sv = svgEl("svg", { viewBox: `0 0 ${W} ${Hh}`, width: "100%", height: Hh, preserveAspectRatio: "xMidYMid meet" });
-    const HUE = hues();
-    const lab = (x, y, t, c, s = 11, a = "middle") => {
-      const e = svgEl("text", { x, y, "text-anchor": a, "font-size": s, fill: c, "font-family": "var(--mono)", "font-weight": 600 });
-      e.textContent = t; sv.appendChild(e);
-    };
-    lab(20, 20, "Query heads", C.q, 11, "start");
-    for (let h = 0; h < nh; h++) {
-      const grp = Math.floor(h / per);
-      sv.appendChild(svgEl("rect", { x: 20 + h * cw, y: 30, width: cw - 8, height: 34, rx: 6, fill: HUE[grp % 8] + "26", stroke: HUE[grp % 8], "stroke-width": 1.4 }));
-      lab(20 + h * cw + (cw - 8) / 2, 51, "Q" + h, HUE[grp % 8], 12);
-    }
-    lab(20, 104, `KV heads (${g})`, C.k, 11, "start");
-    for (let j = 0; j < g; j++) {
-      const x = 20 + j * per * cw, w = per * cw - 8;
-      sv.appendChild(svgEl("rect", { x, y: 114, width: w, height: 34, rx: 6, fill: HUE[j % 8] + "26", stroke: HUE[j % 8], "stroke-width": 1.4 }));
-      lab(x + w / 2, 135, `K${j} / V${j}`, HUE[j % 8], 12);
-      for (let h = j * per; h < (j + 1) * per; h++) {
-        sv.appendChild(svgEl("line", {
-          x1: 20 + h * cw + (cw - 8) / 2, y1: 64, x2: x + w / 2, y2: 114,
-          stroke: HUE[j % 8], "stroke-width": 1.2, opacity: .55,
-        }));
-      }
-    }
-    wrap.appendChild(sv);
-    const name = g === nh ? "MHA (Multi-Head Attention)" : g === 1 ? "MQA (Multi-Query Attention)" : "GQA (Grouped-Query Attention)";
-    note.innerHTML =
-      `<b style="color:${C.accent}">${name}</b> — ${nh} query heads, ${g} KV head${g > 1 ? "s" : ""}, ${per} quer${per > 1 ? "ies" : "y"} per group.<br>` +
-      `KV cache is <b style="color:${C.o}">${(nh / g).toFixed(0)}× smaller</b> than MHA. Q projection is unchanged; only W_k and W_v shrink.<br>` +
-      `<span style="color:${C.faint}">In code the K/V tensors are repeat_interleave'd back up to ${nh} heads before the matmul — ` +
-      `or, in a fused kernel, simply re-read. The saving is memory and bandwidth, not FLOPs.</span>`;
   }
   draw();
 }
@@ -826,8 +994,8 @@ function vizChinchilla(el, d) {
     const fm = x => x >= 1e12 ? (x / 1e12).toFixed(2) + "T" : x >= 1e9 ? (x / 1e9).toFixed(2) + "B" : (x / 1e6).toFixed(1) + "M";
     out.innerHTML =
       `budget C = 10^${logC} FLOPs &nbsp;(GPT-3 ≈ 3×10^23, GPT-4-class ≈ 10^25–10^26)<br>` +
-      `your choice:&nbsp; N = <b style="color:${C.q}">${fm(N)}</b> params, so D = C/(6N) = <b style="color:${C.k}">${fm(D)}</b> tokens ` +
-      `&nbsp;(<span style="color:${C.o}">${(D / N).toFixed(1)} tokens/param</span>) → predicted loss <b style="color:${C.o}">${L.toFixed(3)}</b><br>` +
+      `your choice:&nbsp; N = <b style="color:${C.fg}">${fm(N)}</b> params, so D = C/(6N) = <b style="color:${C.fg}">${fm(D)}</b> tokens ` +
+      `&nbsp;(<span style="color:${C.accent}">${(D / N).toFixed(1)} tokens/param</span>) → predicted loss <b style="color:${C.accent}">${L.toFixed(3)}</b><br>` +
       `<span style="color:${C.accent}">compute-optimal:</span> N* = ${fm(Nopt)}, D* = ${fm(Dopt)} (20 tok/param) → loss <b style="color:${C.accent}">${Lopt.toFixed(3)}</b><br>` +
       `<span style="color:${C.faint}">Δ = ${(L - Lopt).toFixed(3)} nats. ` +
       `Note the curve is <i>flat</i> near the optimum — which is why real labs deliberately over-train small models ` +

@@ -6,7 +6,7 @@
 <title>Ch 8 — The Transformer Block</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=11">
+<link rel="stylesheet" href="assets/style.css?v=12">
 </head>
 <body>
 <main>
@@ -49,26 +49,26 @@ Communicate, then compute. Repeat.</p>
 
     <!-- sublayer 1 -->
     <path d="M90 300 V270 H190" stroke="var(--ink-3,#775446)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
-    <rect x="195" y="252" width="120" height="34" rx="7" fill="var(--surface,#FBF4E4)" stroke="var(--dim-4,#3F6B14)" stroke-width="1.3"/>
-    <text x="255" y="273" fill="var(--dim-4,#3F6B14)" text-anchor="middle">RMSNorm</text>
+    <rect x="195" y="252" width="120" height="34" rx="7" fill="var(--surface,#FBF4E4)" stroke="var(--dim-4,#43590F)" stroke-width="1.3"/>
+    <text x="255" y="273" fill="var(--dim-4,#43590F)" text-anchor="middle">RMSNorm</text>
     <path d="M315 269 H345" stroke="var(--ink-3,#775446)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
-    <rect x="350" y="252" width="150" height="34" rx="7" fill="var(--surface,#FBF4E4)" stroke="var(--dim-1,#B4430A)" stroke-width="1.3"/>
-    <text x="425" y="273" fill="var(--dim-1,#B4430A)" text-anchor="middle">Multi-Head Attn</text>
-    <path d="M425 252 V215 H98" stroke="var(--dim-1,#B4430A)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
-    <circle cx="90" cy="215" r="9" fill="var(--paper,#E7D8BC)" stroke="var(--dim-1,#B4430A)" stroke-width="1.6"/>
-    <text x="90" y="219" fill="var(--dim-1,#B4430A)" text-anchor="middle" font-size="12">+</text>
+    <rect x="350" y="252" width="150" height="34" rx="7" fill="var(--surface,#FBF4E4)" stroke="var(--dim-1,#C25D35)" stroke-width="1.3"/>
+    <text x="425" y="273" fill="var(--dim-1,#C25D35)" text-anchor="middle">Multi-Head Attn</text>
+    <path d="M425 252 V215 H98" stroke="var(--dim-1,#C25D35)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <circle cx="90" cy="215" r="9" fill="var(--paper,#E7D8BC)" stroke="var(--dim-1,#C25D35)" stroke-width="1.6"/>
+    <text x="90" y="219" fill="var(--dim-1,#C25D35)" text-anchor="middle" font-size="12">+</text>
     <text x="270" y="208" fill="var(--ink-3,#775446)" font-size="10">residual add — the stream is never replaced</text>
 
     <!-- sublayer 2 -->
     <path d="M90 195 V165 H190" stroke="var(--ink-3,#775446)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
-    <rect x="195" y="147" width="120" height="34" rx="7" fill="var(--surface,#FBF4E4)" stroke="var(--dim-4,#3F6B14)" stroke-width="1.3"/>
-    <text x="255" y="168" fill="var(--dim-4,#3F6B14)" text-anchor="middle">RMSNorm</text>
+    <rect x="195" y="147" width="120" height="34" rx="7" fill="var(--surface,#FBF4E4)" stroke="var(--dim-4,#43590F)" stroke-width="1.3"/>
+    <text x="255" y="168" fill="var(--dim-4,#43590F)" text-anchor="middle">RMSNorm</text>
     <path d="M315 164 H345" stroke="var(--ink-3,#775446)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
-    <rect x="350" y="147" width="150" height="34" rx="7" fill="var(--surface,#FBF4E4)" stroke="var(--dim-3,#A3176B)" stroke-width="1.3"/>
-    <text x="425" y="168" fill="var(--dim-3,#A3176B)" text-anchor="middle">MLP / SwiGLU</text>
-    <path d="M425 147 V110 H98" stroke="var(--dim-3,#A3176B)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
-    <circle cx="90" cy="110" r="9" fill="var(--paper,#E7D8BC)" stroke="var(--dim-1,#B4430A)" stroke-width="1.6"/>
-    <text x="90" y="114" fill="var(--dim-1,#B4430A)" text-anchor="middle" font-size="12">+</text>
+    <rect x="350" y="147" width="150" height="34" rx="7" fill="var(--surface,#FBF4E4)" stroke="var(--dim-3,#B815B0)" stroke-width="1.3"/>
+    <text x="425" y="168" fill="var(--dim-3,#B815B0)" text-anchor="middle">MLP / SwiGLU</text>
+    <path d="M425 147 V110 H98" stroke="var(--dim-3,#B815B0)" stroke-width="1.2" fill="none" marker-end="url(#a8)"/>
+    <circle cx="90" cy="110" r="9" fill="var(--paper,#E7D8BC)" stroke="var(--dim-1,#C25D35)" stroke-width="1.6"/>
+    <text x="90" y="114" fill="var(--dim-1,#C25D35)" text-anchor="middle" font-size="12">+</text>
 
     <path d="M90 90 V45" stroke="var(--accent,#6A2E93)" stroke-width="1.6" fill="none" marker-end="url(#a8)"/>
     <text x="90" y="35" fill="var(--accent,#6A2E93)" text-anchor="middle">to next block</text>
@@ -479,9 +479,9 @@ what sparse autoencoders were invented to untangle, and it's the frontier of int
 
 </main>
 
-<script src="assets/chapters.js?v=11"></script>
-<script src="assets/course.js?v=11"></script>
-<script src="assets/viz.js?v=11"></script>
+<script src="assets/chapters.js?v=12"></script>
+<script src="assets/course.js?v=12"></script>
+<script src="assets/viz.js?v=12"></script>
 <script>initChapter("08");</script>
 </body>
 </html>

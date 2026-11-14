@@ -6,7 +6,7 @@
 <title>Ch 9 — Whole Architectures + End-to-End Shape Trace</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=11">
+<link rel="stylesheet" href="assets/style.css?v=12">
 </head>
 <body>
 <main>
@@ -74,7 +74,7 @@ target: [cat, sat, on,  the, mat]
 <p>This is the centrepiece of the chapter. A decoder-only model with <code>B=2, T=6, V=32000,
 d_model=512, n_head=8, d_head=64, d_ff=1376, n_layer=6</code>. Step through every tensor.</p>
 
-<div data-viz="trace" data-title="GPT-style forward pass: 18 steps from text to loss">
+<div data-viz="trace" data-title="GPT-style forward pass: 18 steps from text to loss" data-axismap='{"2":"batch","6":"time","512":"feat","1536":"feat","8":"head","64":"headdim","32000":"vocab"}'>
 <script type="application/json">[
 {"name":"Raw text","shape":"—","op":"\"The cat sat on the mat\"","why":"Two strings in a batch. Nothing is a tensor yet."},
 {"name":"Tokenize","shape":"(B=2, T=6)","op":"tokenizer(text)","why":"Each string becomes 6 integer token ids. dtype is int64. This is the only integer tensor in the whole forward pass — everything after it is float."},
@@ -353,9 +353,10 @@ sequence — more than the 8B model's own weights.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=11"></script>
-<script src="assets/course.js?v=11"></script>
-<script src="assets/viz.js?v=11"></script>
+<script src="assets/chapters.js?v=12"></script>
+<script src="assets/course.js?v=12"></script>
+<script src="assets/viz.js?v=12"></script>
+<script src="assets/axes.js?v=12"></script>
 <script>initChapter("09");</script>
 </body>
 </html>
