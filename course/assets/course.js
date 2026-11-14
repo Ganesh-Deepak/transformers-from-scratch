@@ -5,19 +5,35 @@
 
 /* ------------------------------------------------------------- storage */
 
+/* Progress lives in ONE localStorage key holding a JSON object. The original
+   version read it once at page load and then wrote its whole in-memory copy
+   back on every change — so with two tabs open (a chapter and the home page is
+   the normal case) the second tab to save silently erased everything the first
+   had recorded since it loaded. Every write now re-reads the stored object,
+   applies only its own change, and writes that back; and a `storage` event
+   from another tab refreshes the in-memory copy. */
 const Store = (() => {
   const KEY = "tfs-progress-v1";
-  let mem = {};
   let ok = true;
-  try { mem = JSON.parse(localStorage.getItem(KEY) || "{}"); }
-  catch (e) { ok = false; mem = {}; }
-  const save = () => { if (ok) { try { localStorage.setItem(KEY, JSON.stringify(mem)); } catch (e) { ok = false; } } };
+  const read = () => {
+    try { const v = JSON.parse(localStorage.getItem(KEY) || "{}"); return v && typeof v === "object" ? v : {}; }
+    catch (e) { ok = false; return null; }
+  };
+  let mem = read() || {};
+  const write = mutate => {
+    if (ok) { const fresh = read(); if (fresh) mem = fresh; }
+    mutate(mem);
+    if (ok) { try { localStorage.setItem(KEY, JSON.stringify(mem)); } catch (e) { ok = false; } }
+  };
+  window.addEventListener("storage", e => {
+    if (e.key === KEY || e.key === null) { const fresh = read(); if (fresh) mem = fresh; }
+  });
   return {
     get: k => mem[k],
-    set: (k, v) => { mem[k] = v; save(); },
-    remove: k => { delete mem[k]; save(); },
+    set: (k, v) => write(m => { m[k] = v; }),
+    remove: k => write(m => { delete m[k]; }),
     all: () => mem,
-    reset: () => { mem = {}; save(); },
+    reset: () => write(m => { Object.keys(m).forEach(k => delete m[k]); }),
     available: () => ok,
   };
 })();
@@ -250,6 +266,7 @@ function initQuizzes(currentId = "page") {
     h.appendChild(reset);
 
     const chosen = Array(items.length).fill(null);
+    const unlockers = [];
     const refreshStatus = () => {
       const answered = chosen.filter(v => v !== null).length;
       const correct = chosen.reduce((n, v, i) =>
@@ -318,13 +335,33 @@ function initQuizzes(currentId = "page") {
         };
       });
 
+      /* the inverse of lockChoice: back to the unanswered state */
+      unlockers[itemIndex] = () => {
+        delete item.dataset.answered;
+        chosen[itemIndex] = null;
+        opts.forEach((oo, jj) => {
+          oo.classList.remove("disabled", "correct", "wrong");
+          oo.removeAttribute("aria-disabled");
+          oo.setAttribute("aria-checked", "false");
+          oo.setAttribute("tabindex", jj === 0 ? "0" : "-1");
+        });
+        if (expl) expl.classList.remove("show");
+        announce.textContent = "";
+        Store.remove(key);
+      };
+
       const saved = Store.get(key);
       if (Number.isInteger(saved) && saved >= 0 && saved < opts.length) lockChoice(saved, false);
     });
 
+    /* Retry used to call location.reload(). In focus mode that threw the
+       reader out of their bite, restarted the sprint, reset every widget and
+       scrolled to the top. Reset the quiz in place instead. */
     reset.onclick = () => {
-      items.forEach((_, itemIndex) => Store.remove(`quiz:${currentId}:${quizIndex}:${itemIndex}`));
-      location.reload();
+      unlockers.forEach(u => u && u());
+      refreshStatus();
+      const first = quiz.querySelector(".opt");
+      if (first) first.focus();
     };
     refreshStatus();
   });
@@ -554,6 +591,12 @@ function buildStudyConsole(currentId, sections) {
   let activeIndex = -1;
   let timer = null;
   let secondsLeft = 0;
+  /* The countdown is a DEADLINE, not a count of setInterval ticks. Browsers
+     throttle intervals in background tabs (Chrome eventually to once a
+     minute), so counting ticks made a 10-minute sprint in a background tab
+     last far longer than 10 minutes. The interval now only repaints. */
+  let deadline = 0;
+  const remaining = () => Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
 
   const isComplete = index => !!Store.get(sectionDoneKey(currentId, groups[index].id));
   const nextIndex = () => {
@@ -605,21 +648,25 @@ function buildStudyConsole(currentId, sections) {
      Previously this lived inline in beginFocus and ran only on first entry,
      which is why the duration select saved a new value that nothing acted on
      until you left focus mode and came back. */
+  const tick = () => {
+    secondsLeft = remaining();
+    showTimer();
+    if (secondsLeft <= 0) {
+      stopTimer();
+      consoleEl.classList.add("sprint-finished");
+      message.textContent = "Sprint complete. Stop guilt-free, or finish the current thought.";
+    }
+  };
   const startSprint = () => {
     stopTimer();
     consoleEl.classList.remove("sprint-finished");
-    secondsLeft = parseInt(duration.value, 10) * 60;
+    deadline = Date.now() + parseInt(duration.value, 10) * 60 * 1000;
+    secondsLeft = remaining();
     showTimer();
-    timer = setInterval(() => {
-      secondsLeft--;
-      showTimer();
-      if (secondsLeft <= 0) {
-        stopTimer();
-        consoleEl.classList.add("sprint-finished");
-        message.textContent = "Sprint complete. Stop guilt-free, or finish the current thought.";
-      }
-    }, 1000);
+    timer = setInterval(tick, 1000);
   };
+  // returning to a backgrounded tab: repaint at once rather than at the next tick
+  document.addEventListener("visibilitychange", () => { if (timer && !document.hidden) tick(); });
 
   /* requestAnimationFrame does not fire while a tab is hidden or backgrounded,
      and these callbacks are what actually perform the scroll. Without a
@@ -687,6 +734,7 @@ function buildStudyConsole(currentId, sections) {
   const exitFocus = () => {
     const restoreIndex = activeIndex >= 0 ? activeIndex : nextIndex();
     stopTimer();
+    consoleEl.classList.remove("sprint-finished");
     document.body.classList.remove("focus-mode");
     main.querySelectorAll(":scope > .focus-hidden").forEach(el => el.classList.remove("focus-hidden"));
     activeIndex = -1;
@@ -721,7 +769,7 @@ function buildStudyConsole(currentId, sections) {
        continuing after the budget has already run out — if you have decided
        to keep going, a fresh sprint is more honest than a stuck 0:00 and a
        "sprint complete" banner that no longer describes anything. */
-    if (entering || secondsLeft <= 0) startSprint();
+    if (entering || remaining() <= 0) startSprint();
     message.textContent = `Focused on “${groups[index].label}”. Everything else is temporarily tucked away.`;
     refresh();
     updateNavigation(index);
@@ -770,7 +818,10 @@ function buildStudyConsole(currentId, sections) {
   });
 
   refresh();
-  saveResume(currentId, groups[nextIndex()]);
+  /* Not saving a resume point here on purpose: merely opening a chapter for a
+     quick look used to move the home page's "continue" away from the bite you
+     were actually working in. Resume is saved on engagement — focusing a
+     bite, marking a section, or scrolling through one (initScrollspy). */
   updateNavigation(nextIndex());
   const api = {
     beginFocus,
@@ -894,6 +945,12 @@ function initScrollspy(sections, currentId) {
     links.set(a.getAttribute("href").slice(1), a));
 
   let active = null;
+  /* Only a person scrolling counts as reading. The observer also fires on
+     load, and programmatic scrolls (anchors, entering a bite) fire scroll
+     events, so neither may move the resume pointer by itself. */
+  let engaged = false;
+  ["wheel", "touchmove", "keydown", "pointerdown"].forEach(t =>
+    window.addEventListener(t, () => { engaged = true; }, { passive: true, once: true }));
   const setActive = id => {
     if (id === active) return;
     active = id;
@@ -901,7 +958,7 @@ function initScrollspy(sections, currentId) {
     const a = links.get(id);
     if (a) a.classList.add("active");
     const section = sections.find(s => s.id === id);
-    if (currentId && section) saveResume(currentId, section);
+    if (currentId && section && engaged) saveResume(currentId, section);
   };
 
   const io = new IntersectionObserver(entries => {
@@ -988,6 +1045,16 @@ function initKeyboard(currentId) {
   document.addEventListener("keydown", e => {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    /* Arrow keys are also how you move between quiz options, between the axes
+       of a shape badge, and between the bits of the number explorer. Those
+       handlers call preventDefault, but this listener used to ignore that —
+       so pressing Right inside a quiz ALSO jumped to the next chapter. A key
+       something else has already handled, or any key pressed while focus is
+       inside an interactive component, is not a page shortcut. */
+    if (e.defaultPrevented && e.key !== "Escape") return;
+    const inWidget = e.target.closest &&
+      e.target.closest('[role="radio"], [role="radiogroup"], .shp, [data-viz], .study-console, .bite-footer');
+    if (inWidget && e.key !== "Escape" && e.key !== "/") return;
 
     if (e.key === "/" && !typing) {
       e.preventDefault();

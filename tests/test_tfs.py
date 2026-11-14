@@ -450,6 +450,27 @@ def test_dpo_partition_function_cancels():
 
 # ==================================================== runner
 
+def test_number_format_ranges_derive_from_bit_counts():
+    """Ch 0's claim: max, min normal and eps of every float format follow from
+    (exponent bits, mantissa bits) and the rule for reserved patterns alone."""
+    import math
+    def derive(E, M, flavour):
+        bias = 2 ** (E - 1) - 1
+        top_field = 2 ** E - 2 if flavour == "ieee" else 2 ** E - 1
+        top_mant = 2 ** M - 2 if flavour == "fn" else 2 ** M - 1
+        return ((1 + top_mant / 2 ** M) * 2.0 ** (top_field - bias), 2.0 ** (1 - bias), 2.0 ** -M)
+    for dt, E, M, fl in [(torch.float32, 8, 23, "ieee"), (torch.float16, 5, 10, "ieee"),
+                         (torch.bfloat16, 8, 7, "ieee"), (torch.float8_e5m2, 5, 2, "ieee"),
+                         (torch.float8_e4m3fn, 4, 3, "fn")]:
+        mx, tiny, eps = derive(E, M, fl)
+        fi = torch.finfo(dt)
+        assert math.isclose(mx, fi.max, rel_tol=1e-12) and tiny == fi.tiny and eps == fi.eps, dt
+    # and the two facts Ch 12 is built on
+    assert torch.tensor(0.999).to(torch.bfloat16).item() == 1.0          # Adam's beta2 is 1 in bf16
+    assert torch.tensor(2.0 ** -25).half().item() == 0                     # fp16 flushes at 2^-25 ...
+    assert torch.tensor(3e-8).half().item() == 2.0 ** -24                  # ... not at 2^-24
+
+
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

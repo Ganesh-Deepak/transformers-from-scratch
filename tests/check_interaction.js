@@ -50,6 +50,9 @@ const CLOCK_PARTS = [
   "(function () {",
   "  var now = 0, seq = 1, tasks = [];",
   "  window.__realTimeout = window.setTimeout.bind(window);",
+  // Date.now moves with the fake clock, so deadline-based timers are testable
+  "  var realNow = Date.now.bind(Date), base = realNow();",
+  "  Date.now = function () { return base + now; };",
   "  window.setInterval = function (fn, ms) {",
   "    var t = { id: seq++, fn: fn, ms: Math.max(1, ms || 1), repeat: true };",
   "    t.next = now + t.ms; tasks.push(t); return t.id;",
@@ -73,8 +76,19 @@ const CLOCK_PARTS = [
   "      else tasks.splice(tasks.indexOf(due), 1);",
   "      try { due.fn(); } catch (e) {}",
   "    }",
-  "    now = end;",
+    "    now = end;",
   "  };",
+  // a frozen background tab: wall-clock time passes but no interval fires
+  "  window.__jump = function (ms) { now += ms; };",
+  // every run starts from empty storage, optionally pre-seeded by the scenario
+  "  try { localStorage.clear(); if (window.__SEED__) for (var k in window.__SEED__) localStorage.setItem(k, window.__SEED__[k]); } catch (e) {}",
+  // record and cancel any page navigation, so 'must not navigate' is observable
+  "  window.__navs = [];",
+  "  if (window.navigation) window.navigation.addEventListener('navigate', function (e) {",
+  "    if (e.hashChange) return;",
+  "    window.__navs.push(e.destination.url.split('/').pop());",
+  "    if (e.cancelable) e.preventDefault();",
+  "  });",
   "})();",
   "</scr" + "ipt>",
 ].join("\n");
@@ -100,6 +114,8 @@ const HELPERS = [
   "  return h.length === 1 ? h[0].textContent.trim().slice(0, 40) : h.length + ' headings';",
   "};",
   "var finished = function () { return $('.study-console').classList.contains('sprint-finished'); };",
+  "var key = function (el, k) { el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); };",
+  "var store = function () { try { return JSON.parse(localStorage.getItem('tfs-progress-v1') || '{}'); } catch (e) { return {}; } };",
   // There is one .bite-footer per bite and only the active one is shown, so a
   // bare querySelector('.bite-prev') grabs footer 0's button -- which is
   // correctly DISABLED. Drive the visible footer, the way a reader would.
@@ -113,12 +129,14 @@ const HELPERS = [
   "};",
 ].join("\n");
 
-function run(scenarioSrc, page) {
+function run(scenarioSrc, page, seed) {
   let src = fs.readFileSync(path.join(COURSE, page || PAGE), "utf8");
   const base = "file:///" + COURSE.split(path.sep).join("/");
   src = src.replace(/href="assets\//g, 'href="' + base + '/assets/')
            .replace(/src="assets\//g, 'src="' + base + '/assets/');
-  src = src.replace("</head>", CLOCK_PARTS + "\n</head>");
+  const seedJs = "<scr" + "ipt>window.__SEED__ = " + JSON.stringify(seed || {}) + ";</scr" + "ipt>";
+  // before the page's own theme snippet, which reads localStorage
+  src = src.replace("<meta charset=\"utf-8\">", "<meta charset=\"utf-8\">\n" + seedJs + "\n" + CLOCK_PARTS);
 
   const runner = [
     '<pre id="__result"></pre>',
@@ -272,6 +290,177 @@ else {
   ok(a.answeredAfterAxisClick === "no", "clicking an axis does not answer the question");
   ok(a.pinned !== "", "clicking an axis pins it", a.pinned);
   ok(a.answeredAfterOptionClick === "1", "clicking the option still answers it");
+}
+
+
+/* ----------------------------- 6. state machines found in the audit ------ */
+console.log("\n state machines");
+
+// 6a. keyboard shortcuts must not hijack keys a component already handled
+const kb = run([
+  "var r = {};",
+  "var opt = $('.qitem .opt');",
+  "opt.focus(); key(opt, 'ArrowRight'); key(opt, 'ArrowLeft');",
+  "r.navsAfterQuizArrows = window.__navs.slice();",
+  "var shp = $('.shp'); shp.focus(); key(shp, 'ArrowRight'); key(shp, 'ArrowLeft');",
+  "r.navsAfterBadgeArrows = window.__navs.slice();",
+  "key(document.body, 'ArrowRight');",                 // control: on the page itself it SHOULD navigate
+  "r.navsAfterBodyArrow = window.__navs.slice();",
+  "return r;",
+].join("\n"));
+if (kb.error) ok(false, "keyboard scenario ran", kb.error);
+else {
+  ok(kb.navsAfterBodyArrow.length === 1, "control: Right on the page still goes to the next chapter",
+     JSON.stringify(kb.navsAfterBodyArrow));
+  ok(kb.navsAfterQuizArrows.length === 0, "arrow keys inside a quiz do not change chapter",
+     JSON.stringify(kb.navsAfterQuizArrows));
+  ok(kb.navsAfterBadgeArrows.length === 0, "arrow keys inside a shape badge do not change chapter",
+     JSON.stringify(kb.navsAfterBadgeArrows));
+}
+
+// 6b. quiz Retry resets in place: no reload, nothing left answered
+const qr = run([
+  "window.__alive = 'same page';",
+  "var item = $('.qitem'); var quiz = item.closest('.quiz');",
+  "item.querySelectorAll('.opt')[0].click();",
+  "var r = { answeredBefore: !!item.dataset.answered, storedBefore: Object.keys(store()).filter(function (k) { return k.indexOf('quiz:') === 0; }).length };",
+  "quiz.querySelector('.quiz-reset').click();",
+  "r.alive = window.__alive; r.navs = window.__navs.length;",
+  "r.answeredAfter = !!item.dataset.answered;",
+  "r.lockedOpts = item.querySelectorAll('.opt.disabled, .opt.correct, .opt.wrong').length;",
+  "r.explShown = !!item.querySelector('.expl.show');",
+  "r.storedAfter = Object.keys(store()).filter(function (k) { return k.indexOf('quiz:') === 0; }).length;",
+  "item.querySelectorAll('.opt')[1].click();",
+  "r.canAnswerAgain = !!item.dataset.answered;",
+  "return r;",
+].join("\n"));
+if (qr.error) ok(false, "quiz retry scenario ran", qr.error);
+else {
+  ok(qr.answeredBefore && qr.storedBefore === 1, "an answer is recorded");
+  ok(qr.alive === "same page" && qr.navs === 0, "Retry does not reload the page");
+  ok(!qr.answeredAfter && qr.lockedOpts === 0 && !qr.explShown, "Retry returns the question to unanswered",
+     `answered=${qr.answeredAfter} locked=${qr.lockedOpts} expl=${qr.explShown}`);
+  ok(qr.storedAfter === 0, "Retry clears the stored answer");
+  ok(qr.canAnswerAgain, "the question can be answered again");
+}
+
+// 6c. two tabs: one tab's write must not erase another tab's
+const st = run([
+  "var r = {};",
+  "var mark = document.querySelector('.ex-check'); mark.click();",              // tab A writes
+  "var other = store(); other['written-by-another-tab'] = true;",               // tab B writes behind its back
+  "localStorage.setItem('tfs-progress-v1', JSON.stringify(other));",
+  "$('.quiz .opt').click();",                                                   // tab A writes again
+  "var now = store();",
+  "r.otherSurvived = now['written-by-another-tab'] === true;",
+  "r.ownKeys = Object.keys(now).filter(function (k) { return k.indexOf('exercise:') === 0 || k.indexOf('quiz:') === 0; }).length;",
+  "return r;",
+].join("\n"));
+if (st.error) ok(false, "storage scenario ran", st.error);
+else {
+  ok(st.otherSurvived, "a write from another tab survives this tab's next save");
+  ok(st.ownKeys === 2, "and this tab's own writes are kept too", String(st.ownKeys));
+}
+
+// 6d. the sprint is a wall-clock deadline: a throttled background tab cannot stretch it
+const bg = run([
+  "var r = {};",
+  "setDuration(10); goBite(0);",
+  "r.start = timer();",
+  "window.__jump(7 * 60 * 1000);",                    // 7 minutes pass, no interval fires
+  "document.dispatchEvent(new Event('visibilitychange'));",
+  "r.afterReturn = timer();",
+  "window.__jump(4 * 60 * 1000);",
+  "window.__advance(1000);",                          // the next real tick
+  "r.afterDeadline = timer(); r.finished = finished();",
+  "footBtn('exit');",
+  "r.finishedAfterExit = finished();",
+  "return r;",
+].join("\n"));
+if (bg.error) ok(false, "background-tab scenario ran", bg.error);
+else {
+  ok(bg.start === "10:00", "sprint starts at 10:00", bg.start);
+  ok(bg.afterReturn === "3:00", "after 7 min in a background tab it reads 3:00, not 10:00", bg.afterReturn);
+  ok(bg.afterDeadline === "0:00" && bg.finished, "it expires on the wall clock", bg.afterDeadline);
+  ok(bg.finishedAfterExit === false, "leaving focus mode clears the finished state");
+}
+
+// 6e. merely opening a chapter must not move the home page's resume pointer
+const elsewhere = { chapterId: "12", sectionId: "s-12-3-how-fp16-kills-a-training-run", chapter: "x",
+                    section: "x", file: "ch12-precision.html", updated: 1 };
+const rs = run("return { resume: store().resume };", "ch05-attention.html",
+               { "tfs-progress-v1": JSON.stringify({ resume: elsewhere }) });
+if (rs.error) ok(false, "resume scenario ran", rs.error);
+else ok(rs.resume && rs.resume.chapterId === "12", "visiting a chapter leaves the resume pointer where you were",
+        rs.resume ? "now " + rs.resume.chapterId : "cleared");
+
+// 6f. a theme change rebuilds widgets but keeps what the reader set
+const th = run([
+  "var r = {};",
+  "var w = document.querySelector('[data-viz=\"float\"]');",
+  "var sel = w.querySelector('select'); sel.value = 'bf16'; sel.dispatchEvent(new Event('change', { bubbles: true }));",
+  "w.querySelector('.vf-bit[data-bit=\"0\"]').click();",
+  "r.before = w.querySelector('.vf-value').textContent;",
+  "r.fmtBefore = w.querySelector('select').value;",
+  "document.querySelector('.theme-toggle').click();",
+  "r.after = w.querySelector('.vf-value').textContent;",
+  "r.fmtAfter = w.querySelector('select').value;",
+  "return r;",
+].join("\n"), "ch00-numbers.html");
+if (th.error) ok(false, "theme-rebuild scenario ran", th.error);
+else ok(th.before === th.after && th.fmtBefore === th.fmtAfter && th.fmtAfter === "bf16",
+        "the bit explorer keeps its format and bit pattern across a theme toggle",
+        `${th.fmtBefore}:${th.before} -> ${th.fmtAfter}:${th.after}`);
+
+const sm = run([
+  "var w = document.querySelector('[data-viz=\"softmax\"]');",
+  "var sl = w.querySelector('input[type=range]'); sl.value = '25'; sl.dispatchEvent(new Event('input', { bubbles: true }));",
+  "var before = w.querySelector('input[type=range]').value;",
+  "document.querySelector('.theme-toggle').click();",
+  "return { before: before, after: document.querySelector('[data-viz=\"softmax\"] input[type=range]').value };",
+].join("\n"), "ch13-decoding.html");
+if (sm.error) ok(false, "slider-rebuild scenario ran", sm.error);
+else ok(sm.before === "25" && sm.after === "25", "a widget slider survives a theme toggle", `${sm.before} -> ${sm.after}`);
+
+/* --------------------------------------------- 7. the bit explorer -------- */
+console.log("\n the bit explorer (Ch 00)");
+const fx = run([
+  "var r = {};",
+  "var w = document.querySelector('[data-viz=\"float\"]');",
+  "var sel = w.querySelector('select'), num = w.querySelector('.vf-num');",
+  "var val = function () { return w.querySelector('.vf-value').textContent; };",
+  "var setFmt = function (f) { sel.value = f; sel.dispatchEvent(new Event('change', { bubbles: true })); };",
+  "var type = function (t) { num.value = t; num.dispatchEvent(new Event('change', { bubbles: true })); };",
+  "setFmt('bf16'); type('0.1'); r.bf16_01 = val();",
+  "setFmt('fp16'); r.fp16_01 = val();",                 // same number, re-encoded in the new format
+  "type('70000'); r.fp16_70000 = val();",
+  "setFmt('e4m3'); type('500'); r.e4m3_500 = val();",
+  "type('300'); r.e4m3_300 = val();",
+  "[].slice.call(w.querySelectorAll('.vf-preset')).filter(function (b) { return b.textContent === 'max'; })[0].click();",
+  "r.e4m3_max = val(); r.max_label = w.querySelector('.vf-max').textContent;",
+  "setFmt('e2m1'); type('5'); r.fp4_5 = val();",
+  "setFmt('fp32'); type('1'); r.bits1 = w.querySelectorAll('.vf-bit').length;",
+  "var b = w.querySelector('.vf-bit[data-bit=\"23\"]');",  // lowest exponent bit of 1.0 (01111111) -> 0 gives 0.5
+  "b.click(); r.afterFlip = val(); r.pressed = w.querySelector('.vf-bit[data-bit=\"23\"]').getAttribute('aria-pressed');",
+  "r.focusKept = document.activeElement && document.activeElement.dataset.bit === '23';",
+  "key(document.activeElement, 'ArrowRight'); r.navs = window.__navs.length;",
+  "type('not a number'); r.invalid = num.getAttribute('aria-invalid'); r.unchanged = val();",
+  "return r;",
+].join("\n"), "ch00-numbers.html");
+if (fx.error) ok(false, "explorer scenario ran", fx.error);
+else {
+  ok(fx.bf16_01 === "0.10009766", "bf16 stores 0.1 as 0.10009766", fx.bf16_01);
+  ok(fx.fp16_01 === "0.099975586", "switching format re-encodes the same number", fx.fp16_01);
+  ok(fx.fp16_70000 === "+inf", "fp16 overflows 70000 to infinity", fx.fp16_70000);
+  ok(fx.e4m3_500 === "448" && fx.e4m3_300 === "288", "e4m3 saturates 500 to 448 and rounds 300 to 288",
+     `${fx.e4m3_500} ${fx.e4m3_300}`);
+  ok(fx.e4m3_max === "448" && fx.max_label === "448", "the max preset and the derived max agree", fx.e4m3_max);
+  ok(fx.fp4_5 === "4", "fp4 rounds the tie 5 to 4 (even mantissa)", fx.fp4_5);
+  ok(fx.bits1 === 32, "fp32 shows 32 clickable bits", String(fx.bits1));
+  ok(fx.afterFlip === "0.5" && fx.pressed === "false", "clicking a bit flips it and re-decodes", fx.afterFlip);
+  ok(fx.focusKept, "focus stays on the bit you clicked");
+  ok(fx.navs === 0, "arrow keys on a bit do not change chapter");
+  ok(fx.invalid === "true" && fx.unchanged === "0.5", "invalid input is flagged and ignored");
 }
 
 /* ------------------------------- 5. every chapter, condensed -------------- */

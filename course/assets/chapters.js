@@ -5,9 +5,11 @@
 
 const PARTS = [
   {
-    n: "Part 0", t: "Learning to See Tensors",
-    d: "The visual foundation everything else stands on",
+    n: "Part 0", t: "Learning to See Numbers and Tensors",
+    d: "The foundation everything else stands on: what a number is in a machine, and how numbers become tensors",
     ch: [
+      { id: "00", f: "ch00-numbers.html", t: "Numbers in a Machine: int8 to fp32, bf16, fp8 and NVFP4",
+        s: "Sign, exponent, mantissa; derive any format's range yourself; block scaling and quantization", tag: "90 min" },
       { id: "01", f: "ch01-tensors.html", t: "Tensors, Shapes, and How to Actually See Them",
         s: "Axes, rank, the mental model that makes every later shape obvious", tag: "60 min" },
       { id: "02", f: "ch02-matmul.html", t: "Matrix Multiplication as a Machine",
@@ -48,8 +50,8 @@ const PARTS = [
         s: "Every gradient by hand: softmax, cross-entropy, RMSNorm, attention — checked against autograd", tag: "100 min" },
       { id: "11", f: "ch11-training.html", t: "Training a Transformer",
         s: "Cross-entropy, teacher forcing, AdamW, warmup+cosine, and the tricks that matter", tag: "80 min" },
-      { id: "12", f: "ch12-precision.html", t: "Numbers: fp32, fp16, bf16, fp8",
-        s: "What a float actually is, why fp16 training NaNs, loss scaling, and where fp32 survives", tag: "85 min" },
+      { id: "12", f: "ch12-precision.html", t: "Precision in Training: fp16, bf16, fp8 and the Loss Scale",
+        s: "How fp16 kills a converging run, loss scaling, why bf16 won, what stays in fp32, fp8 and fp4 training", tag: "85 min" },
     ]
   },
   {

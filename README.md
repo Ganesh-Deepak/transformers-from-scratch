@@ -23,7 +23,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 # 3. Confirm everything works
-python tests/test_tfs.py        # 30 tests, ~1 minute
+python tests/test_tfs.py        # 31 tests, ~1 minute
 ```
 
 Work through the chapters **in order**. Parts 0 and I look elementary — do not skip them.
@@ -45,10 +45,11 @@ or removed.
 ## What's here
 
 ```
-course/            26 interactive chapters. Open with serve.py. This is the course.
+course/            27 interactive chapters. Open with serve.py. This is the course.
   index.html         roadmap, progress tracking, the dimension cheat sheet
-  ch01..ch26         the chapters
-  assets/            style.css, course.js (quiz engine), viz.js (12 widgets)
+  ch00..ch26         the chapters (ch00: number formats, from first principles)
+  assets/            style.css, course.js (quiz engine), viz.js (13 widgets),
+                     numfmt.js (every number format, verified against PyTorch)
                      chapters.js — the outline; chapter order lives here and nowhere else
 
 notebooks/         Runnable Jupyter notebooks, one per key chapter
@@ -58,7 +59,7 @@ tfs/               Reference implementation — working, tested code
   train.py           full training loop; `python -m tfs.train` trains a real model
   dpo.py             DPO, SimPO, sequence log-probs
 tests/
-  test_tfs.py        30 tests — every one checks a claim the course makes
+  test_tfs.py        31 tests — every one checks a claim the course makes
   run_notebooks.py   executes all notebook code cells as a smoke test
 data/              downloaded corpus + trained tokenizers (created on first run)
 ```
@@ -72,7 +73,7 @@ data/              downloaded corpus + trained tokenizers (created on first run)
 
 | Part | Chapters | What you get |
 |---|---|---|
-| **0 · Seeing tensors** | 1–2 | Shapes, strides, broadcasting, matmul, einsum. The foundation everything else stands on. |
+| **0 · Seeing numbers and tensors** | 0–2 | **What a number is in a machine** — int8 to fp32, bf16, fp8, MXFP4 and NVFP4, with every range derived from the bit counts. Then shapes, strides, broadcasting, matmul, einsum. |
 | **I · Text → vectors** | 3–4 | BPE from scratch; embeddings; **the residual stream** |
 | **II · Attention** | 5–7 | Attention derived (incl. why √d_k); the multi-head reshape dance; RoPE |
 | **III · The block and the model** | 8–12 | The block, whole architectures, end-to-end shape trace, **every gradient derived by hand**, training, then **what a float actually is** |
@@ -81,7 +82,7 @@ data/              downloaded corpus + trained tokenizers (created on first run)
 | **VI · Making it useful** | 23–25 | SFT/RLHF/PPO, **DPO derived line by line**, GRPO & RLVR |
 | **VII · Capstone** | 26 | Build the whole thing: RMSNorm+RoPE+GQA+SwiGLU+cache, trained, DPO-aligned |
 
-~35 hours of work. 91 quiz questions, 86 exercises, 12 interactive widgets.
+~37 hours of work. 100 quiz questions, 103 exercise and practice sets, 13 interactive widgets.
 
 ### Four chapters that are usually missing
 
@@ -91,7 +92,7 @@ where the argument needs them, not appended as an appendix:
 | Ch | | |
 |---|---|---|
 | **10** | The backward pass, derived | After you can trace a forward pass (Ch 9), before you are asked to train anything (Ch 11) — "training diverged" is unreadable until you know what flows backwards. Every gradient checked against autograd on the page. |
-| **12** | fp32 / fp16 / bf16 / fp8 | Straight after training, because "my loss went to NaN" is the question it answers. Measured on this repo's own model: **36% of gradients silently flush to zero in fp16** once it converges. |
+| **12** | Precision in training | Straight after training, because "my loss went to NaN" is the question it answers. Measured on this repo's own model: the share of gradients fp16 silently zeroes climbs from **0.01% at step 0 to 62% by step 1200**, as the model converges. (The format primer itself is Ch 0.) |
 | **14** | The GPU and the roofline | Before the memory-wall chapter, which was already doing roofline arithmetic it never justified. Ends with: a 7B model has a hard ceiling of **239 tokens/s at batch 1**, and no kernel can beat it. |
 | **19** | Distributed training | Before MoE, because expert parallelism is meaningless without the vocabulary. Every strategy costed in **bytes on the wire**. |
 
@@ -103,6 +104,7 @@ These are the answer to "I can't picture tensor dimensions." Drag the sliders.
 
 | Widget | Chapter | What it makes concrete |
 |---|---|---|
+| **float** | 0, 12 | Every bit of fp32, bf16, fp16, fp8 and fp4, clickable; the decode, the gap, and the range formulas with this format's numbers substituted |
 | **matmul** | 2 | Which row and column feed each output cell; the shared dim vanishing |
 | **tensor** | 1, 4 | A rank-3 tensor drawn as labelled slabs |
 | **broadcast** | 2 | Shapes aligning from the right, with the failure case |
@@ -135,7 +137,7 @@ Everything the course claims is checked by a test. Notable ones:
 | `test_param_count_matches_formula` | The analytic parameter formula matches the real model |
 
 ```powershell
-python tests/test_tfs.py         # 30 tests
+python tests/test_tfs.py         # 31 tests
 python tests/run_notebooks.py    # executes every notebook's code
 
 cd tests && npm install jsdom && npm run check:all
@@ -145,7 +147,8 @@ Three suites, each answering a different question:
 
 | suite | question | how |
 |---|---|---:|
-| `check_ui.js` | is it **built** and legible? | jsdom: 727 checks — WCAG contrast for every colour pair in both themes, axis hues >=30 degrees apart, manifest integrity, every internal link, and the full interface on all 26 chapters |
+| `check_ui.js` | is it **built** and legible? | jsdom: 753 checks — WCAG contrast for every colour pair in both themes, axis hues >=30 degrees apart, manifest integrity, every internal link, and the full interface on all 27 chapters |
+| `check_numfmt.js` | are the **number formats** right? | every range, and 643 casts, against PyTorch's real fp16, bf16, fp8 e4m3 and e5m2; a brute-force oracle for fp6 and fp4 |
 | `check_responsive.js` | does anything **overflow**? | real Chrome at 320/375/390/430/768/1024/1440/1920, each rendered in a fixed-width iframe so the narrow widths are genuine |
 | `check_interaction.js` | does it **work** when pressed? | real Chrome with a fake clock: drives clicks through every bite of every chapter and advances a 15-minute sprint in milliseconds |
 

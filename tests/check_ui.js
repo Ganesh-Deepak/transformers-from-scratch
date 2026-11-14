@@ -166,8 +166,11 @@ console.log("\n=== MANIFEST INTEGRITY ==========================");
 
   ok(entries.length > 0, "manifest parses", `${entries.length} entries`);
 
-  const seq = entries.every((e, i) => e.id === String(i + 1).padStart(2, "0"));
-  ok(seq, "ids run 01..NN with no gaps or repeats",
+  // Chapter 00 (number formats) sits before 01, so the sequence may start at
+  // either 00 or 01 -- but must then run without gaps or repeats.
+  const start = entries.length && entries[0].id === "00" ? 0 : 1;
+  const seq = entries.every((e, i) => e.id === String(i + start).padStart(2, "0"));
+  ok(seq, "ids run " + String(start).padStart(2, "0") + "..NN with no gaps or repeats",
      entries.map(e => e.id).join(","));
 
   const mismatched = entries.filter(e => e.file.slice(2, 4) !== e.id);

@@ -38,21 +38,21 @@ const COURSE = path.join(__dirname, "..", "course");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "tfs-resp-"));
 
 const WIDTHS = [320, 375, 390, 430, 768, 1024, 1440, 1920];
-const PAGES = ["index.html", "ch01-tensors.html", "ch05-attention.html", "ch06-mha.html",
-               "ch11-training.html", "ch16-gqa-mla.html", "ch17-flashattention.html",
+const PAGES = ["index.html", "ch00-numbers.html", "ch01-tensors.html", "ch05-attention.html", "ch06-mha.html",
+               "ch11-training.html", "ch12-precision.html", "ch16-gqa-mla.html", "ch17-flashattention.html",
                "ch19-distributed.html", "ch23-sft-rlhf.html"];
 
 /* Runs INSIDE the harness page, against the iframe's window/document. */
 const PROBE = `
 function probe(W, D) {
   var d = D.documentElement, b = D.body;
-  var vw = W.innerWidth;
+  var vw = W.innerWidth, cw = d.clientWidth;   // clientWidth excludes the scrollbar
   var wide = [];
   var all = D.querySelectorAll("body *");
   for (var i = 0; i < all.length; i++) {
     var el = all[i];
     var r = el.getBoundingClientRect();
-    if (r.width > 0 && r.right > vw + 1) {
+    if (r.width > 0 && r.right > cw + 1) {
       // An ancestor that scrolls or clips owns its overflow, and that is fine.
       // Walk real computed styles: the old check matched tag names and inline
       // style attributes, which missed .tw wrappers and any new container.
@@ -73,7 +73,11 @@ function probe(W, D) {
     docScrollW: d.scrollWidth,
     clientW: d.clientWidth,
     bodyScrollW: b.scrollWidth,
-    overflows: d.scrollWidth > d.clientWidth + 1,
+    // body { overflow-x: clip } hides runaway content WITHOUT growing
+    // scrollWidth, so scrollWidth alone can pass a page whose content is cut
+    // off at the edge. Any element past the viewport that only the body's clip
+    // is hiding counts as an overflow too.
+    overflows: d.scrollWidth > d.clientWidth + 1 || wide.length > 0,
     offenders: wide.slice(0, 4)
   });
 }

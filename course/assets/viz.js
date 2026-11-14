@@ -837,12 +837,205 @@ function vizChinchilla(el, d) {
 }
 
 /* ============================================================
+   13. FLOAT — the bit explorer (Ch 00, Ch 12)
+   Click a bit, or type a number. Everything shown is computed from
+   (E, M, flavour) by numfmt.js — the engine tests/check_numfmt.js
+   verifies against PyTorch's real dtypes.
+   ============================================================ */
+function vizFloat(el, d) {
+  const NF = window.TFS_NUMFMT;
+  if (!NF) { el.innerHTML = '<div class="tiny">numfmt.js not loaded</div>'; return; }
+  const order = (d.formats || "fp32,bf16,fp16,e4m3,e5m2,e2m1").split(",");
+  panel(el, "The bit explorer",
+    "Click any bit to flip it, or type a number to see where it lands. Every field is decoded live, using this format's own bias.");
+  const css = n => (getComputedStyle(document.documentElement).getPropertyValue(n) || "").trim();
+  const COL = { s: css("--stamp") || C.danger, e: C.accent, m: C.dim };
+
+  // State lives on the host element, which survives a theme rebuild, so the
+  // bit pattern you built by clicking is not lost when the palette changes.
+  let st = {};
+  try { st = JSON.parse(el.dataset.vizFloat || "{}"); } catch (e) { st = {}; }
+  let key = order.includes(st.key) ? st.key : (order.includes(d.format) ? d.format : order[0]);
+  let typed = "typed" in st ? (st.typed === null ? NaN : st.typed) : (d.value !== undefined ? +d.value : 0.1);
+  if (st.negZero) typed = -0;
+  let pattern = typeof st.pattern === "number" ? st.pattern : null;
+  const save = () => {
+    el.dataset.vizFloat = JSON.stringify({ key, pattern,
+      typed: Number.isFinite(typed) ? typed : (Number.isNaN(typed) ? null : typed > 0 ? 1e999 : -1e999),
+      negZero: Object.is(typed, -0) });
+  };
+
+  const row = ctlRow(el);
+  const fl = document.createElement("label");
+  fl.innerHTML = 'format <select class="vf-fmt">' +
+    order.map(k => `<option value="${k}">${NF.formats[k].label}</option>`).join("") + "</select>";
+  row.appendChild(fl);
+  const sel = fl.querySelector("select"); sel.value = key;
+  const nl = document.createElement("label");
+  nl.innerHTML = 'number <input class="vf-num" type="text" inputmode="decimal" size="12" aria-label="number to encode">';
+  row.appendChild(nl);
+  const num = nl.querySelector("input");
+  const presets = document.createElement("div");
+  presets.className = "vf-presets";
+  presets.style.cssText = "display:flex;flex-wrap:wrap;gap:.35rem;margin:-.4rem 0 .9rem";
+  el.appendChild(presets);
+
+  const bitsWrap = document.createElement("div");
+  bitsWrap.className = "vf-bits";
+  bitsWrap.style.cssText = "overflow-x:auto;padding:2px 2px 6px";
+  el.appendChild(bitsWrap);
+  const out = document.createElement("div");
+  out.className = "vf-out";
+  out.style.cssText = "margin-top:10px;font-family:var(--mono);font-size:12.5px;line-height:1.75;color:var(--ink-2);overflow-wrap:anywhere";
+  out.setAttribute("aria-live", "polite");
+  el.appendChild(out);
+  const rng = document.createElement("div");
+  rng.className = "vf-range";
+  rng.style.cssText = "margin-top:12px;padding-top:10px;border-top:2px solid var(--line);font-family:var(--mono);font-size:12px;line-height:1.7;color:var(--ink-2);overflow-wrap:anywhere";
+  el.appendChild(rng);
+
+  const fmtNum = v => {
+    if (Number.isNaN(v)) return "NaN";
+    if (v === Infinity) return "+inf"; if (v === -Infinity) return "-inf";
+    if (v === 0) return Object.is(v, -0) ? "-0" : "0";
+    const a = Math.abs(v);
+    if (a >= 1e6 || a < 1e-4) return v.toPrecision(6).replace(/\.?0+e/, "e");
+    return String(+v.toPrecision(8));
+  };
+  const toBits = (p, n) => { let b = ""; for (let i = n - 1; i >= 0; i--) b += Math.floor(p / Math.pow(2, i)) % 2; return b; };
+
+  function setPresets(f) {
+    const r = NF.range(f);
+    const list = [["1", 1], ["0.1", 0.1], ["1/3", 1 / 3], ["max", r.max], ["min normal", r.minNormal],
+                  ["min subnormal", r.minSubnormal], ["-0", -0]];
+    if (f.flavour === "ieee") list.push(["inf", Infinity]);
+    presets.innerHTML = "";
+    list.forEach(([lab, v]) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "btn vf-preset"; b.textContent = lab;
+      b.style.cssText = "padding:.2rem .55rem;font-size:.7rem";
+      b.onclick = () => { typed = v; pattern = null; num.value = fmtNum(v); draw(); };
+      presets.appendChild(b);
+    });
+  }
+
+  function draw() {
+    const f = NF.formats[key], n = NF.bits(f), b = NF.bias(f), r = NF.range(f);
+    if (pattern === null) {
+      const p = NF.encode(f, typed);
+      pattern = p === null ? 0 : p;          // fp4/fp6 have no NaN: show zero, say why below
+    }
+    const dv = NF.decode(f, pattern);
+    save();
+
+    bitsWrap.innerHTML = "";
+    const line = document.createElement("div");
+    line.style.cssText = "display:flex;gap:6px;align-items:flex-end;min-width:max-content";
+    const group = (name, from, count, col) => {
+      const g = document.createElement("div");
+      g.style.cssText = "display:flex;flex-direction:column;gap:3px";
+      const lab = document.createElement("div");
+      lab.style.cssText = `font-family:var(--label);font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:${col}`;
+      lab.textContent = name + (count > 1 ? " · " + count : "");
+      const cells = document.createElement("div");
+      cells.style.cssText = `display:flex;gap:${n > 16 ? 1 : 2}px`;
+      for (let i = from + count - 1; i >= from; i--) {
+        const bit = Math.floor(pattern / Math.pow(2, i)) % 2;
+        const c = document.createElement("button");
+        c.type = "button"; c.className = "vf-bit"; c.dataset.bit = i;
+        c.textContent = bit;
+        c.setAttribute("aria-pressed", bit ? "true" : "false");
+        c.setAttribute("aria-label", `${name} bit ${i - from}, currently ${bit}`);
+        // 32 cells must fit a desktop panel without scrolling; narrower formats get bigger targets
+        const cw = n > 16 ? 15 : n > 8 ? 22 : 28;
+        c.style.cssText = `width:${cw}px;height:30px;padding:0;cursor:pointer;` +
+          `font-family:var(--mono);font-size:${n > 16 ? 11 : 13}px;font-weight:700;border-radius:3px;` +
+          `border:2px solid ${col};background:${bit ? col : "var(--surface)"};color:${bit ? "var(--surface)" : col}`;
+        c.onclick = () => {
+          pattern = bit ? pattern - Math.pow(2, i) : pattern + Math.pow(2, i);
+          typed = NF.decode(f, pattern).value; num.value = fmtNum(typed); draw();
+          const again = bitsWrap.querySelector(`[data-bit="${i}"]`); if (again) again.focus();
+        };
+        cells.appendChild(c);
+      }
+      g.appendChild(lab); g.appendChild(cells); line.appendChild(g);
+    };
+    group("sign", f.E + f.M, 1, COL.s);
+    group("exponent", f.M, f.E, COL.e);
+    group("mantissa", 0, f.M, COL.m);
+    bitsWrap.appendChild(line);
+
+    const span = (txt, col) => `<b style="color:${col}">${txt}</b>`;
+    const mFrac = toBits(dv.m, f.M);
+    let eq;
+    if (dv.kind === "normal")
+      eq = `(&minus;1)<sup>${span(dv.s, COL.s)}</sup> &times; ${span("1." + mFrac, COL.m)}<sub>2</sub> &times; 2<sup>${span(dv.e, COL.e)} &minus; ${b}</sup>` +
+           ` = ${dv.s ? "&minus;" : ""}${fmtNum(1 + dv.m / Math.pow(2, f.M))} &times; 2<sup>${dv.e - b}</sup>`;
+    else if (dv.kind === "subnormal")
+      eq = `exponent field is 0 &rarr; <b>subnormal</b>: no hidden 1, and the exponent is pinned at 1 &minus; ${b}<br>` +
+           `(&minus;1)<sup>${span(dv.s, COL.s)}</sup> &times; ${span("0." + mFrac, COL.m)}<sub>2</sub> &times; 2<sup>${1 - b}</sup>`;
+    else if (dv.kind === "zero") eq = `exponent and mantissa all zero &rarr; <b>${dv.s ? "negative " : ""}zero</b>`;
+    else if (dv.kind === "inf") eq = `exponent all ones, mantissa zero &rarr; <b>${dv.s ? "&minus;" : "+"}infinity</b>`;
+    else eq = f.flavour === "fn"
+      ? "S.1111.111 &rarr; <b>NaN</b> — the only NaN pattern, which is why this format has no infinity"
+      : "exponent all ones, mantissa non-zero &rarr; <b>NaN</b>";
+
+    let near = "";
+    if (Number.isFinite(dv.value)) {
+      const u = NF.ulp(f, dv.value === 0 ? r.minSubnormal : dv.value);
+      near = `<br>gap to the next value here (1 ulp) = ${fmtNum(u)}` +
+             (dv.value !== 0 ? ` &nbsp;·&nbsp; relative gap = ${fmtNum(u / Math.abs(dv.value))}` : "");
+    }
+    let err = "";
+    if (Number.isNaN(typed) && f.flavour === "none")
+      err = `<br><b style="color:${C.danger}">this format has no NaN pattern at all</b> — every one of its ${Math.pow(2, n)} codes is a number`;
+    else if (Number.isFinite(typed) && Number.isFinite(dv.value) && typed !== 0 && typed !== dv.value) {
+      const rel = Math.abs(dv.value - typed) / Math.abs(typed);
+      err = `<br>you asked for ${fmtNum(typed)} &rarr; stored ${fmtNum(dv.value)} &nbsp;·&nbsp; error ${(rel * 100).toPrecision(3)}%` +
+            (dv.value === 0 ? ` <b style="color:${C.danger}">— underflowed to zero</b>` : "") +
+            (Math.abs(typed) > r.max ? ` <b style="color:${C.danger}">— saturated at the max</b>` : "");
+    } else if (Number.isFinite(typed) && !Number.isFinite(dv.value) && f.flavour === "ieee")
+      err = `<br>you asked for ${fmtNum(typed)} <b style="color:${C.danger}">— overflowed to infinity</b> (max is ${fmtNum(r.max)})`;
+    out.innerHTML = `bits &nbsp;${span(toBits(dv.s, 1), COL.s)} ${span(toBits(dv.e, f.E), COL.e)} ${span(mFrac, COL.m)}` +
+      ` &nbsp;·&nbsp; class: <b>${dv.kind}</b><br>${eq}<br>value = <b class="vf-value" style="font-size:14px;color:var(--ink)">${fmtNum(dv.value)}</b>` + near + err;
+
+    const topE = f.flavour === "ieee" ? Math.pow(2, f.E) - 2 : Math.pow(2, f.E) - 1;
+    rng.innerHTML =
+      `<b style="color:var(--ink)">${f.label}</b> &nbsp; ${n} bits = 1 + ${f.E} + ${f.M} &nbsp;·&nbsp; ` +
+      (f.flavour === "ieee" ? "IEEE-style specials" : f.flavour === "fn" ? "no infinity, one NaN" : "no infinity, no NaN") + "<br>" +
+      `bias = 2<sup>${f.E}&minus;1</sup> &minus; 1 = <b>${b}</b><br>` +
+      `max = ${fmtNum(r.max * Math.pow(2, -(topE - b)))} &times; 2<sup>${topE} &minus; ${b}</sup> = <b class="vf-max">${fmtNum(r.max)}</b><br>` +
+      `min normal = 2<sup>1 &minus; ${b}</sup> = <b>${fmtNum(r.minNormal)}</b> &nbsp;·&nbsp; ` +
+      `min subnormal = 2<sup>1 &minus; ${b} &minus; ${f.M}</sup> = <b>${fmtNum(r.minSubnormal)}</b><br>` +
+      `eps = 2<sup>&minus;${f.M}</sup> = <b>${fmtNum(r.eps)}</b> &nbsp;·&nbsp; ≈ ${r.digits.toFixed(1)} decimal digits`;
+  }
+
+  sel.onchange = () => {
+    key = sel.value; setPresets(NF.formats[key]);
+    pattern = null;                         // re-encode the same number in the new format
+    num.value = fmtNum(typed); draw();
+  };
+  num.onchange = () => {
+    const t = num.value.trim().toLowerCase();
+    const v = t === "nan" ? NaN : (t === "inf" || t === "+inf") ? Infinity : t === "-inf" ? -Infinity
+            : t === "-0" ? -0 : /^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/.test(t) ? Number(t)
+            : /^[-+]?\d+\/\d+$/.test(t) ? t.split("/").map(Number).reduce((a, c) => a / c) : undefined;
+    if (v === undefined) { num.setAttribute("aria-invalid", "true"); return; }
+    num.removeAttribute("aria-invalid");
+    typed = v; pattern = null; draw();
+  };
+  setPresets(NF.formats[key]);
+  num.value = fmtNum(typed);
+  draw();
+}
+
+/* ============================================================
    registry + boot
    ============================================================ */
 const VIZ = {
   matmul: vizMatmul, tensor: vizTensor, broadcast: vizBroadcast, softmax: vizSoftmax,
   attention: vizAttention, heads: vizHeads, rope: vizRope, kv: vizKV, trace: vizTrace,
-  online: vizOnline, gqa: vizGQA, chinchilla: vizChinchilla,
+  online: vizOnline, gqa: vizGQA, chinchilla: vizChinchilla, float: vizFloat,
 };
 function renderOne(el) {
   const fn = VIZ[el.dataset.viz];
@@ -864,13 +1057,42 @@ function initViz() {
   });
 }
 
+/* A theme change rebuilds every widget from its seed markup, because widgets
+   draw with resolved colour values. That used to throw away whatever the
+   reader had set: drag a slider, toggle dark mode, and it snapped back to the
+   default with no explanation. So snapshot every control first, by position,
+   and replay it into the fresh widget with the same input/change events a
+   real interaction fires — each widget then redraws through its own handlers,
+   exactly as if the reader had set the value again. */
+function snapshotControls(el) {
+  return [...el.querySelectorAll("input, select")].map(c =>
+    c.type === "checkbox" || c.type === "radio" ? { checked: c.checked } : { value: c.value });
+}
+function restoreControls(el, snap) {
+  const ctl = [...el.querySelectorAll("input, select")];
+  snap.forEach((s, i) => {
+    const c = ctl[i];
+    if (!c) return;
+    if ("checked" in s) {
+      if (c.checked === s.checked) return;
+      c.checked = s.checked;
+      c.dispatchEvent(new Event("change", { bubbles: true }));
+    } else {
+      if (c.value === s.value) return;
+      c.value = s.value;
+      c.dispatchEvent(new Event(c.tagName === "SELECT" || c.type === "text" ? "change" : "input", { bubbles: true }));
+    }
+  });
+}
 function rebuildViz() {
   readTheme();
   document.querySelectorAll("[data-viz]").forEach(el => {
     if (el.dataset.seed === undefined) return;
+    const snap = snapshotControls(el);
     el.classList.remove("panel");
     el.innerHTML = el.dataset.seed;
     renderOne(el);
+    try { restoreControls(el, snap); } catch (e) { /* a widget that cannot replay keeps its defaults */ }
   });
 }
 
