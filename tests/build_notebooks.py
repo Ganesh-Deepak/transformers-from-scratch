@@ -1670,8 +1670,8 @@ def _nb13():
         torch.manual_seed(2)
         greedy = lm.generate(prompt.clone(), n, temperature=0)[0]
         nucleus = lm.generate(prompt.clone(), n, temperature=1.0, top_p=0.95)[0]
-        human = held[:2000]
-        s = {"greedy": surprisal(greedy), "top-p 0.95": surprisal(nucleus), "held-out text": surprisal(human)}
+        human = sum(surprisal(held[k * 500:(k + 1) * 500]) for k in range(4)) / 4     # 2000 real characters
+        s = {"greedy": surprisal(greedy), "top-p 0.95": surprisal(nucleus), "held-out text": human}
         print({k: round(v, 3) for k, v in s.items()})
         assert s["greedy"] < 0.5 * s["held-out text"]                        # far too likely to be "human"
         assert abs(s["top-p 0.95"] - s["held-out text"]) < abs(s["greedy"] - s["held-out text"])
@@ -2465,6 +2465,211 @@ def _nb21():
             assert abs(r["NTK"][0] - r["none"][0]) < 0.15                    # (c) NTK leaves it ~intact ...
             assert r["NTK"][1] < r["none"][1]                                # ... and degrades less past it
         assert res[256]["none"][1] > res[128]["none"][1]                     # worse the further you go
+        """),
+    ]
+
+
+@notebook("23_sft_rlhf")
+def _nb23():
+    return [
+        md("""
+        # Chapter 23 — SFT, RLHF, and PPO
+
+        Every number in Chapter 23, recomputed, and the mechanisms it describes checked on small analogues:
+        prompt masking on a tiny model (`tfs/model.py`, whose loss uses `ignore_index=-100`), a
+        Bradley–Terry reward model trained on synthetic preference data with a planted length bias, PPO's
+        clipped objective under autograd, and best-of-N against a biased reward. Each cell **asserts** what
+        it checks, so `python tests/run_notebooks.py 23` fails if the chapter and the code disagree. Nothing
+        here uses a public preference dataset or a pretrained LM; the analogues are stated as such.
+        """),
+        code(SETUP, "torch.set_num_threads(min(4, torch.get_num_threads()))\n"),
+        md("## 23.3 — the worked example: the reward-model loss on four pairs"),
+        code("""
+        rows = [(2, 1, 0.7311, 0.3133), (5, 1, 0.9820, 0.0181), (1, 1, 0.5, 0.6931), (1, 2, 0.2689, 1.3133)]
+        grads = []
+        for rw, rl, p_want, l_want in rows:
+            p = 1 / (1 + math.exp(-(rw - rl)))
+            print(rw, rl, round(p, 4), round(-math.log(p), 4))
+            assert (round(p, 4), round(-math.log(p), 4)) == (p_want, l_want)
+            gap = torch.tensor(float(rw - rl), requires_grad=True)
+            (-F.logsigmoid(gap)).backward(); grads.append(abs(gap.grad.item()))
+        assert grads.index(max(grads)) == 3 and grads[1] < 0.02          # backwards: largest; confident: ~none
+        assert abs(rows[2][3] - math.log(2)) < 1e-4                         # no opinion = ln 2
+        # Bradley-Terry: e^rw / (e^rw + e^rl) is the logistic of the difference
+        rw, rl = torch.tensor(2.0), torch.tensor(1.0)
+        assert torch.isclose(rw.exp() / (rw.exp() + rl.exp()), torch.sigmoid(rw - rl))
+        # only differences are identified: shift every reward by 100 and nothing changes
+        assert abs((1 / (1 + math.exp(-(2 - 1)))) - (1 / (1 + math.exp(-(102 - 101))))) < 1e-12
+        r = torch.randn(64, 2)
+        assert torch.allclose(F.logsigmoid(r[:, 0] - r[:, 1]), F.logsigmoid((r[:, 0] + 100) - (r[:, 1] + 100)))
+        """),
+        md("""
+        ## 23.2 — prompt masking with label −100
+
+        Masked positions contribute nothing to the loss or the gradient: changing what the masked labels
+        *would* have been changes nothing, and the loss is the mean over response tokens only.
+        """),
+        code("""
+        from tfs.model import Config, Model
+        torch.manual_seed(0)
+        m = Model(Config(vocab_size=50, d_model=32, n_layer=1, n_head=2, n_kv_head=2, d_head=16, d_ff=64, max_T=32))
+        ids = torch.randint(0, 50, (2, 12))
+        labels = ids.clone(); labels[:, :7] = -100                     # 7 prompt tokens, 5 response tokens
+        logits, loss, _ = m(ids, targets=labels)
+        manual = F.cross_entropy(logits[:, 6:-1].reshape(-1, 50), ids[:, 7:].reshape(-1))
+        assert torch.allclose(loss, manual)                             # mean over the 5 response targets
+        lg = logits.detach().requires_grad_(True)
+        F.cross_entropy(lg[:, :-1].reshape(-1, 50), labels[:, 1:].reshape(-1), ignore_index=-100).backward()
+        assert lg.grad[:, :6].abs().sum() == 0 and lg.grad[:, 6:-1].abs().sum() > 0   # no gradient from the prompt
+        """),
+        md("""
+        ## Exercise 23.1 — SFT with and without masking (toy chat, tiny model)
+
+        Conversations `U: 3+4=?\\nA: 7\\n` (answers mod 10), packed four to a sequence. Both models are
+        trained identically except for the mask. The unmasked model learns the *whole* conversation, so
+        after its answer it confidently starts another user turn; the masked model was never trained to
+        produce `U`, so it does not. (100 steps is too few for either model to learn the arithmetic itself;
+        answer accuracy is printed, not asserted. The chapter's "converges more slowly" claim is not tested.)
+        """),
+        code("""
+        from tfs.tokenizer import CharTokenizer
+        import random
+        rng = random.Random(0)
+        def example():
+            a, b = rng.randrange(10), rng.randrange(10)
+            return f"U: {a}+{b}=?\\nA: ", f"{(a + b) % 10}\\n"
+        chat = CharTokenizer("U: 0123456789+=?\\nA")
+        def batch(B, masked, k=4):
+            ids, lab = [], []
+            for _ in range(B):
+                s, l = [], []
+                for _ in range(k):
+                    p, r = example()
+                    pi, ri = chat.encode(p), chat.encode(r)
+                    s += pi + ri; l += ([-100] * len(pi) if masked else pi) + ri
+                ids.append(s); lab.append(l)
+            return torch.tensor(ids), torch.tensor(lab)
+        def sft(masked, steps=100):
+            torch.manual_seed(0)
+            mm = Model(Config(vocab_size=chat.vocab_size, d_model=48, n_layer=2, n_head=4, n_kv_head=2,
+                              d_head=12, d_ff=128, max_T=64))
+            opt = torch.optim.AdamW(mm.parameters(), lr=3e-3)
+            for _ in range(steps):
+                x, y = batch(8, masked)
+                _, l, _ = mm(x, targets=y)
+                opt.zero_grad(); l.backward(); opt.step()
+            return mm.eval()
+        @torch.no_grad()
+        def probe(mm):
+            correct, p_user = 0, 0.0
+            for a in range(10):
+                for b in range(10):
+                    ctx = torch.tensor([chat.encode(f"U: {a}+{b}=?\\nA: ")])
+                    out = mm.generate(ctx.clone(), 1, temperature=0)[0, -1].item()
+                    correct += chat.decode([out]) == str((a + b) % 10)
+                    after = torch.tensor([chat.encode(f"U: {a}+{b}=?\\nA: {(a + b) % 10}\\n")])
+                    p_user += mm(after)[0][0, -1].softmax(-1)[chat.stoi["U"]].item()
+            return correct / 100, p_user / 100
+        res = {mk: probe(sft(mk)) for mk in (True, False)}
+        for mk, (acc, pu) in res.items():
+            print(f"masked={mk!s:5}  answers correct {acc:.0%}   P(next turn starts with 'U') {pu:.3f}")
+        assert res[False][1] > 0.9                                       # unmasked: writes the user's turn
+        assert res[True][1] < 0.5 * res[False][1]                         # masked: was never taught to
+        """),
+        md("""
+        ## Exercise 23.2 — a Bradley–Terry reward model, and the biases it learns
+
+        Synthetic responses with three features: true quality, length, and bulleted formatting. The
+        simulated annotators prefer quality but also, like the real ones the chapter describes, longer and
+        bulleted answers. A linear reward model trained with the Bradley–Terry loss inherits both biases.
+        """),
+        code("""
+        torch.manual_seed(0)
+        def responses(n):
+            q, ln, bul = torch.randn(n), torch.randn(n), (torch.rand(n) < 0.5).float()
+            return torch.stack([q, ln, bul], 1)
+        true_w = torch.tensor([1.5, 0.8, 0.5])              # annotators: quality, length bias, format bias
+        def pairs(n):
+            a, b = responses(n), responses(n)
+            pref_a = torch.rand(n) < torch.sigmoid((a - b) @ true_w)
+            chosen = torch.where(pref_a[:, None], a, b); rejected = torch.where(pref_a[:, None], b, a)
+            return chosen, rejected
+        ch, rj = pairs(4000)
+        rm = nn.Linear(3, 1, bias=False)
+        opt = torch.optim.Adam(rm.parameters(), lr=0.05)
+        for _ in range(300):
+            loss = -F.logsigmoid(rm(ch) - rm(rj)).mean()
+            opt.zero_grad(); loss.backward(); opt.step()
+        w = rm.weight.detach()[0]
+        tch, trj = pairs(2000)
+        acc = (rm(tch) > rm(trj)).float().mean().item()
+        X = responses(2000); r = rm(X).detach()[:, 0]
+        corr_len = torch.corrcoef(torch.stack([r, X[:, 1]]))[0, 1].item()
+        bullet_gain = (rm(X * torch.tensor([1, 1, 0]) + torch.tensor([0, 0, 1.0])) - rm(X * torch.tensor([1, 1, 0]))).mean().item()
+        print(f"learned weights {[round(v, 2) for v in w.tolist()]}  held-out ranking accuracy {acc:.0%}")
+        print(f"corr(reward, length) = {corr_len:.2f}; reformatting with bullets adds {bullet_gain:+.2f} reward")
+        assert acc > 0.7 and corr_len > 0.3 and bullet_gain > 0.2
+        assert torch.allclose(w, true_w, atol=0.25)                      # it learned the annotators' biases
+        """),
+        md("""
+        ## 23.4 — PPO's clipped surrogate under autograd
+
+        **DISCREPANCY (precision).** The chapter says "if the probability ratio moves more than ε away from
+        1, the objective is clipped and the gradient vanishes". That is only half the rule. `min(ρÂ,
+        clip(ρ)Â)` clips only in the direction the advantage favours: with Â > 0 the gradient vanishes for
+        ρ > 1 + ε (but not for ρ < 1 − ε); with Â < 0 it vanishes for ρ < 1 − ε, while for ρ > 1 + ε the
+        unclipped term is the minimum and the gradient is still there — a bad action whose probability rose
+        keeps being pushed down.
+        """),
+        code("""
+        def clip_grad(rho, adv, eps=0.2):
+            r = torch.tensor(rho, requires_grad=True)
+            torch.min(r * adv, r.clamp(1 - eps, 1 + eps) * adv).backward()
+            return r.grad.item()
+        cases = {(1.1, +1): 1.0, (1.3, +1): 0.0, (0.7, +1): 1.0, (0.9, -1): -1.0, (0.7, -1): 0.0, (1.3, -1): -1.0}
+        for (rho, adv), want in cases.items():
+            g = clip_grad(rho, adv)
+            print(f"ratio {rho}  advantage {adv:+d}  -> gradient {g:+.1f}")
+            assert g == want
+        """),
+        md("""
+        ## 23.4 — the KL term, and four models in memory
+
+        KL(π‖π_ref) ≥ 0 with equality only at π = π_ref; four 7B bf16 models are 56 GB of weights.
+        """),
+        code("""
+        torch.manual_seed(0)
+        for _ in range(100):
+            p, q = torch.randn(10).softmax(-1), torch.randn(10).softmax(-1)
+            assert (p * (p / q).log()).sum() >= 0
+        assert abs((p * (p / p).log()).sum()) < 1e-7
+        assert 4 * 7e9 * 2 / 1e9 == 56
+        """),
+        md("""
+        ## Exercise 23.3 — best-of-N against a biased reward: reward rises, true quality turns over
+
+        Candidates have true quality q and a length ℓ. The reward model scores q + 1.0·ℓ (the length bias
+        it learned above); humans dislike rambling, so true quality is q − 0.3·ℓ². Picking the best of N by
+        reward is a KL-free optimiser against the reward model. This is a constructed analogue: the
+        turnover appears because the reward model's error is correlated with something that hurts true
+        quality — which is the chapter's mechanism, not a measurement of a real model. Where the peak lands
+        depends on the penalty constant: 0.3 puts it in the chapter's N = 16–64 range; a weaker penalty
+        (0.25) moves it past N = 256.
+        """),
+        code("""
+        torch.manual_seed(0)
+        trials = 4000
+        out = {}
+        for N in (1, 4, 16, 64, 256):
+            q, ln = torch.randn(trials, N), torch.randn(trials, N)
+            reward = q + 1.0 * ln
+            pick = reward.argmax(1, keepdim=True)
+            out[N] = (reward.gather(1, pick).mean().item(), (q - 0.3 * ln ** 2).gather(1, pick).mean().item())
+            print(f"N={N:3d}  mean reward {out[N][0]:5.2f}   true quality {out[N][1]:5.2f}")
+        rewards = [out[N][0] for N in out]; quality = [out[N][1] for N in out]
+        assert rewards == sorted(rewards)                                  # reward: monotone in N
+        peak = list(out)[quality.index(max(quality))]
+        assert peak in (16, 64) and quality[-1] < max(quality)            # quality peaks mid-range, then falls
         """),
     ]
 
