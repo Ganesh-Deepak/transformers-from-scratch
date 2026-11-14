@@ -715,54 +715,60 @@ main::before {
    Every width below must be able to shrink to the viewport. */
 main > * { max-width: min(var(--measure), 100%); }
 
-/* CENTRING THE TEXT IN THE SHEET.
-   The sheet (up to 66rem) is wider than the prose measure (37-48rem), and
-   left-aligned prose sat pinned to the left of a half-empty sheet. main is
-   padded on the left by --ext = (M - measure) / 2, so the prose column is
-   dead centre, and 0 whenever main is no wider than the measure.
-   Breakouts cancel the padding with a negative margin, so code, tables and
-   widgets still span the whole sheet. M, main's width, is read from the
-   .wrap container (cqw) because a child's % would see main minus padding.
-   Without container units (old browsers, no JS) --ext is invalid -> 0, which
-   is exactly the old left-aligned layout. */
-.wrap { container-type: inline-size; }
-/* The prose column is 75% of the available width (the reader asked for
+/* LAYOUT OF THE SHEET — three kinds of block, one rule each.
+   Prose: centred, 75% of the space beside the sidebar (the reader asked for
    exactly that), never narrower than 37rem or the screen, capped at 90rem.
-   cqw is the .wrap container, i.e. the space beside the sidebar. Body type
-   grows with the column (17px -> 21px) to keep long lines readable: about
-   95 characters at 1440px with the sidebar open, ~120 at 1800px closed.
-   That is longer than the classic 75; it was a deliberate call by the
-   reader, and the larger type and 1.68 leading are what make it work. */
+   main is padded by --ext on BOTH sides, so its content box IS the prose
+   column and anything sized to "100%" lines up with the text.
+     1. Full width  — widgets, figures, panels: drawn to use the space.
+     2. Fit content — code, tables, maths: as wide as what they hold, never
+        narrower than the text column, never wider than the sheet, and
+        centred on the text column. (A 1500px frame round a 700px table,
+        pinned to the sheet's left edge, is what this replaced.)
+     3. Reading boxes — quizzes, exercises, worked examples, the bite
+        console: the text column plus at most 4.5rem a side.
+   tests/shoot.js enforces all three (box-wider-than-content,
+   block-misaligned). Without container units --ext is invalid -> 0 and the
+   page is simply left-aligned; nothing breaks. */
+.wrap { container-type: inline-size; }
 main {
+  /* one body size for everything you read inside main: components scale
+     from it (calc(var(--fs) * k)) instead of fixed rem, so a heading can
+     never end up smaller than the text under it on a wide screen. */
+  --fs: clamp(1.0625rem, .7rem + .75cqw, 1.3125rem);
   --measure: clamp(min(37rem, 100cqw), 75cqw, 90rem);
-  font-size: clamp(1.0625rem, .7rem + .75cqw, 1.3125rem);
-}
-main {
   --M: min(var(--breakout), 100cqw);
   --ext: max(0px, calc((var(--M) - var(--measure)) / 2));
-  padding-left: var(--ext);
+  font-size: var(--fs);
+  padding-inline: var(--ext);
 }
-main > pre,
-main > .tw,
+/* 1. full width */
 main > figure,
 main > .panel,
-main > [data-viz],
-main > .mathblock {
-  margin-left: calc(-1 * var(--ext));
-  max-width: calc(100% + var(--ext));
+main > [data-viz] {
+  margin-inline: calc(-1 * var(--ext));
+  max-width: none;
 }
-/* Boxes that are mostly READING (quizzes, exercises, worked examples, the
-   bite console) must not take the whole sheet: that is ~130 characters a
-   line. They widen symmetrically past the prose by --k, at most 4.5rem a
-   side (46rem total), and never past the sheet (k <= ext). */
+/* 2. fit content, centred on the text column */
+main > pre,
+main > .tw,
+main > table:not(.x),
+main > .mathblock {
+  position: relative; left: 50%; transform: translateX(-50%);
+  width: fit-content;
+  min-width: 100%;
+  max-width: calc(100% + 2 * var(--ext));
+}
+main > .tw table { width: max-content; min-width: 100%; }
+/* 3. reading boxes */
 main > .study-console,
 main > .home-study,
 main > .exercise,
 main > .quiz,
 main > .example {
   --k: min(var(--ext), 4.5rem);
-  margin-left: calc(-1 * var(--k));
-  width: calc(min(var(--measure), 100%) + 2 * var(--k));
+  margin-inline: calc(-1 * var(--k));
+  width: auto;
   max-width: none;
 }
 
@@ -827,7 +833,7 @@ h1 .num {
 }
 h2 {
   font-family: var(--display);
-  font-size: 1.55rem; line-height: 1.2; letter-spacing: -.025em; font-weight: 700;
+  font-size: calc(var(--fs, 1.0625rem) * 1.5); line-height: 1.2; letter-spacing: -.025em; font-weight: 700;
   text-wrap: balance;
   margin: 3.4rem 0 1rem;
   padding-bottom: .5rem;
@@ -835,7 +841,7 @@ h2 {
 }
 h3 {
   font-family: var(--display);
-  font-size: 1.14rem; line-height: 1.3; font-weight: 700; letter-spacing: -.015em;
+  font-size: calc(var(--fs, 1.0625rem) * 1.22); line-height: 1.3; font-weight: 700; letter-spacing: -.015em;
   text-wrap: balance;
   margin: 2.3rem 0 .55rem;
 }
@@ -849,7 +855,7 @@ h4 {
 p { margin: 0 0 1.1rem; overflow-wrap: break-word; }
 li, td, th, dd { overflow-wrap: break-word; }
 .lead {
-  font-size: 1.17rem; line-height: 1.62; color: var(--ink-2);
+  font-size: calc(var(--fs, 1.0625rem) * 1.1); line-height: 1.62; color: var(--ink-2);
   margin-bottom: 1.9rem;
   text-wrap: pretty;
 }
@@ -900,7 +906,7 @@ pre {
   margin: 0 0 1.6rem;
   overflow-x: auto;
   font-family: var(--mono);
-  font-size: .8rem;
+  font-size: calc(var(--fs, 1.0625rem) * 0.76);
   line-height: 1.62;
   font-variant-numeric: tabular-nums lining-nums;
   tab-size: 4;
@@ -939,7 +945,7 @@ pre:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
 
 .mathblock {
   font-family: var(--math);
-  font-size: 1.12rem;
+  font-size: calc(var(--fs, 1.0625rem) * 1.08);
   text-align: center;
   padding: 1.2rem 1.2rem;
   margin: 1.7rem 0;
@@ -982,7 +988,7 @@ pre:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
   margin-bottom: .65rem;
 }
 .box > :last-child { margin-bottom: 1rem; }
-.box p, .box li { font-size: .965rem; }
+.box p, .box li { font-size: calc(var(--fs, 1.0625rem) * 0.95); }
 
 .box.intuition { --box-hue: var(--ok);    --box-bg: var(--ok-bg); }
 .box.warn      { --box-hue: var(--warn);  --box-bg: var(--warn-bg); }
@@ -1036,7 +1042,7 @@ pre:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
 table {
   width: 100%; border-collapse: collapse;
   margin: 1.7rem 0;
-  font-size: .9rem;
+  font-size: calc(var(--fs, 1.0625rem) * 0.88);
   font-variant-numeric: tabular-nums lining-nums;
 }
 th, td {
@@ -1188,7 +1194,7 @@ select, input[type=text], input[type=number] {
   background: var(--paper);
   padding: .52rem .7rem .52rem 2.5rem;
   cursor: pointer;
-  font-size: .93rem; line-height: 1.5;
+  font-size: calc(var(--fs, 1.0625rem) * 0.92); line-height: 1.5;
   transition: border-color .13s, background .13s, transform .13s;
 }
 .opt:hover:not(.disabled) { border-color: var(--line-2); background: var(--surface-2); transform: translateX(2px); }
@@ -1214,7 +1220,7 @@ select, input[type=text], input[type=number] {
   border: 1.5px solid var(--line);
   border-left: 3px solid var(--ok);
   border-radius: var(--radius);
-  font-size: .9rem; line-height: 1.6; color: var(--ink-2);
+  font-size: calc(var(--fs, 1.0625rem) * 0.9); line-height: 1.6; color: var(--ink-2);
 }
 .expl.show { display: block; }
 .expl b { color: var(--ink); }

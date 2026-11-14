@@ -138,6 +138,77 @@ const AUDIT = String.raw`(() => {
     }
   }
 
+  /* 3b. TYPOGRAPHIC HIERARCHY. A heading must read as a heading: at least
+         1.12x the body size, and h2 > h3. Running text inside components
+         (lists, tables, quiz options, callouts) must not fall below 0.85x
+         the body; code below 0.7x. Body size = main > p. */
+  if (main) {
+    // body = a real paragraph, not the 1.1x lead under the title
+    const bodyP = [...main.querySelectorAll(":scope > p:not(.lead)")].find(visible);
+    const body = bodyP ? parseFloat(getComputedStyle(bodyP).fontSize) : 16;
+    facts.body = Math.round(body * 10) / 10;
+    const size = el => parseFloat(getComputedStyle(el).fontSize);
+    const h2 = [...main.querySelectorAll("h2")].find(visible), h3 = [...main.querySelectorAll("h3")].find(visible);
+    if (h2 && size(h2) < body * 1.12) add("heading-not-larger-than-text", h2, size(h2) + "px vs body " + body + "px");
+    if (h3 && size(h3) < body * 1.12) add("heading-not-larger-than-text", h3, size(h3) + "px vs body " + body + "px");
+    if (h2 && h3 && size(h2) <= size(h3)) add("h2-not-larger-than-h3", h2, size(h2) + " <= " + size(h3));
+    const small = new Map();
+    for (const el of main.querySelectorAll("p, li, td, .opt, .expl, dd")) {
+      if (!visible(el) || el.closest(".mn, .tiny, figcaption, .section-tools, .study-console, .lbl, svg, [data-viz], .study-meta")) continue;
+      const own = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim().length > 12);
+      if (!own) continue;
+      if (size(el) < body * 0.85) { const k = sel(el).split(" > ").slice(-2).join(" > ") + " @" + size(el).toFixed(1); small.set(k, (small.get(k) || 0) + 1); }
+    }
+    for (const [k, n] of small) add("running-text-too-small", null, k + " vs body " + body + " x" + n);
+    const pre = [...main.querySelectorAll("pre")].find(visible);
+    if (pre && size(pre) < body * 0.7) add("code-too-small", pre, size(pre) + "px vs body " + body + "px");
+  }
+
+  /* 3c. BOXES SIZED TO NOTHING. A code block, table or maths block must not
+         be much wider than what it holds (no 1500px frame round a 700px
+         table), and every block narrower than the sheet must either line up
+         with the text column or be centred on it -- never hug the sheet's
+         left edge while the prose is centred. */
+  if (main) {
+    const mr = main.getBoundingClientRect();
+    const prose = [...main.querySelectorAll(":scope > p")].find(visible);
+    const pr = prose && prose.getBoundingClientRect();
+    const need = el => {
+      // natural content width: widest line box of the content, plus padding/border
+      const cs = getComputedStyle(el);
+      const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
+      let w = 0;
+      if (el.tagName === "PRE") {
+        const r = document.createRange(); r.selectNodeContents(el.querySelector("code") || el);
+        const left = el.getBoundingClientRect().left + parseFloat(cs.paddingLeft) + parseFloat(cs.borderLeftWidth);
+        for (const rc of r.getClientRects()) w = Math.max(w, rc.right - left);
+        // line boxes, not scrollWidth: a scroller is never narrower than itself
+        return w + pad;
+      }
+      const t = el.tagName === "TABLE" ? el : el.querySelector("table");
+      if (t) { const old = t.style.width; t.style.width = "max-content"; w = t.getBoundingClientRect().width; t.style.width = old; return w + (t === el ? 0 : pad); }
+      return el.getBoundingClientRect().width;
+    };
+    for (const el of main.querySelectorAll(":scope > pre, :scope > .tw, :scope > table, :scope > .mathblock")) {
+      if (!visible(el)) continue;
+      const r = el.getBoundingClientRect();
+      const floor = pr ? pr.width : 0;
+      const n = need(el);
+      if (r.width > Math.max(floor, n) + 64) add("box-wider-than-content", el, Math.round(r.width) + "px box for " + Math.round(n) + "px of content");
+    }
+    if (pr && mr.width > pr.width + 8) {
+      const centre = (mr.left + mr.right) / 2;
+      for (const el of main.children) {
+        if (!visible(el) || el.tagName === "SCRIPT") continue;
+        const r = el.getBoundingClientRect();
+        if (r.width >= mr.width - 4) continue;                        // full-bleed is fine
+        const aligned = Math.abs(r.left - pr.left) <= 2;
+        const centred = Math.abs((r.left + r.right) / 2 - centre) <= 3;
+        if (!aligned && !centred) add("block-misaligned", el, "L" + Math.round(r.left - mr.left) + " vs text L" + Math.round(pr.left - mr.left));
+      }
+    }
+  }
+
   /* 4. clipped text: a non-scrolling box whose content is wider than it */
   for (const el of document.querySelectorAll("body *")) {
     const cs = getComputedStyle(el);
