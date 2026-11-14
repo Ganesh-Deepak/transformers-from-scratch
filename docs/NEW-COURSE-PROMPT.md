@@ -1,95 +1,122 @@
 # Prompt: author a new course in the "Field Manual" system
 
-Paste everything below the line into a fresh session, after filling in the two
-`<<< >>>` placeholders at the top. It is self-contained.
+Paste everything below the line into a fresh session, after filling in the three
+`<<< >>>` placeholders at the top. It is self-contained. For a large course, run
+one session per Part in parallel (see §10).
 
 ---
 
 You are authoring a new interactive technical course. An existing course —
 **Transformers From Scratch** — already defines the design system, the
-pedagogical structure, the tooling and the test suite. Your job is to produce a
-new course **in that exact system**, not to design a new one.
+pedagogical standard, the tooling, the test suite and the platform contract that
+lets all courses act as one library. Your job is to produce a new course **in
+that exact system**, not to design a new one.
 
     REPO      https://github.com/Ganesh-Deepak/transformers-from-scratch
     LIVE      https://ganesh-deepak.github.io/transformers-from-scratch/
 
     <<< COURSE TITLE >>>
-    <<< ONE-PARAGRAPH BRIEF: who it is for, what they can do at the end,
-        what it deliberately does not cover >>>
+    <<< COURSE SLUG, e.g. "evals"; the repo will be ganesh-deepak/<repo-name> >>>
+    <<< ONE-PARAGRAPH BRIEF from docs/ROADMAP.md: who it is for, what they can do
+        at the end, what it deliberately does not cover >>>
 
 ---
 
 ## 0. First action, before you write anything
 
-Fetch the reference course and read these five files end to end. They are the
-specification; this prompt is only a summary of them.
+Clone the reference course and read these files end to end. They are the
+specification; this prompt is a summary of them.
 
+    docs/PLATFORM.md            how every course plugs into one library (§9 below)
+    docs/CONTENT-AUDIT.md       the grading standard every chapter is held to
     course/assets/style.css     the whole design system, heavily commented
-    course/assets/course.js     layout scaffold, theming, quiz engine, highlighter
-    course/assets/axes.js       the tensor-axis highlighting system
-    course/assets/chapters.js   the outline manifest — single source of truth
-    course/ch06-mha.html        the best worked example of a finished chapter
+    course/assets/course.js     layout, theming, study console, quizzes, sidebar
+    course/assets/axes.js       the semantic highlighter and the shape inspector
+    course/assets/chapters.js   the outline manifest: single source of truth
+    course/ch20-moe.html        the best finished chapter (content standard)
+    course/ch06-mha.html        the best widget-driven chapter
+    tfs/moe.py + notebooks/20_moe.ipynb + tests/test_tfs.py (Ch 20 section)
+                                how a chapter's numbers are backed by code
 
-Then **copy `course/assets/` into your new course verbatim** — `style.css`,
-`course.js`, `axes.js`, `viz.js`, and the whole `fonts/` directory. Copy
-`tests/check_ui.js` and `tests/check_responsive.js` too.
+Then **copy `course/assets/` verbatim** (`style.css`, `course.js`, `axes.js`,
+`viz.js`, `chapters.js` as a template, `fonts/`) and **the whole `tests/`
+toolkit** (`check_ui.js`, `check_responsive.js`, `check_interaction.js`,
+`shoot.js`, `run_notebooks.py`, `package.json`).
 
 **Do not restyle. Do not "improve" the palette. Do not swap the fonts.** The
-visual system is locked. Your entire creative budget goes into content, figures,
-widgets and exercises. If you believe something in the design genuinely must
-change, say so and ask first — do not change it silently.
+visual system is locked across every course on the platform. Your creative
+budget goes into content, figures, widgets and exercises. If something in the
+design genuinely must change, say so and ask first. Never change it silently.
 
 ---
 
 ## 1. The look, so you can tell when it is wrong
 
-A 1960s aerospace field manual that happens to be interactive: printed on kraft
-stock in two inks. If your page looks like a generic docs site, you have drifted.
+A 1960s aerospace field manual that happens to be interactive: printed in two
+inks, a reading sheet laid on a kraft desk. Bold, not restrained. If your page
+looks like a generic docs site, you have drifted.
 
-| | |
-|---|---|
-| Ground | kraft `#E7D8BC` under a halftone dot screen (1px dots on a 5px grid) |
-| Structure | oxblood `#5A241F` — masthead, every 2px border, every rule |
-| Cards | cream `#FBF4E4`, stamped on **hard `4px 4px 0` shadows, zero blur** |
-| Dark | near-neutral `#14100F` ground + terracotta `#B34B33` stamp |
-| Display | Space Grotesk 700, tracking −0.025 to −0.035em |
-| Body | Literata (serif, real italics) |
-| Mono | JetBrains Mono — every shape annotation, every code block |
+| | light | dark |
+|---|---|---|
+| Desk (around the page) | kraft `#E7D8BC` under a halftone dot screen | `#1A1513` with a faint dot screen |
+| **Reading sheet** | solid paper `#F8F0E0`, 2px oxblood edge, hard 9px shadow | warm charcoal `#27211E`, visible edge |
+| Cards, code | cream `#FFFBF3` on **hard `4px 4px 0` shadows, zero blur** | `#342C27` |
+| Structure | oxblood `#5A241F` masthead, borders, rules | terracotta stamp `#B34B33` |
+| Display / body / mono | Space Grotesk 700 · Literata · JetBrains Mono (self-hosted) | same |
 
-Rules that carry the whole look, in priority order:
+Rules that carry the look, in priority order:
 
-1. **No soft shadows anywhere.** Every shadow is `Npx Npx 0` with zero blur.
-2. **2px borders**, not hairlines, on every card-like object.
-3. The **halftone dot screen** is on `body` and on `.sidebar`. It is what turns
-   a flat colour into printed stock.
-4. **Oxblood does the structural work**, which frees the violet accent to be
-   nothing but a link colour.
-5. Labels are Space Grotesk, uppercase, 700, letter-spacing `.13`–`.16em`.
-6. Buttons collapse their shadow on `:active` and translate by the same offset,
-   so they physically press into the paper.
-
-**Dark mode is not a token swap.** The first attempt at it failed exactly that
-way: every layer went brown, the masthead landed at 1.10:1 against the paper and
-was invisible. On a dark ground the saturation must live in the *structure*, not
-the field — near-achromatic ground (chroma ~5), vivid stamp (chroma ~128).
-Surface separation in dark is tuned by **L\***, not contrast ratio: near black
-the `+0.05` in the WCAG formula swamps small steps, so 1.09 and 1.25 look
-identical. Cards must lift by ΔL\* ≈ 8.5.
+1. **No texture under letterforms.** The halftone lives on the desk only; every
+   line of text sits on the solid sheet. (Dots behind small type made the light
+   theme unreadable once.)
+2. **No soft shadows.** Every shadow is `Npx Npx 0`.
+3. **2px borders** on every card-like object; oxblood does the structural work,
+   so the violet accent is only ever a link and interaction colour.
+4. Labels are Space Grotesk, uppercase, 700, tracked `.13`–`.16em`.
+5. Dark mode is **layered, never one black field**: desk, sheet and cards must be
+   visibly different surfaces, and secondary text stays bright (ink-3 ≥ 7:1 on
+   the sheet). A near-black ground with the sheet equal to it was rejected as
+   "too dark to read anything".
 
 ---
 
-## 2. Component vocabulary — use these, invent nothing
+## 2. Layout — locked, and enforced by tests
 
-All styling already exists. Write semantic HTML with these classes.
+- **The sheet** is `main`, as wide as the space beside the sidebar allows.
+- **Prose is 75% of that width**, centred, never narrower than 37rem or the
+  screen, capped at 90rem. Body type grows with it (17 → 21px). The reader asked
+  for a wide column; do not "fix" it back to a narrow measure.
+- **One body size for everything you read inside `main`**: `--fs`. Components
+  scale from it, never from fixed `rem`: h2 1.5×, h3 1.22×, lead 1.1×, callout
+  text .95×, tables .88×, quiz options .92×, code .76×, maths 1.08×. A heading is
+  always larger than the text under it.
+- **Three kinds of block**, one rule each:
+  1. *Full width* — widgets (`data-viz`), figures, panels.
+  2. *Fit content* — code, tables (`.tw`), maths blocks: as wide as what they
+     hold, never narrower than the text column, never wider than the sheet,
+     centred on the text column.
+  3. *Reading boxes* — quizzes, exercises, worked examples, the study console:
+     the text column plus at most 4.5rem a side.
+- **Margin notes are inline asides** (`.mn`), not a side rail: at 75% prose width
+  there is no room for one.
+- The **sidebar** groups chapters by Part: each Part is a solid band in its own
+  ink (`--part-0..7`), folds away on click, and the current chapter is a raised
+  card whose section list folds too. Inks are navigation-only.
+- The **shape inspector** (Phase 3 of `axes.js`) is a docked right rail on wide
+  screens (it reserves its column; text reflows) and a bottom sheet on phones.
+  It appears only on pages that contain semantic badges.
+- No page may scroll sideways from **320px** up.
 
-**Zero `<style>` blocks** — the reference course has none across 27 pages, which
-is why a full redesign is a one-file change. Keep it that way.
+You do not author any of this; the vendored CSS and JS do it. You only need to
+avoid fighting it: no inline layout styles, no wrappers that change widths.
 
-Inline `style=` is permitted **only for local spacing** (`style="margin-bottom:0"`
-on the last child of a callout, `style="margin:.4rem 0"` on a `<pre>` inside a
-worked example — those two account for almost all 406 uses in the reference).
-**Never** put colour, typography, borders or layout in an inline style. If you
-reach for one, the class you actually want probably already exists.
+---
+
+## 3. Component vocabulary — use these, invent nothing
+
+**Zero `<style>` blocks.** Inline `style=` only for local spacing
+(`style="margin-bottom:0"` on a callout's last child, `style="margin:.4rem 0"` on
+a `<pre>` inside a worked example). Never colour, type, borders or layout.
 
 ### Page skeleton
 
@@ -102,27 +129,27 @@ reach for one, the class you actually want probably already exists.
 <title>Ch 6 — Multi-Head Attention: The Reshape Dance</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=10">
+<link rel="stylesheet" href="assets/style.css?v=1">
 </head>
 <body>
 <main>
   <h1>6 · Multi-Head Attention: The Reshape Dance</h1>
-  <p class="lead">One paragraph. What this chapter does, and what makes it hard.</p>
-  ...
+  <p class="lead">One paragraph: what this chapter does, and what makes it hard.</p>
+  <div class="mn orient"><span class="k">Builds on</span>…<div class="sep"></div><span class="k">Leads to</span>…<div class="sep"></div><span class="k">Why this chapter</span>…</div>
+  …
 </main>
-<script src="assets/chapters.js?v=10"></script>
-<script src="assets/course.js?v=10"></script>
-<script src="assets/viz.js?v=10"></script>
-<script src="assets/axes.js?v=10"></script>
+<script src="assets/chapters.js?v=1"></script>
+<script src="assets/course.js?v=1"></script>
+<script src="assets/viz.js?v=1"></script>
+<script src="assets/axes.js?v=1"></script>
 <script>initChapter("06");</script>
 </body>
 </html>
 ```
 
-The inline `<script>` in `<head>` is an anti-FOUC guard — it applies the stored
-theme before first paint. Keep it byte-identical. `course.js` builds the topbar,
-sidebar, reading-progress bar, chapter nav, copy buttons and quiz engine at
-runtime; you do not author any of that.
+Keep the head script byte-identical (it applies the stored theme before first
+paint; the theme key is shared across the whole platform). Bump every `?v=N`
+together whenever an asset changes, or browsers serve stale CSS.
 
 ### Callouts
 
@@ -130,294 +157,220 @@ runtime; you do not author any of that.
 <div class="box intuition"><span class="t">The core trade</span><p>…</p></div>
 ```
 
-Six variants, each with a settled meaning. Use them for what they mean:
-
 | class | for |
 |---|---|
-| `box intuition` | the mental model that makes the rest obvious |
+| `box intuition` | the mental model that makes the rest obvious (also "the whole chapter in N sentences") |
 | `box warn` | a thing that will bite you later |
 | `box gotcha` | a thing that is silently wrong and raises no error |
 | `box math-note` | the one line of maths that matters, explained |
-| `box history` | why it ended up this way |
-| `box sota` | what the frontier actually does now |
+| `box sota` | what the frontier does now (date it) |
 
-### Margin notes — the signature layout element
-
-```html
-<div class="mn"><span class="k">Why it hides</span>Both merges give the same shape. Nothing raises.</div>
-<div class="mn orient"><span class="k">Builds on</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; view and transpose<div class="sep"></div><span class="k">Leads to</span>…</div>
-```
-
-Absolutely positioned beside the prose column with **no `top`**, so each note
-lines up with the paragraph it follows. Below 66rem they fold back inline. Put
-an `.mn.orient` block directly after the `.lead` of every chapter with
-*Builds on / Leads to / Why this chapter*.
-
-### Quiz
+### Quiz, exercise, worked example, table, maths, code
 
 ```html
-<div class="quiz" data-title="Checkpoint 1 — the dance">
+<div class="quiz" data-title="Checkpoint 1 — routing and balance">
   <div class="qitem" data-answer="1">
-    <div class="qq">Question text, with <code>code</code> where it helps.</div>
-    <div class="opts">
-      <div class="opt">(4, 256, 12, 64)</div>
-      <div class="opt">(4, 12, 256, 64)</div>
-    </div>
-    <div class="expl"><b>(4, 12, 256, 64).</b> Why — and why each wrong option is tempting.</div>
+    <div class="qq">Question, with <code>code</code> where it helps.</div>
+    <div class="opts"><div class="opt">…</div><div class="opt">…</div></div>
+    <div class="expl"><b>Answer.</b> Why it is right, and why each distractor is tempting.</div>
   </div>
 </div>
-```
 
-`data-answer` is a **0-based index**. The engine adds A/B/C/D markers, scoring
-and reveal. The explanation must explain the *distractors*, not just restate the
-answer — being wrong and noticing is the mechanism that makes it stick.
-
-### Exercise
-
-```html
 <div class="exercise">
   <div class="eh"><span class="n">6.1</span><span class="ti">Prove your heads are independent</span><span class="lvl">essential</span></div>
-  <div class="eb">
-    <p>What to build, and the assertion that proves it.</p>
-    <pre><code>def mha_loop(x, W_q, W_k, W_v, W_o, nh):
-    ...</code></pre>
-    <details class="reveal"><summary>Solution</summary><div>…</div></details>
-  </div>
+  <div class="eb"><p>…</p><details class="reveal"><summary>Solution</summary><div>…</div></details></div>
 </div>
-```
 
-`.n` is `chapter.index`. `.lvl` is a short free-form label, not a fixed enum —
-the reference uses `essential`, `code`, `thinking`, `hard`, `warm-up`,
-`exploration`, `applied`, and occasionally a time estimate (`~1 hr`). Pick a
-small vocabulary for your course and stay consistent within it.
-
-### Worked example, tables, figures, maths
-
-```html
 <div class="example"><span class="t">Worked example — …</span>
   <div class="step"><div class="i">1</div><div>…</div></div>
 </div>
 
 <div class="tw"><table><thead>…</thead><tbody>…</tbody></table></div>
-
-<figure><svg viewBox="0 0 660 150" xmlns="http://www.w3.org/2000/svg">…</svg>
-  <figcaption>…</figcaption></figure>
-
 <div class="mathblock">…<span class="lbl">what it says in words</span></div>
+<pre><code>…python, highlighted automatically…</code></pre>
+<pre><code class="nohl">…diagrams, output…</code></pre>
 ```
 
-`.tw` is the scroll wrapper — **every table must be wrapped in it** or it will
-overflow the page on mobile.
+`data-answer` is **0-based**. Every table goes inside `.tw`. **Never write raw
+LaTeX** (`d_{head}`, `\sqrt{x}`): there is no renderer, readers see it literally,
+and `check_ui.js` fails on it. Use `d<sub>head</sub>`, `√`, `×`, `·`.
 
-### Code
+### Figures
 
-Plain `<pre><code>…</code></pre>`. Python is syntax-highlighted automatically.
-Add `class="nohl"` on the `<code>` to opt out (use for ASCII diagrams and
-non-Python output). Copy buttons are added for you.
+Inline SVG; every colour is a CSS variable with a fallback
+(`fill="var(--ink-3,#664436)"`) so figures re-theme. Never a bare hex.
 
 ---
 
-## 3. SVG figures — the one place you must be careful
+## 4. Colour is semantic — spend it on meaning only
 
-Inline SVG only. **Every colour must be a CSS variable with a fallback**, so
-figures re-theme with the page:
+The five `--dim-*` hues **encode one categorical meaning for the whole course**
+(in Transformers: which tensor axis — batch, time, feature, head, head-dim). If
+your subject has a natural categorical dimension (memory tier, pipeline stage,
+agent role, failure class), map it onto `--dim-1..5` and keep it for every page.
+If it does not, use neutrals and leave the hues alone. Never two meanings.
 
-```html
-<text fill="var(--ink-3,#775446)">label</text>
-<rect fill="var(--surface,#FBF4E4)" stroke="var(--dim-2,#1B4FA8)" stroke-width="1.3"/>
-```
+The hues are validated perceptually, not by hue angle: OKLab distance ×100 under
+the Machado-2009 protan and deutan simulations must be **≥ 8 for every pair**
+(colour-blind readers) and **≥ 15** with normal vision, and each hue must stay
+clear of the accent and the stamp. `check_ui.js` enforces this in both themes.
+A sixth category gets a non-hue treatment (dotted underline, outline), never a
+near-miss colour.
 
-Never hardcode a bare hex. The reference course had three inline maths colours
-picked for a dark background that landed at **1.4:1** on cream when the theme
-changed — invisible. Use the tokens and this cannot happen.
+Widgets that do not draw your semantic categories use neutral, accent and stamp
+colours, never the dim hues. The `--part-*` inks are for navigation only.
 
-Available: `--ink`, `--ink-2/3/4`, `--paper`, `--surface`, `--surface-2`,
-`--line`, `--line-2`, `--accent`, `--dim-1..5`, `--ok`, `--warn`, `--stop`,
-`--stamp`, `--stamp-ink`.
-
----
-
-## 4. Colour is semantic — do not spend it on decoration
-
-The four/five `--dim-*` hues **encode meaning**, in this course's case which
-tensor axis you are looking at. Boldness is spent there and nowhere else. If
-your subject has a natural categorical dimension (pipeline stage, memory tier,
-agent role, failure class), map it onto `--dim-1..5` and be consistent for the
-whole course. If it does not, use neutrals and leave the dim hues alone.
-
-**Five is the ceiling.** The hues sit at 20° / 90° / 175° / 218° / 324°, with
-the violet accent at 276°, `--warn` at 55° and `--stop` at 5°. Every remaining
-gap is under 45°. A sixth category must get a **non-hue** treatment (dotted
-underline, outline, pattern) — a near-miss colour is worse than no colour.
-`check_ui.js` enforces ≥30° separation.
-
-### The axis highlighter (`axes.js`)
-
-If your course has anything shaped like a tensor shape, reuse it. Register your
-vocabulary in `TFS_AXIS_SYMBOLS`, mark up spans as:
-
-```html
-<span class="shp">(<b data-axis="batch">B</b>, <b data-axis="time">T</b>, <b data-axis="feat">C</b>)</span>
-```
-
-Hover, tap or keyboard-select any axis and every occurrence on the page lights
-up. Four channels move together so it is **never colour-only**: everything else
-dims to `.28`, the active one gains a 2px underline and a tinted background, and
-pinned adds a solid ring.
-
-Two hard-won constraints, both of which cost real debugging time:
-
-- **Never bake this markup into `<pre>`.** `course.js` highlights code with
-  `code.innerHTML = highlightPython(code.textContent)`, which silently strips
-  it. Code blocks are annotated at runtime by `tfsAnnotate()` *after*
-  highlighting, walking text nodes so the syntax spans survive.
-- **Whitelist, never regex alone.** A naive matcher wraps `def forward(self, x)`,
-  `(q, k, v)` and `[None, None]` as if they were shapes. Only annotate when
-  *every* non-numeric part resolves to a known symbol.
+If your course has shape-like expressions, reuse the highlighter: register your
+vocabulary in `TFS_AXIS_SYMBOLS` / `TFS_AXES` and mark spans as
+`<span class="shp">(<b data-axis="batch">B</b>, …)</span>`. It is never
+colour-only (dimming, underline, ring, a "pinned" label). Never bake this markup
+into `<pre>`; `tfsAnnotate()` annotates code at runtime.
 
 ---
 
-## 5. Pedagogical contract
+## 5. The content standard — what an "A" chapter is
 
-The reference course is 26 chapters, ~35 h, 177 exercises and questions. Match
-the density, not necessarily the length. Every chapter must have, in order:
+Every chapter is graded in `docs/CONTENT-AUDIT.md` (create one for your course).
+**A** = worth the read as a book for a working engineer; **B** = solid but missing
+listed items; **C** = too thin for its importance. Ship only A chapters.
 
-1. `<h1>` as `N · Title`, then a `.lead` naming what is genuinely hard here.
-2. An `.mn.orient` block: *Builds on / Leads to / Why this chapter*.
-3. `<h2>` sections numbered `N.1 ·`, `N.2 ·` …
-4. **At least one interactive widget** (`data-viz`) or a drawn SVG figure per
-   major section. Widgets are the point, not decoration.
-5. **At least two `.quiz` checkpoints**, mid-chapter — not all at the end.
-6. **3–6 `.exercise` blocks**, each with a `details.reveal` solution.
-7. A `<h2>Sources &amp; further reading</h2>` with a `ul.tiny` — primary papers
-   first, then the good secondary explainers, then the companion notebook.
+An A chapter has, in order:
 
-Non-negotiables of voice and method:
+1. `<h1>N · Title</h1>`, a `.lead` naming what is genuinely hard, and the
+   `.mn.orient` block (*Builds on / Leads to / Why this chapter*; "Builds on" only
+   points backwards, cross-course links use the `xref` form in §9).
+2. A **"whole chapter in N sentences"** `box intuition` near the top.
+3. `<h2>N.1 · …</h2>` sections in dependency order, each with at least one worked
+   example that shows every number, and a widget or drawn figure where it helps.
+4. **At least 3 quiz questions per major section**, explanations that address the
+   distractors, spread through the chapter, not all at the end.
+5. **5–7 exercises**, including at least one cost/systems estimate, one
+   implementation, and one "predict, then measure". Answers in `details.reveal`.
+6. A "mental model to keep" section, then Exercises, then
+   `<h2>Sources &amp; further reading</h2>` (`ul.tiny`: primary papers first, then
+   the best secondary explainers, then the companion notebook and tests).
 
+Non-negotiables of method:
+
+- **Every number in the text is computed by code in the repository and asserted.**
+  Reference code lives in a package (`yourpkg/…py`) with shapes annotated on every
+  line; a test asserts each claim; a companion notebook recomputes every worked
+  example and table with an `assert` per cell. A chapter whose notebook does not
+  exist yet marks the reference `<code class="planned">…</code>`; the integrity
+  check fails on any other reference to a missing file.
 - **Derive, never assert.** If a constant appears, show where it comes from.
-  The reference course derives the `√d_k` in attention rather than stating it.
-- **Every claim is derived or measured.** No hand-waving benchmarks.
-- **Annotate every shape and name every axis** at each step of any
-  transformation. Dimension confusion is the single most common failure mode.
-- **Order by dependency, not by topic.** Each chapter uses what the last built.
-- Prerequisites are stated honestly and kept minimal; where a chapter needs a
-  piece of maths, it derives the one line that matters instead of assuming it.
-- Close the loop on anything generative: a plausible-looking loss curve proves
-  nothing. Show the output, or the assertion that would have caught the bug.
+- **Facts must be verifiable.** Cite the paper, the vendor spec or the model
+  config. If you cannot verify it, do not state it. Date anything about the
+  frontier, in a `box sota` or a dated note.
+- **Annotate every shape and name every axis** at each step.
+- **Close the loop on anything generative.** A healthy loss curve proved nothing
+  once: the buggy run had the *lower* loss. Show the output, or the assertion that
+  would have caught the bug.
+- **Order by dependency, not topic.** Each chapter uses what the last built.
 
 ### The outline manifest
-
-`assets/chapters.js` is the single source of truth for ordering, the sidebar,
-prev/next nav and the progress bar:
 
 ```js
 { id: "06", f: "ch06-mha.html", t: "Multi-Head Attention: The Reshape Dance",
   s: "One-line subtitle", tag: "70 min" }
 ```
 
-`id` must match the filename's digits and run `01..NN` with no gaps —
-`check_ui.js` asserts all of it. Mark unwritten chapters `wip: true` and they
-render listed-but-inert instead of as dead links.
+Chapters are grouped into `PARTS` (each Part gets the next `--part-N` ink). `id`
+matches the filename digits and runs without gaps (it may start at `00`).
+Unwritten chapters are `wip: true` (listed but inert). **Renumbering is
+error-prone**: when you insert a chapter, rename files, update `chapters.js`, and
+fix every `href` and every visible "Ch NN" label by deriving labels from the
+hrefs, never by regex over bare numbers (`Ch&nbsp;15` and "Ch 6, 13" slip past
+naive patterns).
 
 ---
 
-## 6. Responsiveness contract — this is locked, and it is load-bearing
+## 6. Interactivity and state
 
-No page may scroll sideways at any width from **320px** up. `check_responsive.js`
-enforces it. These rules are the reasons it currently holds:
-
-- Prose is capped at `--measure: 37rem` (~70 characters). **Code, tables,
-  figures, widgets and callouts break out** to the wider `--breakout`, which
-  grows to 64rem above 100rem and 74rem above 120rem.
-- `main > * { max-width: min(var(--measure), 100%) }` — the `min()` is
-  load-bearing. A bare `37rem` is 592px and overflows every phone.
-- `main` spans the full breakout and prose is narrowed by that child rule.
-  Doing it the other way round fails: `max-width:100%` on a child resolves
-  against `main` and silently caps it.
-- **Every flex/grid container that can hold a `<pre>` needs `min-width: 0`.**
-  Grid and flex items default to `min-width: auto` and refuse to shrink below
-  their content, so a wide code block pushes the whole page sideways instead of
-  scrolling inside its own box. This is the single most common regression.
-- `body { overflow-x: clip }` as a backstop.
-- Wide tables live in `.tw`; wide code scrolls inside its own `<pre>`.
-
-Breakpoints, all already implemented:
-
-| width | what changes |
-|---|---|
-| 82rem | sidebar becomes an off-canvas drawer |
-| 66rem | margin notes fold back into the column |
-| 44rem | `.grid2` collapses to one column |
-| 34rem | chapter nav collapses to one column |
-| 30rem | chapter-card tags hide |
-
-`.wrap` reserves the sidebar with **padding, not `margin-left`**, so
-`margin-inline: auto` still centres the content in the space that remains.
+- At least one `data-viz` widget in most chapters. Widgets follow `viz.js`
+  conventions: read colours through `readTheme`, redraw on theme change while
+  preserving their controls' state, and call `tfsEnhance()` after drawing any
+  semantic badges.
+- Every stateful control gets a scenario in `check_interaction.js` (fake clock;
+  scenarios may return promises when an observer must run). "It saved the value
+  but never restarted the timer" passed every other suite once.
+- `prefers-reduced-motion` means no transitions at all (`transition: none`, not a
+  tiny duration).
 
 ---
 
-## 7. Theming — the trap that already bit once
-
-There are **four** token blocks and they must stay in sync:
-
-```
-:root                                  light defaults
-@media (prefers-color-scheme: dark) { :root:not([data-theme]) { … } }
-:root[data-theme="light"]              explicit override
-:root[data-theme="dark"]               explicit override
-```
-
-The media query is scoped `:not([data-theme])` so the OS preference applies only
-when the reader has not chosen. Relying on specificity alone is fragile — it
-silently failed for `background` while working for `color`. `check_ui.js` reads
-the two explicit blocks, so a token added to only some blocks passes the test
-and still breaks the page. Add to all four.
-
-When you edit a theme with a script, verify per block. A regex keyed on
-indentation put light values into the dark block once and the test did not catch
-it, because the test only reads two of the four.
-
----
-
-## 8. Definition of done
+## 7. Definition of done
 
 ```bash
-cd tests && npm install jsdom && npm run check:all
+cd tests && npm install jsdom
+node check_ui.js            # structure, WCAG both themes, CVD-validated hues,
+                            # content integrity (files, links, Builds-on, no LaTeX)
+node check_responsive.js    # no sideways scroll from 320px, real Chrome
+node check_interaction.js --all   # every control does what it says, every chapter
+node shoot.js               # every page × 8 viewports × 2 themes: screenshots plus
+                            # layout audit (overflow, centring, heading hierarchy,
+                            # box-wider-than-content, misalignment, clipped text and
+                            # SVG labels, tiny type, touch targets, fonts, JS errors)
+python <your python tests> && python run_notebooks.py
 ```
 
-That runs three suites, and each answers a different question:
+All must pass with zero problems. Then look: `node shoot.js --full` writes contact
+sheets of every page; read them in both themes. The suites cannot see taste, and
+three of the worst bugs in the reference course (prose pinned left in a wide sheet,
+headings smaller than body text, code boxes 2× wider than their code) were found by
+looking, then turned into rules.
 
-| suite | question | how |
-|---|---|---|
-| `check_ui.js` | is it BUILT and legible? | jsdom — structure, WCAG, manifest, links |
-| `check_responsive.js` | does anything OVERFLOW? | real Chrome, fixed-width iframe |
-| `check_interaction.js` | does it WORK when pressed? | real Chrome, fake clock |
+Check by hand too: keyboard only (tab to everything, Esc clears), greyscale (every
+state distinguishable), JS disabled (prose and colours correct), both themes on a
+real screen.
 
-The third one exists because the first two never press a button. A duration
-select that saved its value but never restarted the running sprint passed both
-of them and still shipped broken. It injects a fake clock before `course.js`
-loads, so `__advance(60000)` moves a countdown one minute instantly and
-exactly — a fifteen-minute timer is testable in milliseconds. Add a scenario
-for every stateful control you build; `--all` replays the core one on every
-chapter in the manifest.
+---
 
-Then `python serve.py` and click through, because the suites cannot see taste.
+## 8. Deploy
 
-`check_ui.js` verifies, in **both** themes: every colour pair against WCAG
-(4.5:1 body, 3.0:1 large/UI), ≥30° hue separation between the semantic hues,
-the accent excluded from them, manifest integrity, that every internal link
-resolves, and that each page builds its topbar, sidebar, nav, copy buttons and
-quiz markers with no script errors.
+GitHub Pages from `main`, repository root. After each push, confirm the build
+finished (`gh api repos/<owner>/<repo>/pages/builds/latest`) and that the live
+pages serve the new `?v=`.
 
-Then check by hand, because the tests do not cover these:
+---
 
-- [ ] Both themes, on a real screen. Dark is not a token swap.
-- [ ] Every widget responds to its controls and re-themes on toggle.
-- [ ] Keyboard only: tab to every interactive thing, Escape clears state.
-- [ ] Greyscale (devtools → Rendering → disable colour): every state still
-      distinguishable. If it is not, you have encoded meaning in hue alone.
-- [ ] `prefers-reduced-motion`: no animation, no transition.
-- [ ] JS disabled: prose, colours and layout still correct.
-- [ ] 320px wide: nothing overflows, drawer works.
+## 9. The platform contract (docs/PLATFORM.md)
+
+Every course is one entry in a single library at `ganesh-deepak.github.io`. All
+courses share one origin, so they share settings and can read each other's
+progress. Build yours ready for that from the first commit:
+
+- **Slug and storage.** Your progress key is `<slug>-progress-v1` (set `KEY` in
+  `course.js`). Do not rename shared keys (`tfs-theme`, `tfs-side*`,
+  `tfs-inspector`): a reader's theme and sidebar follow them across courses.
+- **Registry.** Vendor the hub's `platform/courses.js` as
+  `course/assets/courses.js` and add your course's entry (slug, title, url,
+  store key, chapter count, ink, status).
+- **Cross-course links** use one form, so the prerequisite map and the
+  "already done" marks work:
+
+  ```html
+  <a class="xref" data-course="transformers" data-ch="15"
+     href="/transformers-from-scratch/ch15-kvcache.html">Transformers&nbsp;Ch&nbsp;15</a>
+  ```
+
+  Put them in `.mn.orient` "Builds on" whenever a chapter depends on another
+  course. Prefer linking to the chapter that teaches a thing over re-teaching it.
+- **Design-system version.** Record which version of the shared assets you
+  vendored; `check_platform.js` reports drift.
+
+---
+
+## 10. Working in parallel
+
+For a course of 15+ chapters, split authoring by Part across parallel sessions,
+each on its own branch, with disjoint files:
+
+- only one session edits `chapters.js`, `index.html` and the shared assets;
+- each session puts its tests in its own file (`tests/test_<part>.py`);
+- nobody bumps `?v=` (the merging session does it once);
+- each session updates only its chapters' entries in `CONTENT-AUDIT.md`.
+
+Merge, run every suite, bump the cache version, deploy, verify live.
 
 Commit in coherent chunks with messages that explain **why**, not what.

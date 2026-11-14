@@ -1,8 +1,52 @@
 # After Transformers: the rest of the AI engineering curriculum
 
-Ten courses, each authored with `NEW-COURSE-PROMPT.md`. Each entry below is a
-**paste-ready brief** — drop the title and the brief paragraph into the two
-`<<< >>>` placeholders in that prompt.
+Ten courses, one library. Each course is authored with `NEW-COURSE-PROMPT.md`
+and plugs into the shared platform described in `PLATFORM.md`: one look, one
+theme setting, one record of progress across every course, and links that go
+from "you need this" straight to the chapter that teaches it.
+
+Each entry below is a **paste-ready brief**: drop the title, slug and brief into
+the `<<< >>>` placeholders at the top of the prompt.
+
+## Status
+
+| # | Course | Slug | Repo (Pages path) | Ink | Status |
+|---|---|---|---|---|---|
+| 0 | Transformers From Scratch | `transformers` | `/transformers-from-scratch/` | `--part-2` | **live**, 28 chapters, being raised to grade A throughout |
+| 1 | Evaluation & Experimentation for LLM Systems | `evals` | `/llm-evaluation/` | `--part-4` | planned, build first |
+| 2 | Post-Training in Practice | `posttraining` | `/post-training/` | `--part-1` | planned |
+| 3 | GPU Programming: CUDA & Triton | `gpu` | `/gpu-programming/` | `--part-3` | planned |
+| 4 | Inference Engineering at Scale | `inference` | `/inference-engineering/` | `--part-5` | planned |
+| 5 | Retrieval & Context Engineering | `retrieval` | `/retrieval/` | `--part-6` | planned |
+| 6 | Agents & Tool Use | `agents` | `/agents/` | `--part-0` | planned |
+| 7 | Production AI Systems | `production` | `/production-ai/` | `--part-7` | planned |
+| 8 | AI Security & Red Teaming | `security` | `/ai-security/` | `--part-1` | planned |
+| 9 | Mathematics for ML, from First Principles | `maths` | `/ml-maths/` | `--part-6` | planned |
+| 10 | Multimodal & Generative Models Beyond Text | `multimodal` | `/multimodal/` | `--part-3` | planned |
+
+Inks repeat after eight; no two courses in the same track share one.
+
+## What Transformers From Scratch now covers, so the others do not repeat it
+
+The new courses **build on** these chapters with cross-course links (`xref`, see
+`PLATFORM.md` §5) instead of re-teaching them:
+
+| Topic | Where it is taught | Courses that link to it |
+|---|---|---|
+| Number formats, fp8/fp4, quantization arithmetic | Ch 0, Ch 12 | 3, 4 |
+| Tensors, shapes, matmul, FLOP counting | Ch 1, Ch 2 | 3, 9 |
+| Attention, MHA, RoPE, the block, full architectures | Ch 5–9 | 4, 5, 10 |
+| Backprop, training loop, data, μP, MFU | Ch 10, Ch 11 | 2, 3, 9 |
+| GPU roofline, tensor cores, kernels, FlashAttention | Ch 14, Ch 17 | 3, 4 |
+| KV cache, GQA/MLA, serving, SLOs and $/token | Ch 15, Ch 16, Ch 18 | 4, 7 |
+| Distributed training, context parallelism | Ch 19 | 2, 3 |
+| Mixture of Experts (training, EP, serving) | Ch 20 | 3, 4 |
+| Scaling laws, long context | Ch 21 | 1, 4, 5 |
+| SFT, LoRA/QLoRA, RLHF, DPO, GRPO | Ch 23–25 | 2, 6 |
+| Evaluating LLMs (benchmarks, judges, pass@k, significance) | Ch 26 | 1, 2, 6, 7 |
+
+Courses 1, 2 and 4 are therefore the *practice* courses for material whose
+theory already exists: they start where those chapters stop.
 
 ## How these were chosen
 
@@ -38,7 +82,7 @@ Verify against actual job postings you want before committing months to a track.
 ---
 
 ## 1. Evaluation & Experimentation for LLM Systems
-*~18 chapters. Do this first.*
+*~18 chapters. Do this first. Builds on Transformers Ch 26 (the theory of evaluating models) and goes on to evaluating whole systems.*
 
 > A course on how to know whether an AI system actually works. For engineers who
 > can build LLM features but cannot yet prove one version is better than another.
@@ -56,7 +100,7 @@ Verify against actual job postings you want before committing months to a track.
 > benchmark you cannot reproduce.
 
 ## 2. Post-Training in Practice
-*~20 chapters. The applied counterpart to Ch 23–25 of the transformers course.*
+*~20 chapters. The applied counterpart to Transformers Ch 23–25 (incl. LoRA) and Ch 26 (evaluation).*
 
 > How to take a base model and make it good at your task. For engineers who
 > understand SFT, DPO and GRPO in theory and need to actually run them. By the
@@ -88,7 +132,7 @@ Verify against actual job postings you want before committing months to a track.
 > Every claim is measured on real hardware, never asserted.
 
 ## 4. Inference Engineering at Scale
-*~20 chapters. Extends Ch 15, 17, 18.*
+*~20 chapters. Extends Transformers Ch 14–18 and Ch 20 §20.7 (serving MoE).*
 
 > How to serve a language model to real traffic without going bankrupt. For
 > engineers who understand KV caching and want to build or operate a serving
@@ -209,5 +253,48 @@ Verify against actual job postings you want before committing months to a track.
 The portfolio argument matters more than the certificate argument: each of these
 courses produces a **tested reference implementation**, which is a far stronger
 artefact than a course completion. Build them in the order that matches the jobs
-you are actually applying for, and finish the reference implementation for each —
+you are actually applying for, and finish the reference implementation for each:
 a half-built course teaches you less than a small finished one.
+
+---
+
+## Building them: the plan
+
+**The quality bar is the one Transformers now meets**: every chapter graded A in
+the course's own `docs/CONTENT-AUDIT.md` (see `NEW-COURSE-PROMPT.md` §5), every
+number backed by code and a test, every chapter with a companion notebook, every
+page clean in `shoot.js` across 8 viewports and both themes.
+
+**Order of work**
+
+1. **Platform first** (`PLATFORM.md` §8): add the Library control and registry to
+   Transformers' `course.js`, then create the hub repository
+   (`ganesh-deepak.github.io`) with the library page, tracks, registry, canonical
+   assets and `check_platform.js`. Every course after that is born connected.
+2. **Course 1, Evaluation.** It is the multiplier: every later course uses its
+   methods to prove its own claims.
+3. Then by track. Everyone: 7. Systems: 3 → 4. Applied: 5 → 6. Model: 2.
+   Frontier labs: 9. Breadth: 8, 10.
+
+**How each course is produced**
+
+1. One session writes the outline (`chapters.js` with Parts, every chapter `wip`),
+   the course's `CONTENT-AUDIT.md` with the target per chapter, its semantic hue
+   mapping, and its registry entry. Review the outline before any prose.
+2. Parallel sessions author one Part each, on their own branches, with disjoint
+   files (`NEW-COURSE-PROMPT.md` §10). A separate session writes the companion
+   notebooks.
+3. One session merges, runs every suite to zero problems, reads the contact
+   sheets, grades every chapter, bumps the cache version and deploys.
+4. Flip the course's `status` to `live` in the hub registry. The library, the
+   course switcher and the prerequisite map update across every course.
+
+**Connecting them** (`PLATFORM.md`)
+
+- One origin, so one theme, one sidebar preference and shared progress: the
+  library page shows every course's progress and a "continue" link for each.
+- A **Library** control in every course's topbar to jump between courses.
+- **Tracks** on the hub: the sequences above, drawn as paths through the courses.
+- A **prerequisite map** built from every `xref` in every course's "Builds on"
+  notes: a dependency graph of chapters across the whole library.
+- **Search** across all courses' headings and glossary terms.
