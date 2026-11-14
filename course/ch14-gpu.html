@@ -6,7 +6,7 @@
 <title>Ch 14 — The GPU: Memory, Tensor Cores, and the Roofline</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=26">
+<link rel="stylesheet" href="assets/style.css?v=27">
 </head>
 <body>
 <main>
@@ -195,7 +195,7 @@ sequences fit</b>, and therefore what limits <span class="math">B</span>, and th
 position on this table.</p>
 </div>
 
-<h2>14.4 · Tensor cores, and why d_head is 64 or 128</h2>
+<h2>14.4 · Tensor cores, and what they ask of your shapes</h2>
 
 <p>The 989 TFLOP/s figure is not from general-purpose arithmetic units. It comes from <b>tensor
 cores</b>: fixed-function hardware that multiplies small matrix tiles in one instruction. On Ampere and
@@ -213,44 +213,45 @@ Hopper, the bf16/fp16 instruction has shape:</p>
 free, and cannot turn it off.</p>
 
 <p>Any dimension that is not a multiple of the tile is <b>padded to one</b>, and you pay full price for
-the padding. So <span class="math">d<sub>head</sub></span> should be a multiple of 16. But that alone would
-permit 48, 80, 96 — and you never see those. The sharper constraint is the memory system:</p>
+the padding. That is the hard rule tensor cores impose: the dimensions of every matmul should be multiples
+of 16 for bf16 (and of 32 for fp8, whose instruction tile is twice as deep). It is why vocabulary sizes are
+padded (GPT-2's 50,257 becomes 50,304 in nanoGPT, a multiple of 64, for a measurable speedup) and why
+<code>d_ff</code> is rounded to a multiple of 256 (Ch&nbsp;08).</p>
 
 <div class="example">
-<span class="t">Why 64 and 128 specifically</span>
+<span class="t">So why is d<sub>head</sub> almost always 64 or 128?</span>
 
 <div class="step"><div class="i">1</div><div>
-<b>A memory transaction is 128 bytes.</b> That is the cache line — 4 sectors of 32 B. You cannot fetch
-less; a request for 1 byte still moves 32.
+<b>Not because other sizes are impossible.</b> Real models ship 80 (Phi-2), 96 (Phi-3-mini, GPT-NeoX-20B),
+192 for queries and keys (DeepSeek-V3's MLA) and 256 (Gemma). All are multiples of 16, so tensor cores
+handle them without padding.
 </div></div>
 
 <div class="step"><div class="i">2</div><div>
-<b>One head's slice of a row is <span class="math">d<sub>head</sub></span> values &times; 2 bytes.</b> For that
-slice to sit in whole cache lines with no waste:
-<pre style="margin:.4rem 0"><code class="nohl">d_head    bytes    cache lines
-   32        64      0.50   ragged - two heads share a line
-   48        96      0.75   ragged
-   64       128      1.00   CLEAN
-   80       160      1.25   ragged
-   96       192      1.50   ragged
-  128       256      2.00   CLEAN
-  256       512      4.00   CLEAN</code></pre>
+<b>Because the attention kernels are tuned for a short list.</b> A FlashAttention-style kernel keeps a
+tile of Q, K and V for one head in shared memory and registers, and its tile sizes, register budget and
+pipelining are hand-tuned per head size. Libraries ship compiled versions for a few values (FlashAttention-2
+covers multiples of 32 up to 256), and the most-optimised paths are for 64 and 128. Pick an unusual size and
+you may fall back to a slower path or a padded one; pick 256 and each tile holds fewer tokens, so the kernel
+does less work per byte it stages.
 </div></div>
 
 <div class="step"><div class="i">3</div><div>
-<b>Only multiples of 64 are clean</b>, and 64/128 are the two that also keep
-<span class="math">√d<sub>head</sub></span> in a sensible range for attention
-(<a href="ch05-attention.html">Ch&nbsp;05</a>). Hence: essentially every production model uses 64 or 128,
-and FlashAttention kernels are compiled as separate template instantiations for exactly those values.
+<b>And because of what <code>d<sub>head</sub></code> buys.</b> Too small and each head has little room to
+express a query (Ch&nbsp;06); too large and you get fewer heads for the same <code>d_model</code>. 64–128
+is the range where both concerns are satisfied, it divides common <code>d_model</code> values cleanly
+(4096 = 32 × 128, 768 = 12 × 64), and once the ecosystem standardised on it, kernels, inference engines and
+quantization tools optimised for it first. The convention is now self-reinforcing.
 </div></div>
 </div>
 
 <div class="box math-note">
 <span class="t">A number you have seen before, now explained</span>
 <p style="margin-bottom:0">Whenever a config says <code>d_model=4096, n_head=32</code>, that is
-<span class="math">d<sub>head</sub> = 128</span>. When it says <code>d_model=768, n_head=12</code>, that is
-<span class="math">64</span>. It looks like a modelling choice. It is a <b>cache-line choice</b> that has
-been stable since 2018 and will stay stable as long as the line is 128 bytes.</p>
+d<sub>head</sub> = 128. When it says <code>d_model=768, n_head=12</code>, that is 64. It looks like a free
+modelling choice. In practice it is a choice <b>constrained by tensor-core tiles</b> (a multiple of 16) and
+<b>steered by kernel support</b> (64 and 128 get the fastest paths). If you design a new architecture, check
+which head sizes your attention kernel and your inference engine support before you train.</p>
 </div>
 
 <h2>14.5 · Coalescing: the same bytes, 32× the traffic</h2>
@@ -316,17 +317,17 @@ the online-softmax proof that makes it exact.</p>
   (batch, speculate).</div>
 </div>
 
-<div class="qitem" data-answer="1">
-  <div class="qq">Why is <code>d_head</code> almost always 64 or 128, rather than 48 or 96?</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">A config has <code>d_model = 2560</code> and <code>n_head = 32</code>, so d<sub>head</sub> = 80. What does that cost you?</div>
   <div class="opts">
-    <div class="opt">Powers of two are faster to index</div>
-    <div class="opt">At 2 bytes per value, only multiples of 64 fill whole 128-byte cache lines; 48 and 96 leave ragged fractions</div>
-    <div class="opt">Attention requires <code>d_head</code> to be a power of two</div>
-    <div class="opt">Because <code>√d_head</code> must be an integer</div>
+    <div class="opt">Tensor cores cannot multiply 80-wide tiles, so attention runs on the slow general-purpose units</div>
+    <div class="opt">80 does not fill a whole number of 128-byte cache lines, so every load is wasted</div>
+    <div class="opt">Possibly nothing, possibly speed: 80 is a multiple of 16, but you depend on your attention kernel having a tuned path for it</div>
+    <div class="opt">The model cannot use RoPE, which needs a power-of-two head size</div>
   </div>
-  <div class="expl"><b>Cache lines, then tensor-core tiles.</b> 48 and 96 <i>are</i> valid multiples of the
-  16-wide tensor-core k-dimension — so tile alignment alone doesn't rule them out. What does is the
-  128-byte transaction: 96 × 2 = 192 B = 1.5 lines. 64 × 2 = 128 B exactly; 128 × 2 = 256 B exactly.</div>
+  <div class="expl"><b>Kernel support, not a hard limit.</b> 80 = 5 × 16, so tensor cores handle it without
+  padding (Phi-2 ships exactly this shape). The risk is that the attention kernel or inference engine has no
+  tuned path for 80 and falls back to a slower or padded one. RoPE needs only an even head size.</div>
 </div>
 
 <div class="qitem" data-answer="3">
@@ -414,10 +415,10 @@ faster overall, and connect that to the coalescing table in §14.5.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=26"></script>
-<script src="assets/course.js?v=26"></script>
-<script src="assets/viz.js?v=26"></script>
-<script src="assets/axes.js?v=26"></script>
+<script src="assets/chapters.js?v=27"></script>
+<script src="assets/course.js?v=27"></script>
+<script src="assets/viz.js?v=27"></script>
+<script src="assets/axes.js?v=27"></script>
 <script>initChapter("14");</script>
 </body>
 </html>

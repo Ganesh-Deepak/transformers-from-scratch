@@ -6,7 +6,7 @@
 <title>Ch 26 — Capstone: Build a Modern LLM End to End</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=26">
+<link rel="stylesheet" href="assets/style.css?v=27">
 </head>
 <body>
 <main>
@@ -41,7 +41,7 @@ class Config:
     max_T:      int   = 512
     rope_base:  float = 10000.0     # (Ch 7)
     tie_embed:  bool  = True        # (Ch 4)
-# ≈ 15 M parameters. Trains on CPU in ~30-60 minutes.
+# ≈ 12.6 M parameters (12,587,904 with tied embeddings). Trains on CPU in ~30-60 minutes.
 </code></pre>
 
 <div class="tw">
@@ -189,13 +189,13 @@ is the most valuable part of this milestone.</b></p>
 <table>
 <thead><tr><th>Extension</th><th>Chapter</th><th>Difficulty</th></tr></thead>
 <tbody>
-<tr><td>Swap GQA → MLA and verify the absorption identity</td><td>13</td><td>hard</td></tr>
-<tr><td>Replace the MLP with a 4-expert MoE; plot expert collapse with and without balancing</td><td>16</td><td>medium</td></tr>
-<tr><td>Implement tiled FlashAttention in PyTorch; verify exactness</td><td>14</td><td>medium</td></tr>
-<tr><td>Speculative decoding using a 2-layer draft of your own model</td><td>15</td><td>hard</td></tr>
-<tr><td>Extend context 512 → 2048 with YaRN; plot perplexity vs length</td><td>17</td><td>medium</td></tr>
-<tr><td>GRPO on a toy verifiable task (2-digit addition)</td><td>21</td><td>hard</td></tr>
-<tr><td>Logit lens: decode every layer's residual stream</td><td>4</td><td>easy, very illuminating</td></tr>
+<tr><td>Swap GQA → MLA and verify the absorption identity</td><td><a href="ch16-gqa-mla.html">Ch&nbsp;16</a></td><td>hard</td></tr>
+<tr><td>Replace the MLP with a 4-expert MoE; plot expert collapse with and without balancing</td><td><a href="ch20-moe.html">Ch&nbsp;20</a></td><td>medium</td></tr>
+<tr><td>Implement tiled FlashAttention in PyTorch; verify exactness</td><td><a href="ch17-flashattention.html">Ch&nbsp;17</a></td><td>medium</td></tr>
+<tr><td>Speculative decoding using a 2-layer draft of your own model</td><td><a href="ch18-serving.html">Ch&nbsp;18</a></td><td>hard</td></tr>
+<tr><td>Extend context 512 → 2048 with YaRN; plot perplexity vs length</td><td><a href="ch21-scaling.html">Ch&nbsp;21</a></td><td>medium</td></tr>
+<tr><td>GRPO on a toy verifiable task (2-digit addition)</td><td><a href="ch25-grpo.html">Ch&nbsp;25</a></td><td>hard</td></tr>
+<tr><td>Logit lens: decode every layer's residual stream</td><td><a href="ch04-embeddings.html">Ch&nbsp;04</a></td><td>easy, very illuminating</td></tr>
 </tbody>
 </table>
 </div>
@@ -289,10 +289,10 @@ idea. If you built this, you have built the thing. Everything else is more of it
 
 </main>
 
-<script src="assets/chapters.js?v=26"></script>
-<script src="assets/course.js?v=26"></script>
-<script src="assets/viz.js?v=26"></script>
-<script src="assets/axes.js?v=26"></script>
+<script src="assets/chapters.js?v=27"></script>
+<script src="assets/course.js?v=27"></script>
+<script src="assets/viz.js?v=27"></script>
+<script src="assets/axes.js?v=27"></script>
 <script>initChapter("26");</script>
 </body>
 </html>

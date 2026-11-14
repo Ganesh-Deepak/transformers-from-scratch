@@ -6,7 +6,7 @@
 <title>Ch 21 — Scaling Laws and Long Context</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=26">
+<link rel="stylesheet" href="assets/style.css?v=27">
 </head>
 <body>
 <main>
@@ -195,7 +195,7 @@ gets worse at distinguishing adjacent tokens.</p>
 
 <h3>NTK-aware scaling</h3>
 <pre><code># Instead of scaling positions, scale the RoPE BASE.
-base_new = base * scale ** (d / (d - 2))     # e.g. 10000 → ~much larger
+base_new = base * s ** (d / (d - 2))   # s = target_len / trained_len; d=128, s=8: 10000 → ~82,700
 </code></pre>
 <p>Interpolate the low-frequency (long-range) dimensions while leaving high-frequency ones nearly untouched.
 Better than PI, and often works with <b>no fine-tuning at all</b>. Llama 3's jump from base 10,000 to
@@ -219,7 +219,7 @@ mask = (i - j < W) & (j <= i)          # W = 4096 typically
 </code></pre>
 <p>Turns O(T²) into O(T·W). Information still propagates further than W because stacking layers extends the
 receptive field — <code>n_layer × W</code> in total, much like a CNN. Mistral 7B popularised this; Gemma 2/3
-interleave local and global layers (e.g. 5 local : 1 global) so most layers are cheap while a few retain
+interleave local and global layers (alternating 1 : 1 in Gemma 2, 5 local : 1 global in Gemma 3) so most layers are cheap while a few retain
 full-range attention.</p>
 
 <div class="box intuition">
@@ -347,10 +347,10 @@ basis for choosing a model.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=26"></script>
-<script src="assets/course.js?v=26"></script>
-<script src="assets/viz.js?v=26"></script>
-<script src="assets/axes.js?v=26"></script>
+<script src="assets/chapters.js?v=27"></script>
+<script src="assets/course.js?v=27"></script>
+<script src="assets/viz.js?v=27"></script>
+<script src="assets/axes.js?v=27"></script>
 <script>initChapter("21");</script>
 </body>
 </html>

@@ -6,7 +6,7 @@
 <title>Ch 22 — The 2026 Frontier</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=26">
+<link rel="stylesheet" href="assets/style.css?v=27">
 </head>
 <body>
 <main>
@@ -105,6 +105,9 @@ full attention layers for exact recall. Ratios of roughly 1 attention layer per 
 <tr><td><b>Nemotron 3</b></td><td>alternates attention and Mamba-2 layers</td></tr>
 <tr><td><b>Falcon-Mamba, Codestral Mamba</b></td><td>attention-free; competitive but weaker on recall tasks</td></tr>
 <tr><td><b>RWKV-7, Striped Hyena 2, Liquid LFM 2</b></td><td>other linear/hybrid families shipping at production quality</td></tr>
+<tr><td><b>Qwen3-Next</b> (Alibaba, 2025)</td><td>3 Gated DeltaNet (linear-attention) layers per 1 gated full-attention layer, plus a sparse MoE</td></tr>
+<tr><td><b>Kimi Linear</b> (Moonshot, 2025)</td><td>3 Kimi Delta Attention layers per 1 MLA layer</td></tr>
+<tr><td><b>MiniMax-M1</b> (2025)</td><td>"lightning" linear attention with one softmax-attention layer every eight</td></tr>
 </tbody>
 </table>
 </div>
@@ -115,7 +118,9 @@ full attention layers for exact recall. Ratios of roughly 1 attention layer per 
 (256k+) on cost and latency, and clearly not <i>worse</i> at short context. But the largest and strongest
 models as of mid-2026 — DeepSeek-V3.x, Qwen3, Kimi K2.x, and the closed frontier models — remain
 attention-based, typically with MoE and increasingly with sparse attention. Hybrids are winning the
-efficiency argument at long context; they have not yet won the frontier.</p>
+efficiency argument at long context; they have not yet won the frontier. The direction of travel is
+clear, though: in 2025 two major labs shipped linear-attention hybrids with a 3 : 1 linear-to-full ratio
+(Qwen3-Next, Kimi Linear), using <i>delta-rule</i> linear attention rather than Mamba-style SSMs.</p>
 </div>
 
 <h2>22.3 · Other things that are actually shipping</h2>
@@ -235,7 +240,7 @@ hybrid architectures, and it's small enough to actually run.</p>
 <div class="eb">
 <p>Pick one: the <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 technical report</a>, the
 <a href="https://arxiv.org/abs/2405.21060">Mamba-2 paper</a>, or a current model's technical report.
-Write a one-page summary answering the four questions from §22.3's box, plus: what would you need to
+Write a one-page summary answering the four questions from §22.4's box, plus: what would you need to
 believe for this to <i>not</i> be adopted widely?</p>
 <p class="tiny" style="margin-bottom:0">If you've worked through Chapters 1–21, the DeepSeek-V3 report should
 now be substantially readable — you know MLA, MoE, load balancing, FP8, MTP, and the KV-cache economics that
@@ -254,10 +259,10 @@ motivate all of them. That's a good measure of how far you've come.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=26"></script>
-<script src="assets/course.js?v=26"></script>
-<script src="assets/viz.js?v=26"></script>
-<script src="assets/axes.js?v=26"></script>
+<script src="assets/chapters.js?v=27"></script>
+<script src="assets/course.js?v=27"></script>
+<script src="assets/viz.js?v=27"></script>
+<script src="assets/axes.js?v=27"></script>
 <script>initChapter("22");</script>
 </body>
 </html>

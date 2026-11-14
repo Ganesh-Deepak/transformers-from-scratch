@@ -336,6 +336,13 @@ for (const file of ["index.html", ...manifestFiles]) {
   ok(!missing.length, "every referenced repo file exists (or is marked planned)", missing.slice(0, 4).join(", "));
   ok(!broken.length, "every link between pages resolves", broken.slice(0, 4).join(", "));
   ok(!forward.length, "'Builds on' only points to earlier chapters", forward.join(", "));
+  // There is no LaTeX renderer: `d_{head}` or `\sqrt{x}` outside <pre> shows up literally on the page.
+  const latex = [];
+  for (const f of [...names].sort()) {
+    const body = fs.readFileSync(path.join(COURSE, f), "utf8").replace(/<pre[\s\S]*?<\/pre>/g, "");
+    for (const m of body.matchAll(/\\(?:sqrt|times|text|frac|cdot)\b|[A-Za-z]+_\{[^}]*\}/g)) latex.push(f + ": " + m[0]);
+  }
+  ok(!latex.length, "no raw LaTeX in page text (there is no renderer)", latex.slice(0, 4).join(", "));
   const planned = [...names].filter(f => /class="planned"/.test(fs.readFileSync(path.join(COURSE, f), "utf8")));
   console.log(`  note  ${planned.length} chapters still have a planned (unwritten) companion notebook`);
 }

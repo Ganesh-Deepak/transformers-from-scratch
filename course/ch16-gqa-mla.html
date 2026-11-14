@@ -6,7 +6,7 @@
 <title>Ch 16 — MQA, GQA, and Multi-Head Latent Attention</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=26">
+<link rel="stylesheet" href="assets/style.css?v=27">
 </head>
 <body>
 <main>
@@ -150,7 +150,7 @@ between GQA-4 and MQA on size while beating full MHA on quality.</p>
 <p>Ainslie et al. found the quality/cache curve is <b>strongly non-linear</b>: going from MHA to 8 groups
 costs almost nothing, while going from 8 groups to 1 (MQA) costs a lot. There's also a practical reason —
 8 KV heads divides evenly across 8-GPU tensor-parallel setups, one KV head per GPU. Llama-2-70B,
-Llama-3 (all sizes), Mistral, Qwen2.5 and Gemma all landed on 8 or fewer.</p>
+Llama-3 (all sizes), Mistral and Qwen2.5 landed on 8 or fewer; Gemma 2 27B uses 16 (for 32 query heads), still a 2× cut.</p>
 
 <div class="quiz" data-title="Checkpoint 1 — GQA">
 <div class="qitem" data-answer="1">
@@ -379,7 +379,7 @@ FlashAttention.</li>
 <tr><td>Qwen 2.5 / 3</td><td>GQA</td><td>4–8 KV heads by size</td></tr>
 <tr><td>Gemma 2 / 3</td><td>GQA</td><td>+ alternating local/global layers</td></tr>
 <tr><td>DeepSeek-V2 / V3 / R1</td><td><b>MLA</b></td><td>rank 512 + 64 decoupled RoPE</td></tr>
-<tr><td>Kimi K2 / K2.5</td><td>MLA</td><td>DeepSeek-lineage architecture</td></tr>
+<tr><td>Kimi K2</td><td>MLA</td><td>DeepSeek-lineage architecture</td></tr>
 <tr><td>DeepSeek-V3.2</td><td>MLA + <b>DSA sparse attention</b></td><td>Chapter 22</td></tr>
 </tbody>
 </table>
@@ -472,10 +472,10 @@ large part of the explanation — architecture choices show up directly on the i
 
 </main>
 
-<script src="assets/chapters.js?v=26"></script>
-<script src="assets/course.js?v=26"></script>
-<script src="assets/viz.js?v=26"></script>
-<script src="assets/axes.js?v=26"></script>
+<script src="assets/chapters.js?v=27"></script>
+<script src="assets/course.js?v=27"></script>
+<script src="assets/viz.js?v=27"></script>
+<script src="assets/axes.js?v=27"></script>
 <script>initChapter("16");</script>
 </body>
 </html>

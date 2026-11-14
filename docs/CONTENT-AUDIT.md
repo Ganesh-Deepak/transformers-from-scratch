@@ -167,3 +167,92 @@ Ridge points, decode ceilings and prefill/decode numbers check. **§14.4 is wron
 
 ### Not yet audited in this pass
 Ch 15–19, 21–26 (Ch 12 and Ch 0 were rewritten in October). Add a check_ui rule rejecting raw LaTeX outside code.
+
+### Ch 14 · §14.4 — now FIXED
+Rewritten: tensor cores require multiples of 16 (32 for fp8); 64/128 dominate because attention kernels ship
+tuned paths for them, not because of cache lines. Real counterexamples cited (Phi-2 80, Phi-3-mini 96,
+DeepSeek-V3 192, Gemma 256). Quiz replaced with a Phi-2-shaped question. `check_ui.js` now fails on raw
+LaTeX in page text (verified to fail on the old Ch 14).
+
+### Ch 15 · The KV Cache — **A−**
+All arithmetic checks (128 KB/token Llama-3-8B, 320 KB/token 70B, user counts, fleet sizing). Missing:
+cache eviction and compression beyond quantization (StreamingLLM sinks, H2O / SnapKV), chunked prefill,
+and a measured cached-vs-uncached timing plot from the repo's model. Units mix GB and GiB in places.
+
+### Ch 16 · MQA, GQA, MLA — **A**
+MLA absorption and the decoupled-RoPE argument are the best treatment in the course; all numbers check.
+Fixed: Gemma 2 27B uses 16 KV heads (chapter said all Gemma landed on ≤8); removed an unverified
+"Kimi K2.5" row. Missing: cross-layer KV sharing (CLA, YOCO), and why absorbed MLA decode behaves like
+MQA over a 576-wide latent (compute-dense, which is why it suits decode).
+
+### Ch 17 · FlashAttention — **A−**
+Online softmax worked example and FA1–3 numbers check. Fixed: "d²/M ≈ 1/25 → 25× fewer HBM accesses"
+depended on counting M in bytes vs elements; now "≈1/12, an order of magnitude". Note: the §17.4 pseudo-code
+skips fully-masked blocks but omits the in-tile causal mask on the diagonal block (exercise 17.2's code has it);
+say so in the pseudo-code. The FA4 (2026) row is stated from announcements and should be re-checked against
+the paper. Missing: FlashDecoding / split-K for decode explained with the same rigour; FlexAttention examples.
+
+### Ch 18 · Serving — **B+**
+Speculative-decoding arithmetic (2.77, 6.13), PagedAttention waste figures check. Missing, by value:
+1. SLOs and goodput: TTFT, TPOT, p99, and how a scheduler trades them; a $/million-token cost model.
+2. Serving MoE with expert parallelism (now in Ch 20 §20.7 — cross-link both ways).
+3. Multi-LoRA serving, KV offload tiers (CPU/SSD, LMCache), structured-output engines (XGrammar).
+4. FP8 / FP4 (NVFP4, MXFP4) weight serving, linking Ch 0's formats to deployment.
+
+### Ch 19 · Distributed Training — **A−**
+ZeRO floors, TP traffic (0.54 / 0.81 / 0.94 GB per layer, 75 GB over 80 layers) and the bubble table check.
+Missing, by value: **context / sequence parallelism** (ring attention, DeepSpeed-Ulysses) — how every
+long-context model is trained, absent today; HSDP; FP8 training at scale; fault tolerance and checkpoint
+cadence at thousands of GPUs; the activation-memory formula (Korthikanti et al.) with real numbers.
+
+### Ch 21 · Scaling Laws and Long Context — **B+**
+Chinchilla arithmetic checks (51.2B / 1,023B for GPT-3's budget; token ratios). Fixed: the NTK snippet reused
+`scale` with the inverse meaning of the PI snippet (now `s = target/trained`, with the 10000 → ~82,700 value);
+Gemma 2 alternates local/global 1:1, Gemma 3 is 5:1. Note: the fitted law's own optimum is N ∝ C^0.45,
+D ∝ C^0.55 (α ≠ β); the chapter's "both √C" is the 20-tokens-per-parameter rule, and should say so. Missing:
+data-constrained scaling (repeating data, Muennighoff et al. 2023), test-time compute scaling, MoE and
+precision scaling laws (link Ch 20, Ch 12), and the staged long-context training recipe (e.g. Llama 3's
+8k → 128k extension).
+
+### Ch 22 · The 2026 Frontier — **B**
+Most needs refreshing, by design. Fixed: added the 2025 major-lab linear-attention hybrids (Qwen3-Next:
+3 Gated DeltaNet : 1 gated attention; Kimi Linear: 3 KDA : 1 MLA; MiniMax-M1: lightning attention 7 : 1) and a
+sentence on the delta-rule direction; exercise 22.3 pointed to §22.3 for a box that is in §22.4. To check:
+the Nemotron 3 row. Missing: delta-rule / gated linear attention explained (it is now more relevant than
+Mamba), gpt-oss-style alternating sliding/full attention with learned sinks, diffusion language models
+(as a watch item), and an "agentic" section (tool use, long-horizon RL) since that is where 2026 effort went.
+
+### Ch 23 · SFT, RLHF, PPO — **B**
+Reward-model arithmetic checks (0.3133 / 0.0181 / ln 2 / 1.3133). Missing, by value:
+1. **LoRA / QLoRA / parameter-efficient fine-tuning — not taught anywhere in the course.** For a working AI
+   engineer this is the most common fine-tuning tool. Needs its own section: the low-rank update, rank and
+   alpha, which matrices to adapt, memory arithmetic, merging, multi-LoRA serving (Ch 18).
+2. The modern post-training recipe: synthetic SFT data, rejection-sampling fine-tuning, distillation from a
+   stronger model (including reasoning traces), on-policy distillation.
+3. GAE derived (the chapter names it but does not explain it), and the per-token KL penalty as reward shaping.
+4. Evaluation of post-trained models (win rates with length control, LLM-as-judge pitfalls).
+
+### Ch 24 · DPO — **A**
+The best derivation in the course; every step follows. Fixed a typo (§24.2–20.4). Missing: online / iterative
+DPO in code, and a short note on DPO with reasoning traces.
+
+### Ch 25 · DPO Variants, GRPO, RLVR — **A−**
+GRPO advantage arithmetic checks (+2.645 / −0.378). Missing: Dr. GRPO (the length and std normalisation
+biases in GRPO), GSPO (sequence-level ratios, introduced for stable RL on MoE models — cross-link Ch 20),
+process vs outcome rewards, and the agentic/tool-use RL setting (multi-turn rollouts, environment rewards).
+
+### Ch 26 · Capstone — **A−**
+Fixed: the stretch-goal table's chapter numbers all predated Ch 0 (MLA → 16, MoE → 20, FlashAttention → 17,
+speculative decoding → 18, YaRN → 21, GRPO → 25); they are now links, so a label can be checked against its
+target. The model is 12,587,904 parameters (said ≈15 M). Missing: a LoRA milestone (see Ch 23), and an
+evaluation milestone (held-out perplexity plus a tiny task benchmark).
+
+## Priorities, across the whole course
+
+1. **LoRA / PEFT** — absent, and the most-used fine-tuning tool (Ch 23 + capstone).
+2. **Data for pretraining** — dedup, filtering, mixtures, annealing (Ch 11).
+3. **Context parallelism** — ring attention / Ulysses (Ch 19), and the staged long-context recipe (Ch 21).
+4. **Linear-attention hybrids** — delta-rule attention explained, not just listed (Ch 22).
+5. **Serving economics** — SLOs, goodput, $/token, MoE expert-parallel serving (Ch 18).
+6. **The 13 planned notebooks**, so every chapter's numbers are executable like Ch 0, 12 and 20.
+7. **Evaluation** — nowhere taught as a subject (benchmarks, contamination, LLM-as-judge, length control).

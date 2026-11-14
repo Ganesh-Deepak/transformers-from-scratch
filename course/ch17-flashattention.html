@@ -6,7 +6,7 @@
 <title>Ch 17 — FlashAttention and the Online Softmax</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=26">
+<link rel="stylesheet" href="assets/style.css?v=27">
 </head>
 <body>
 <main>
@@ -213,8 +213,9 @@ memory traffic</b>, in a regime where FLOPs are abundant and traffic is the cons
 </table>
 </div>
 
-<p>With <code>d = 64</code> and <code>M ≈ 100 KB</code> of usable SRAM per block, <code>d²/M</code> is
-around 1/25 — so FlashAttention does roughly <b>25× fewer HBM accesses</b> at the same FLOP count. And
+<p>With <code>d = 64</code> and about 100 KB of usable SRAM per block (≈ 50k bf16 values), <code>d²/M</code>
+is around 1/12 — so FlashAttention does roughly <b>an order of magnitude fewer HBM accesses</b> at the same FLOP
+count (the exact factor depends on tile sizes and head dimension). And
 <code>O(N)</code> memory instead of <code>O(N²)</code> is what made 128k-token contexts possible at all.</p>
 
 <div class="quiz" data-title="Checkpoint 1 — how it works">
@@ -421,10 +422,10 @@ if your "Flash" line has slope 2, you fell back to the math backend; check the d
 
 </main>
 
-<script src="assets/chapters.js?v=26"></script>
-<script src="assets/course.js?v=26"></script>
-<script src="assets/viz.js?v=26"></script>
-<script src="assets/axes.js?v=26"></script>
+<script src="assets/chapters.js?v=27"></script>
+<script src="assets/course.js?v=27"></script>
+<script src="assets/viz.js?v=27"></script>
+<script src="assets/axes.js?v=27"></script>
 <script>initChapter("17");</script>
 </body>
 </html>
