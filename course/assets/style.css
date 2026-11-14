@@ -79,10 +79,10 @@
   --margin-col: 13rem;       /* the live margin (a rail only when it fits) */
   --gutter: 2rem;
   --wide: calc(var(--measure) + var(--gutter) + var(--margin-col));
-  /* The sheet: as wide as the screen allows, up to 66rem. Prose is centred
-     in it at --measure; code, tables and widgets use all of it. 74rem was
-     tried and left a narrow text strip floating in a sea of paper. */
-  --breakout: 66rem;
+  /* The sheet: as wide as the screen allows (up to 120rem, i.e. no cap on
+     any real monitor). Prose is centred in it at --measure (75% of it);
+     code, tables and widgets use all of it. */
+  --breakout: 120rem;
   --rule: 1px;               /* hairlines: table rows, dividers */
   --rule-2: 2px;             /* structure: cards, boxes, buttons */
   --radius: 3px;             /* barely there — this is print, not glass */
@@ -321,7 +321,11 @@ html {
   html { scroll-behavior: auto; }
   *, *::before, *::after {
     animation-duration: .01ms !important; animation-iteration-count: 1 !important;
-    transition-duration: .01ms !important;
+    /* none, not .01ms: with the default transition-property `all`, a tiny
+       duration gave EVERY property on EVERY element a transition, and a
+       harness frozen in virtual time measured layouts half-way through them
+       (tests/check_responsive.js saw a 32px overflow that never existed). */
+    transition: none !important;
   }
 }
 
@@ -433,7 +437,7 @@ body {
 /* Global navigation. Answers "where can I go" AND, via the nested section
    list, "where am I inside this chapter" — without leaving the page. */
 
-:root { --side: 15.5rem; --topbar-h: 3.05rem; }
+:root { --side: 17rem; --topbar-h: 3.05rem; }
 
 .readbar {
   position: fixed; top: 0; left: 0; height: 3px; z-index: 70;
@@ -463,57 +467,131 @@ body {
 .sb-search input::placeholder { color: var(--ink-4); }
 .sb-search input:focus-visible { outline-offset: 1px; }
 
-.sb-part { margin-bottom: .35rem; }
-.sb-part > .h {
-  padding: .6rem .85rem .3rem;
-  font-family: var(--label); font-size: .73rem; font-weight: 700;
-  letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3);
+/* ---- parts: one ink per part --------------------------------------------
+   Eight printing-ink tones, one per part of the course, used ONLY in the
+   navigation (sidebar bands, chapter chips, index part headers). They are
+   deliberately earthy and darker than the five tensor-axis hues, which stay
+   reserved for "which axis" inside the chapters. Cream text on every band
+   is >= 4.97:1 in light; near-black text on every band >= 7.5:1 in dark. */
+:root {
+  --part-0: #7D5510; --part-1: #9A3A26; --part-2: #7A2F63; --part-3: #2F5287;
+  --part-4: #2A6345; --part-5: #6E4A1E; --part-6: #4A5A66; --part-7: #5A241F;
+  --part-ink: #F8F0E0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --part-0: #E0B25A; --part-1: #EE8A6E; --part-2: #D98AC4; --part-3: #8DB3EE;
+    --part-4: #7FCC9C; --part-5: #D6A877; --part-6: #A9BAC6; --part-7: #E8A39A;
+    --part-ink: #14100F;
+  }
+}
+:root[data-theme="light"] {
+  --part-0: #7D5510; --part-1: #9A3A26; --part-2: #7A2F63; --part-3: #2F5287;
+  --part-4: #2A6345; --part-5: #6E4A1E; --part-6: #4A5A66; --part-7: #5A241F;
+  --part-ink: #F8F0E0;
+}
+:root[data-theme="dark"] {
+  --part-0: #E0B25A; --part-1: #EE8A6E; --part-2: #D98AC4; --part-3: #8DB3EE;
+  --part-4: #7FCC9C; --part-5: #D6A877; --part-6: #A9BAC6; --part-7: #E8A39A;
+  --part-ink: #14100F;
+}
+[data-pi="0"] { --pc: var(--part-0); } [data-pi="1"] { --pc: var(--part-1); }
+[data-pi="2"] { --pc: var(--part-2); } [data-pi="3"] { --pc: var(--part-3); }
+[data-pi="4"] { --pc: var(--part-4); } [data-pi="5"] { --pc: var(--part-5); }
+[data-pi="6"] { --pc: var(--part-6); } [data-pi="7"] { --pc: var(--part-7); }
+
+/* ---- a part: solid header band (click to fold) + striped chapter list --- */
+.sb-part { margin: 0 .7rem .7rem; }
+.sb-part:not([data-pi]) { --pc: var(--stamp); }   /* must not out-rank [data-pi] */
+.sb-part-h {
+  display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: .55rem;
+  width: 100%; padding: .45rem .55rem .45rem .45rem;
+  background: var(--pc); color: var(--part-ink);
+  border: 0; border-radius: var(--radius);
+  box-shadow: 3px 3px 0 var(--shadow-hue);
+  font-family: var(--label); text-align: left; cursor: pointer;
+}
+.sb-part-h:hover { filter: brightness(1.08); }
+.sb-part-h .pn {
+  display: grid; place-items: center; min-width: 1.55rem; height: 1.55rem; padding: 0 .2rem;
+  border: 1.5px solid currentColor; border-radius: 2px;
+  font-family: var(--display); font-size: .95rem; font-weight: 700; line-height: 1;
+}
+.sb-part-h .pt {
+  font-size: .72rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  line-height: 1.25; text-wrap: balance;
+}
+.sb-part-h .pc { font-family: var(--mono); font-size: .7rem; font-weight: 700; opacity: .85; }
+.caret { width: 12px; height: 12px; flex: none; transition: transform .15s ease; }
+[aria-expanded="false"] > .caret { transform: rotate(-90deg); }
+
+.sb-part-body {
+  margin: .35rem 0 0 .2rem;
+  border-left: 3px solid var(--pc);
 }
 .sb-ch {
-  display: grid; grid-template-columns: 1.7rem 1fr; align-items: baseline;
-  padding: .32rem .85rem; gap: .1rem;
-  font-size: .88rem; line-height: 1.38;
-  color: var(--ink-2); text-decoration: none; border: 0;
-  border-left: 3px solid transparent;
+  display: grid; grid-template-columns: 2.05rem 1fr; align-items: baseline;
+  padding: .42rem .55rem .42rem .55rem; gap: .2rem;
+  font-size: .88rem; line-height: 1.36;
+  color: var(--ink-2); text-decoration: none;
+  border: 0; border-bottom: 1px solid var(--line);
 }
-.sb-ch:hover { background: var(--surface-2); color: var(--ink); border-bottom: 0; }
+.sb-part-body > :last-child, .sb-part-body > :last-child .sb-ch { border-bottom: 0; }
+.sb-ch:hover { background: var(--surface-2); color: var(--ink); border-bottom-color: var(--line); }
+/* chapter number as a chip in the part's ink; filled once the chapter is done */
 .sb-ch .n {
-  font-family: var(--mono); font-size: .72rem; font-weight: 700; color: var(--ink-4);
+  justify-self: start; min-width: 1.6rem; padding: .08rem .25rem; text-align: center;
+  font-family: var(--mono); font-size: .72rem; font-weight: 700; line-height: 1.3;
+  color: var(--pc); border: 1.5px solid var(--pc); border-radius: 2px;
   font-variant-numeric: tabular-nums lining-nums;
 }
-.sb-ch.done .n { color: var(--accent); }
-.sb-ch.done .n::after { content: "\00B7"; margin-left: .1em; }
-.sb-ch.here {
-  border-left-color: var(--accent);
-  background: var(--accent-bg);
-  color: var(--ink); font-weight: 600;
-}
-.sb-ch.here .n { color: var(--accent); }
+.sb-ch.done .n { background: var(--pc); color: var(--part-ink); }
 
 /* numbered in the outline, not written yet: listed but inert, never a link */
 .sb-ch.wip { color: var(--ink-4); cursor: default; }
 .sb-ch.wip:hover { background: none; color: var(--ink-4); }
-.sb-ch.wip .n::after { content: "\2026"; margin-left: .15em; }  /* ellipsis */
+.sb-ch.wip .n { border-style: dashed; }
 
-/* the current chapter's own sections, nested */
-.sb-sections { margin: .15rem 0 .5rem; }
+/* ---- the chapter you are in: a raised card, sections fold inside it ---- */
+.sb-ch.here { background: var(--surface); color: var(--ink); font-weight: 650; }
+.sb-here {
+  margin: .3rem .3rem .45rem -.15rem;
+  background: var(--surface);
+  border: var(--rule-2) solid var(--pc); border-radius: var(--radius);
+  box-shadow: 4px 4px 0 var(--shadow-hue);
+}
+.sb-here-row { display: flex; align-items: stretch; }
+.sb-here-row .sb-ch { flex: 1; min-width: 0; border-bottom: 0; }
+.sb-sec-toggle {
+  flex: none; width: 2.4rem; display: grid; place-items: center;
+  background: none; color: var(--pc); cursor: pointer;
+  border: 0; border-left: 1.5px solid var(--line);
+}
+.sb-sec-toggle:hover { background: var(--surface-2); }
+.sb-sec-toggle .vh, .vh {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+.sb-sections { border-top: 1.5px dashed var(--line); padding: .3rem 0 .4rem; }
 .sb-sec {
-  display: block; padding: .2rem .85rem .2rem 2.5rem;
+  display: block; padding: .24rem .6rem .24rem 2.65rem;
   font-size: .82rem; line-height: 1.38;
   color: var(--ink-2); text-decoration: none; border: 0;
   border-left: 3px solid transparent;
 }
-.sb-sec:hover { color: var(--accent); border-bottom: 0; background: var(--surface-2); }
+.sb-sec:hover { color: var(--ink); border-bottom: 0; background: var(--surface-2); }
 .sb-sec.active {
   color: var(--accent); border-left-color: var(--accent); font-weight: 600;
+  background: var(--accent-bg);
 }
+@media (prefers-reduced-motion: reduce) { .caret { transition: none; } }
 
 .scrim { display: none; }
 
 /* wide screens: collapsing slides the sidebar away and widens the content */
-.sidebar { transition: transform .18s ease; }
+body.side-anim .sidebar { transition: transform .18s ease; }
+body.side-anim .wrap { transition: padding-left .18s ease, max-width .18s ease; }
 body.side-collapsed .sidebar { transform: translateX(-100%); }
-@media (prefers-reduced-motion: reduce) { .sidebar { transition: none; } }
+@media (prefers-reduced-motion: reduce) { body.side-anim .sidebar { transition: none; } }
 
 /* The sidebar is fixed, so .wrap only needs to reserve its width with padding.
    Using padding (not margin-left) keeps `margin-inline: auto` intact, so the
@@ -524,7 +602,10 @@ body.side-collapsed .sidebar { transform: translateX(-100%); }
   max-width: calc(var(--breakout) + 2 * clamp(1rem, 4vw, 2.5rem));
   margin-inline: auto;
   padding: 3.5rem clamp(1rem, 4vw, 2.5rem) 8rem;
-  transition: padding-left .18s ease, max-width .18s ease;
+  /* no transition by default: the sidebar is added by script after first
+     paint, and animating that made every page load slide into place (and
+     container-relative widths were measured mid-slide). Only a toggle the
+     reader makes animates; see body.side-anim and toggleSidebar(). */
 }
 body.has-side .wrap {
   max-width: calc(var(--breakout) + var(--side) + 2 * clamp(1rem, 4vw, 2.5rem));
@@ -534,7 +615,7 @@ body.has-side.side-collapsed .wrap {
   max-width: calc(var(--breakout) + 2 * clamp(1rem, 4vw, 2.5rem));
   padding-left: clamp(1rem, 4vw, 2.5rem);
 }
-@media (prefers-reduced-motion: reduce) { .wrap { transition: none; } }
+@media (prefers-reduced-motion: reduce) { body.side-anim .wrap { transition: none; } }
 
 /* --- breakout ----------------------------------------------------------
    Prose keeps its ~70-character measure because longer lines genuinely hurt
@@ -645,15 +726,16 @@ main > * { max-width: min(var(--measure), 100%); }
    Without container units (old browsers, no JS) --ext is invalid -> 0, which
    is exactly the old left-aligned layout. */
 .wrap { container-type: inline-size; }
-/* The prose column is sized to the SHEET, not the browser window: 64% of
-   it, between 37rem and 46rem, and the body type grows with it (17 -> 19px)
-   so a line stays ~72-78 characters. A fixed 37rem looked like a thin strip
-   floating in the middle of the page; a viewport-based width still did that
-   on laptops, where the sidebar and gutters eat the extra window. cqw is the
-   .wrap container, whose content box never exceeds the 66rem sheet. */
+/* The prose column is 75% of the available width (the reader asked for
+   exactly that), never narrower than 37rem or the screen, capped at 90rem.
+   cqw is the .wrap container, i.e. the space beside the sidebar. Body type
+   grows with the column (17px -> 21px) to keep long lines readable: about
+   95 characters at 1440px with the sidebar open, ~120 at 1800px closed.
+   That is longer than the classic 75; it was a deliberate call by the
+   reader, and the larger type and 1.68 leading are what make it work. */
 main {
-  --measure: clamp(37rem, 64cqw, 46rem);
-  font-size: clamp(1.0625rem, .75rem + .9cqw, 1.1875rem);
+  --measure: clamp(min(37rem, 100cqw), 75cqw, 90rem);
+  font-size: clamp(1.0625rem, .7rem + .75cqw, 1.3125rem);
 }
 main {
   --M: min(var(--breakout), 100cqw);
@@ -686,12 +768,11 @@ main > .example {
 
 /* The live margin. Absolutely positioned with NO `top`, so each note keeps its
    static position — i.e. it lines up with the paragraph it follows. */
-/* Margin notes are INLINE asides by default (a ruled block in the column)
-   and become a right-hand rail only when the centred prose leaves room for
-   them: (M - measure) / 2 >= gutter + margin-col. With the sheet capped at
-   66rem that never holds, so today notes are always inline; the rail is kept
-   for a wider sheet. A container query on .wrap, because what matters is the
-   sheet width, which also depends on whether the sidebar is open. */
+/* Margin notes are INLINE asides: a ruled block in the text column. With
+   the prose at 75% of the page there is no room for a side rail (12.5% a
+   side), so the old absolutely positioned rail is gone. course.js still
+   collision-lays any note that is absolutely positioned, so a rail can come
+   back by adding one rule. */
 .mn {
   position: static; width: auto;
   border-left: 3px solid var(--line-2);
@@ -700,17 +781,6 @@ main > .example {
   font-family: var(--label);
   font-size: .8rem; line-height: 1.55; font-weight: 500;
   color: var(--ink-2);
-}
-@container (min-width: 67rem) {
-  main > .mn:not(.study-orient) {
-    position: absolute;
-    left: calc(var(--ext, 0px) + var(--measure) + var(--gutter));
-    width: var(--margin-col);
-    border-left: 0;
-    border-top: var(--rule-2) solid var(--line-2);
-    padding: .45rem 0 0;
-    margin: .3rem 0 0;
-  }
 }
 .mn a { color: var(--accent); border-bottom-color: transparent; }
 .mn a:hover { border-bottom-color: var(--accent); }
@@ -1543,12 +1613,12 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
 .part > .ph {
   display: flex; align-items: baseline; gap: .8rem; flex-wrap: wrap;
   margin-bottom: 1rem; padding-bottom: .55rem;
-  border-bottom: var(--rule-2) solid var(--line-2);
+  border-bottom: 3px solid var(--pc, var(--line-2));
 }
 .part > .ph .pn {
   font-family: var(--label); font-size: .71rem; font-weight: 700;
   letter-spacing: .17em; text-transform: uppercase;
-  color: var(--stamp-ink); background: var(--stamp);
+  color: var(--part-ink); background: var(--pc, var(--stamp));
   border-radius: var(--radius); padding: .22rem .5rem;
 }
 .part > .ph .pt { font-family: var(--display); font-size: 1.2rem; font-weight: 700; letter-spacing: -.025em; }
@@ -1570,9 +1640,10 @@ details.reveal > div > :last-child { margin-bottom: .9rem; }
   background: var(--accent-bg); border-color: var(--accent);
   box-shadow: 1px 1px 0 var(--shadow-hue); transform: translate(3px, 3px);
 }
+.part .ccard { border-left: 7px solid var(--pc, var(--line-2)); }
 .ccard .num {
   font-family: var(--mono); font-size: .74rem; font-weight: 700;
-  color: var(--ink-4);
+  color: var(--pc, var(--ink-4));
   font-variant-numeric: tabular-nums lining-nums;
 }
 .ccard.done .num { color: var(--accent); }

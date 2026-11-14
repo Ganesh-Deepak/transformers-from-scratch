@@ -392,7 +392,20 @@ function applySidebarPref() {
   if (window.layoutMarginNotes) window.layoutMarginNotes();
 }
 
+/* the narrow-screen drawer slides shut when dismissed, like it slid open */
+function closeDrawer() {
+  if (!document.body.classList.contains("side-open")) return;
+  document.body.classList.add("side-anim");
+  clearTimeout(toggleSidebar.t);
+  toggleSidebar.t = setTimeout(() => document.body.classList.remove("side-anim"), 400);
+  document.body.classList.remove("side-open");
+}
+
 function toggleSidebar() {
+  // animate this one change only (see .wrap in style.css)
+  document.body.classList.add("side-anim");
+  clearTimeout(toggleSidebar.t);
+  toggleSidebar.t = setTimeout(() => document.body.classList.remove("side-anim"), 400);
   if (isWide()) {
     const collapsed = !document.body.classList.contains("side-collapsed");
     try { localStorage.setItem("tfs-side", collapsed ? "collapsed" : "open"); } catch (e) { /* blocked */ }
@@ -882,35 +895,83 @@ function buildSidebar(currentId) {
       <input type="search" id="sbq" placeholder="Filter chapters…" aria-label="Filter chapters">
     </div>`;
 
-  for (const p of PARTS) {
-    html += `<div class="sb-part" data-part="1"><div class="h">${p.n} &middot; ${p.t}</div>`;
+  /* Each part is a collapsible group with its own ink colour (--pc, see
+     .sb-part[data-pi] in style.css): a solid header band you click to fold
+     the part away, chapters striped in that colour underneath. The current
+     chapter is a raised card whose section list folds with its own button.
+     By default only the part you are reading is open (on the index, all of
+     them), so the list stays short. Whatever you open or fold is remembered
+     (tfs-side-parts / tfs-side-secs); the part you are reading always opens. */
+  const store = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } };
+  let partState = {};
+  try { partState = JSON.parse(store("tfs-side-parts") || "{}"); } catch (e) { partState = {}; }
+  if (!partState || Array.isArray(partState) || typeof partState !== "object") partState = {};
+  const secsFolded = store("tfs-side-secs") === "closed";
+  const CARET = `<svg class="caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+  PARTS.forEach((p, pi) => {
+    const hasHere = p.ch.some(c => c.id === currentId);
+    const open = hasHere || (partState[pi] ? partState[pi] === "open" : !currentId);
+    const done = p.ch.filter(c => isDone(c.id)).length;
+    const num = p.n.replace(/^Part\s*/i, "");
+    html += `<section class="sb-part${hasHere ? " has-here" : ""}" data-part="1" data-pi="${pi}">
+      <button class="sb-part-h" type="button" aria-expanded="${open}" aria-controls="sbp-${pi}">
+        <span class="pn">${num}</span><span class="pt">${p.t}</span>
+        <span class="pc" title="${done} of ${p.ch.length} done">${done}/${p.ch.length}</span>${CARET}
+      </button>
+      <div class="sb-part-body" id="sbp-${pi}"${open ? "" : " hidden"}>`;
     for (const c of p.ch) {
       const here = c.id === currentId;
       const dt = `data-t="${(c.id + " " + c.t + " " + c.s).toLowerCase()}"`;
       // A chapter marked `wip` is numbered and listed but not written yet.
       // Render it as inert text, never a link, so the outline stays honest and
       // the sidebar can never serve a 404. Remove `wip` to switch it on.
-      html += c.wip
+      const link = c.wip
         ? `<span class="sb-ch wip" ${dt} title="Not written yet">
              <span class="n">${c.id}</span><span>${c.t}</span></span>`
         : `<a class="sb-ch ${isDone(c.id) ? "done" : ""} ${here ? "here" : ""}"
-                  href="${c.f}" ${dt}>
+                  href="${c.f}" ${dt}${here ? ' aria-current="page"' : ""}>
                  <span class="n">${c.id}</span><span>${c.t}</span></a>`;
       if (here && sections.length) {
-        html += `<nav class="sb-sections">` +
+        html += `<div class="sb-here">
+          <div class="sb-here-row">${link}
+            <button class="sb-sec-toggle" type="button" aria-expanded="${!secsFolded}" aria-controls="sbs"
+              title="Show or hide this chapter's sections">${CARET}<span class="vh">Sections</span></button></div>
+          <nav class="sb-sections" id="sbs"${secsFolded ? " hidden" : ""}>` +
           sections.map(s => `<a class="sb-sec" href="#${s.id}">${s.label}</a>`).join("") +
-          `</nav>`;
+          `</nav></div>`;
+      } else {
+        html += link;
       }
     }
-    html += `</div>`;
-  }
+    html += `</div></section>`;
+  });
   aside.innerHTML = html;
+
+  aside.querySelectorAll(".sb-part-h").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const body = document.getElementById(btn.getAttribute("aria-controls"));
+      const open = btn.getAttribute("aria-expanded") !== "true";
+      btn.setAttribute("aria-expanded", String(open));
+      body.hidden = !open;
+      const pi = +btn.closest(".sb-part").dataset.pi;
+      partState[pi] = open ? "open" : "closed";
+      store("tfs-side-parts", JSON.stringify(partState));
+    });
+  });
+  const secBtn = aside.querySelector(".sb-sec-toggle");
+  if (secBtn) secBtn.addEventListener("click", () => {
+    const open = secBtn.getAttribute("aria-expanded") !== "true";
+    secBtn.setAttribute("aria-expanded", String(open));
+    aside.querySelector("#sbs").hidden = !open;
+    store("tfs-side-secs", open ? "open" : "closed");
+  });
   document.body.appendChild(aside);
   document.body.classList.add("has-side");
 
   const scrim = document.createElement("div");
   scrim.className = "scrim";
-  scrim.onclick = () => document.body.classList.remove("side-open");
+  scrim.onclick = closeDrawer;
   document.body.appendChild(scrim);
 
   // keep the current chapter visible in a long list
@@ -929,6 +990,9 @@ function buildSidebar(currentId) {
     aside.querySelectorAll(".sb-part").forEach(p => {
       const any = [...p.querySelectorAll(".sb-ch")].some(a => a.style.display !== "none");
       p.style.display = any ? "" : "none";
+      // a match inside a folded part must be visible; clearing restores the fold
+      const body = p.querySelector(".sb-part-body"), btn = p.querySelector(".sb-part-h");
+      body.hidden = term ? !any : btn.getAttribute("aria-expanded") !== "true";
     });
     if (term) aside.querySelectorAll(".sb-sections").forEach(n => n.style.display = "none");
     else aside.querySelectorAll(".sb-sections").forEach(n => n.style.display = "");
@@ -1074,7 +1138,7 @@ function initKeyboard(currentId) {
     }
     if (e.key === "Escape") {
       if (Study?.isFocused()) { Study.exitFocus(); return; }
-      document.body.classList.remove("side-open");
+      closeDrawer();
       if (typing) e.target.blur();
       return;
     }

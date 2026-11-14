@@ -197,7 +197,9 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function launch() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tfs-cdp-"));
-  const proc = spawn(CHROME, ["--headless=new", "--disable-gpu", "--hide-scrollbars",
+  // real scrollbars: Windows desktop browsers have classic 15px ones, and
+  // hiding them hid a 32px overflow that check_responsive.js caught
+  const proc = spawn(CHROME, ["--headless=new", "--disable-gpu",
     "--remote-debugging-port=0", "--user-data-dir=" + dir, "--no-first-run",
     "--allow-file-access-from-files", "about:blank"], { stdio: "ignore" });
   const portFile = path.join(dir, "DevToolsActivePort");

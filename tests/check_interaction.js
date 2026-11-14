@@ -599,6 +599,60 @@ else {
   ok(tc.focusable > 0, "trace: the redrawn badges get keyboard focus (tfsEnhance)", String(tc.focusable));
 }
 
+/* ------------------------------- sidebar: parts and sections fold -------- */
+console.log("\n sidebar folding");
+const SIDE = [
+  "var r = {};",
+  "var parts = [].slice.call(document.querySelectorAll('.sb-part'));",
+  "var openOf = function (p) { return !p.querySelector('.sb-part-body').hidden; };",
+  "r.n = parts.length;",
+  "r.openAtStart = parts.map(openOf);",
+  "r.hereOpen = openOf(document.querySelector('.sb-part.has-here'));",
+  "r.colours = parts.map(function (p) { return getComputedStyle(p.querySelector('.sb-part-h')).backgroundColor; });",
+  "var other = parts.filter(function (p) { return !p.classList.contains('has-here'); })[0];",
+  "other.querySelector('.sb-part-h').click();",
+  "r.otherOpened = openOf(other) && other.querySelector('.sb-part-h').getAttribute('aria-expanded') === 'true';",
+  "var here = document.querySelector('.sb-part.has-here');",
+  "here.querySelector('.sb-part-h').click();",
+  "r.hereFolded = !openOf(here);",
+  "r.saved = localStorage.getItem('tfs-side-parts');",
+  "here.querySelector('.sb-part-h').click();",
+  "var t = $('.sb-sec-toggle');",
+  "r.secsOpen = !$('#sbs').hidden;",
+  "t.click();",
+  "r.secsFolded = $('#sbs').hidden && t.getAttribute('aria-expanded') === 'false';",
+  "r.secsSaved = localStorage.getItem('tfs-side-secs');",
+  "var q = $('#sbq'); q.value = 'flashattention'; q.dispatchEvent(new Event('input'));",
+  "var fa = [].slice.call(document.querySelectorAll('.sb-ch')).filter(function (a) { return a.style.display !== 'none'; });",
+  "r.filterHit = fa.length === 1 && !fa[0].closest('.sb-part-body').hidden;",
+  "q.value = ''; q.dispatchEvent(new Event('input'));",
+  "r.afterClear = parts.map(openOf);",
+  "return r;",
+].join("\n");
+const sd = run(SIDE, "ch06-mha.html");
+if (sd.error) ok(false, "sidebar scenario ran", sd.error);
+else {
+  ok(sd.n === 8, "sidebar: one group per part", String(sd.n));
+  ok(sd.hereOpen && sd.openAtStart.filter(Boolean).length === 1, "sidebar: only the part you are reading starts open",
+     sd.openAtStart.map(Number).join(""));
+  ok(new Set(sd.colours).size === 8, "sidebar: every part band has its own colour", String(new Set(sd.colours).size));
+  ok(sd.otherOpened, "sidebar: clicking a folded part's band opens it");
+  ok(sd.hereFolded, "sidebar: the current part can be folded too");
+  ok(/"2":"closed"/.test(sd.saved || "") && /"0":"open"/.test(sd.saved || ""), "sidebar: open and folded parts are remembered", sd.saved);
+  ok(sd.secsOpen && sd.secsFolded && sd.secsSaved === "closed", "sidebar: the chapter's section list folds and is remembered");
+  ok(sd.filterHit, "sidebar: filtering opens the folded part that holds the match");
+  ok(sd.afterClear.filter(Boolean).length === sd.openAtStart.filter(Boolean).length + 1, "sidebar: clearing the filter restores the folds",
+     sd.afterClear.map(Number).join(""));
+}
+// a reload with remembered state: part 0 stays open, the sections stay folded
+const sd2 = run([
+  "var parts = [].slice.call(document.querySelectorAll('.sb-part'));",
+  "return { open: parts.map(function (p) { return !p.querySelector('.sb-part-body').hidden; }), secs: $('#sbs').hidden };",
+].join("\n"), "ch06-mha.html", { "tfs-side-parts": '{"0":"open"}', "tfs-side-secs": "closed" });
+if (sd2.error) ok(false, "sidebar reload scenario ran", sd2.error);
+else ok(sd2.open[0] && sd2.open[2] && sd2.open.filter(Boolean).length === 2 && sd2.secs,
+        "sidebar: remembered state is restored on the next visit", sd2.open.map(Number).join("") + " secs folded=" + sd2.secs);
+
 /* ------------------------------- 5. every chapter, condensed -------------- */
 if (ALL) {
   console.log("\n every chapter: navigation + timer lifecycle");
