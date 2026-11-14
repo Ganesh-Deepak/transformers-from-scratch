@@ -1167,6 +1167,353 @@ def _nb10():
     ]
 
 
+@notebook("11_training")
+def _nb11():
+    return [
+        md("""
+        # Chapter 11 — Training a Transformer
+
+        Every number, table and worked example in Chapter 11, recomputed with `tfs/train.py` and
+        `tfs/model.py`. Each cell **asserts** what it checks, so `python tests/run_notebooks.py 11` fails if
+        the chapter and the code disagree.
+
+        The Tiny Shakespeare runs in Exercise 11.1 take ~14 CPU-minutes and a download, so their *table* is
+        checked for internal consistency (every bits-per-byte figure, every ratio, the parameter count) and
+        the experiments that matter — the double-shift bug, gradient accumulation, the planted bugs — run on
+        a tiny model and the bundled offline corpus (`tfs.train._fallback_corpus`) in seconds: a small
+        analogue with the same shape of result.
+        """),
+        code(SETUP, """
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+        from tfs.model import Config, Model
+        from tfs.train import lr_at, make_optimizer, bits_per_byte, get_batch, _fallback_corpus
+        from tfs.tokenizer import CharTokenizer
+        text = _fallback_corpus()[:80000]
+        ctok = CharTokenizer(text)
+        data = torch.tensor(ctok.encode(text))
+        def tiny(seed=0, **kw):
+            torch.manual_seed(seed)
+            c = dict(vocab_size=ctok.vocab_size, d_model=48, n_layer=2, n_head=4, n_kv_head=2, d_head=12,
+                     d_ff=128, max_T=128)
+            c.update(kw)
+            return Model(Config(**c))
+        """),
+        md("## 11.1 — reading the number: loss → perplexity"),
+        code("""
+        table = {10.37: 32_000, 6.0: 403, 4.0: 55, 3.0: 20, 2.0: 7.4, 1.5: 4.5}
+        for loss, ppl in table.items():
+            print(f"loss {loss:5.2f} -> perplexity {math.exp(loss):9,.1f}   (table: {ppl:,})")
+            assert abs(math.exp(loss) - ppl) / ppl < 0.01                     # within rounding
+        assert (round(math.exp(1.51), 1), round(math.exp(2.0), 1), round(math.exp(4.36), 1)) == (4.5, 7.4, 78.3)
+        assert round(math.exp(10.37)) == 31_888                                 # the worked example
+        """),
+        md("""
+        ## 11.1 — loss → bits per byte, and step 0 = ln V
+
+        `tfs.train.bits_per_byte` is the formula the chapter gives. The untrained model really does start
+        at ln V (here V = the bundled corpus's character set).
+
+        **DISCREPANCY (rounding).** The worked example's step 3 says ln(32000) = 10.374. It is 10.37349,
+        i.e. **10.373** to three places (10.37 to two, as the table above has it).
+        """),
+        code("""
+        rows = [("char run (V=65)", 1.51, 1.00, 2.178), ("BPE run (V=2048)", 4.36, 3.29, 1.912),
+                ("good modern LLM", 2.00, 4.00, 0.721)]
+        for name, loss, bpt, want in rows:
+            got = bits_per_byte(loss, bpt)
+            print(f"{name:18} loss {loss:.2f}  {bpt:.2f} B/tok -> {got:.3f} bpb")
+            assert round(got, 3) == want
+        assert round(4.36 / 1.51, 1) == 2.9                                # 2.9x the loss, better model
+        for V, want in ((65, 4.174), (32000, 10.373), (50257, 10.825)):     # chapter: 10.374
+            assert round(math.log(V), 3) == want
+        m = tiny()
+        x = get_batch(data, 16, 64)
+        with torch.no_grad():
+            _, l0, _ = m(x, targets=x)
+        print(f"untrained loss {l0.item():.3f} vs ln({ctok.vocab_size}) = {math.log(ctok.vocab_size):.3f}")
+        assert abs(l0.item() - math.log(ctok.vocab_size)) < 0.1
+        """),
+        md("""
+        ## 11.1 — "loss is not comparable across tokenizers"
+
+        **DISCREPANCY.** The box says a character-level model at loss 1.5 and a BPE-2048 model at loss 5.8
+        "can be the same quality — the BPE token is worth ~3.3 characters". By the chapter's own bpb
+        formula they are not: 1.5 nats/char is 2.16 bpb, while 5.8 nats per 3.3-byte token is 2.54 bpb
+        (17% worse). Equal quality at 3.3 bytes/token is a BPE loss of 1.5 × 3.3 ≈ **4.95**.
+        """),
+        code("""
+        char_bpb, bpe_bpb = bits_per_byte(1.5, 1.0), bits_per_byte(5.8, 3.3)
+        print(f"char 1.5 -> {char_bpb:.2f} bpb;  BPE 5.8 at 3.3 B/tok -> {bpe_bpb:.2f} bpb;  equal at {1.5 * 3.3:.2f}")
+        assert round(char_bpb, 2) == 2.16 and round(bpe_bpb, 2) == 2.54
+        assert abs(bits_per_byte(1.5 * 3.3, 3.3) - char_bpb) < 1e-12
+        """),
+        md("""
+        ## 11.2 — what the W in AdamW fixes
+
+        With L2 in the loss, the decay term λθ is divided by √v̂ with everything else, so a parameter with
+        large gradients is barely regularised. AdamW applies lr·λ·θ outside the adaptive step, the same for
+        every parameter. Two parameters, both at 1.0, gradient scales 0.01 and 10:
+        """),
+        code("""
+        def shrink(decoupled, g_scale, steps=200, lam=0.1, lr=1e-2):
+            def run(lam_):
+                w = torch.ones(1, requires_grad=True)
+                if decoupled:
+                    opt = torch.optim.AdamW([w], lr=lr, weight_decay=lam_)
+                else:
+                    opt = torch.optim.Adam([w], lr=lr, weight_decay=lam_)       # Adam's weight_decay IS L2
+                torch.manual_seed(0)
+                for _ in range(steps):
+                    opt.zero_grad()
+                    (w * g_scale * torch.randn(1)).sum().backward()
+                    opt.step()
+                return w.item()
+            return run(0.0) - run(lam)                                         # how far decay moved it
+        for g in (0.01, 10.0):
+            print(f"grad scale {g:5}: L2 shrink {shrink(False, g):.4f}   AdamW shrink {shrink(True, g):.4f}")
+        assert shrink(False, 0.01) > 50 * shrink(False, 10.0)                  # L2: big grads, ~no decay
+        assert abs(shrink(True, 0.01) - shrink(True, 10.0)) < 0.2 * shrink(True, 10.0)   # AdamW: the same
+        """),
+        md("## 11.2 — the parameter grouping, and the cost of Adam"),
+        code("""
+        m = tiny()
+        opt = make_optimizer(m, 3e-4)
+        decay, no_decay = opt.param_groups
+        assert decay["weight_decay"] == 0.1 and no_decay["weight_decay"] == 0.0
+        assert all(p.ndim >= 2 for p in decay["params"]) and all(p.ndim < 2 for p in no_decay["params"])
+        assert any(p is m.norm.g for p in no_decay["params"])                  # norm gains never decayed
+        assert opt.defaults["betas"] == (0.9, 0.95)
+        P = 7e9
+        print(f"7B: Adam m+v {8 * P / 1e9:.0f} GB, fp32 master {4 * P / 1e9:.0f} GB, fp32 grads {4 * P / 1e9:.0f} GB")
+        assert (8 * P, 4 * P) == (56e9, 28e9)
+        for b2, window in ((0.95, 20), (0.999, 1000)):
+            assert round(1 / (1 - b2)) == window                               # averaging window ~ 1/(1-beta2)
+        """),
+        md("## 11.3 — warmup + cosine: the chapter's `lr_at` and `tfs.train.lr_at` agree"),
+        code("""
+        def lr_at_ch(step, base_lr, warmup=2000, total=100_000, min_ratio=0.1):
+            if step < warmup:
+                return base_lr * (step + 1) / warmup
+            if step > total:
+                return base_lr * min_ratio
+            p = (step - warmup) / (total - warmup)
+            return base_lr * (min_ratio + (1 - min_ratio) * 0.5 * (1 + math.cos(math.pi * p)))
+        for s in (0, 999, 1999, 2000, 30_000, 51_000, 99_999, 100_000, 150_000):
+            assert abs(lr_at_ch(s, 6e-4) - lr_at(s, 6e-4, 2000, 100_000)) < 1e-15, s
+        assert lr_at(1999, 6e-4, 2000, 100_000) == 6e-4                          # warmup ends at base
+        assert abs(lr_at(51_000, 6e-4, 2000, 100_000) - 0.55 * 6e-4) < 1e-12      # halfway: (0.1+1)/2
+        assert lr_at(10**6, 6e-4, 2000, 100_000) == 6e-4 * 0.1                    # floor
+        """),
+        md("""
+        ## 11.4 — gradient accumulation: divide by ACC_STEPS, step once
+
+        Averaged micro-batch losses give exactly the full-batch gradient. Not dividing gives 8× the
+        gradient; zeroing inside the loop keeps only the last micro-batch.
+        """),
+        code("""
+        m = tiny()
+        torch.manual_seed(1)
+        xs = [get_batch(data, 4, 64) for _ in range(8)]
+        def grads(mode):
+            m.zero_grad(set_to_none=True)
+            if mode == "full":
+                _, l, _ = m(torch.cat(xs), targets=torch.cat(xs)); l.backward()
+            for x in xs if mode != "full" else []:
+                if mode == "zero_inside": m.zero_grad(set_to_none=True)
+                _, l, _ = m(x, targets=x)
+                (l / 8 if mode in ("divided", "zero_inside") else l).backward()
+            return torch.cat([p.grad.flatten() for p in m.parameters()])
+        full, div, undiv, last = grads("full"), grads("divided"), grads("undivided"), grads("zero_inside")
+        assert torch.allclose(div, full, atol=1e-6)
+        assert torch.allclose(undiv, 8 * full, atol=1e-5)
+        assert not torch.allclose(last, full, atol=1e-3)
+        assert 512 // 8 == 64                                                   # quiz: 64 micro-batches of 8
+        print("divided == full batch;  undivided == 8x;  zero_grad inside the loop == one micro-batch")
+        """),
+        md("""
+        ## 11.4 — what "forgot to divide by ACC_STEPS" does to the run
+
+        **DISCREPANCY.** The chapter says forgetting the division makes "your effective learning rate 8×
+        larger … and it diverges" (and the quiz: "a 64× larger effective learning rate"). That is true for
+        SGD. It is not true for Adam/AdamW, which the chapter uses: Adam's step m̂/(√v̂ + ε) is invariant to
+        a constant scale on the gradient, so the 8× gradient produces (up to ε) the *same* trajectory. And
+        with `clip_grad_norm_(…, 1.0)` in the loop, as in §11.4, the norm is clipped anyway. The bug matters
+        for SGD, for code that logs the loss, and for clipping thresholds — not as an 8× LR under AdamW.
+        """),
+        code("""
+        def accumulate_run(divide, opt_name, steps=8, ACC=4):
+            m = tiny()
+            opt = (torch.optim.AdamW(m.parameters(), lr=3e-3, weight_decay=0.0) if opt_name == "adamw"
+                   else torch.optim.SGD(m.parameters(), lr=0.5))
+            g = torch.Generator().manual_seed(1)
+            for _ in range(steps):
+                opt.zero_grad()
+                for _ in range(ACC):
+                    ix = torch.randint(len(data) - 65, (4,), generator=g)
+                    x = torch.stack([data[i:i + 64] for i in ix])
+                    _, l, _ = m(x, targets=x)
+                    (l / ACC if divide else l).backward()
+                opt.step()
+            return torch.cat([p.detach().flatten() for p in m.parameters()])
+        start = torch.cat([p.detach().flatten() for p in tiny().parameters()])
+        a, b = accumulate_run(True, "adamw"), accumulate_run(False, "adamw")
+        rel = ((a - b).norm() / (a - start).norm()).item()
+        print(f"AdamW: forgetting the division changes the trajectory by {rel:.1e} (relative)")
+        assert rel < 0.02
+        s1, s2 = accumulate_run(True, "sgd"), accumulate_run(False, "sgd")
+        ratio = ((s2 - start).norm() / (s1 - start).norm()).item()
+        print(f"SGD:   forgetting the division moves the weights {ratio:.1f}x as far (or diverges)")
+        assert not torch.isfinite(s2).all() or ratio > 2
+        """),
+        md("""
+        ## 11.5 — packing: `tfs.train.get_batch` returns one tensor
+
+        The chapter's §11.5 `get_batch` returns a pre-shifted `(x, y)` pair (the nanoGPT convention, for
+        a model that does *not* shift). `tfs.train.get_batch` returns one `(B, T)` tensor because
+        `Model.forward` shifts internally. Mixing the two conventions is exactly the §11.6 double-shift bug.
+        """),
+        code("""
+        x = get_batch(data, 3, 32)
+        assert x.shape == (3, 32) and x.dtype == torch.long
+        starts = [next(i for i in range(len(data) - 32) if torch.equal(data[i:i + 32], r)) for r in x]
+        assert all(torch.equal(data[s:s + 32], r) for s, r in zip(starts, x))     # contiguous slices, no padding
+        """),
+        md("""
+        ## 11.6 — the case study: labels shifted twice, and the memorisation test that catches it
+
+        The chapter's line from Shakespeare, memorised by a tiny model two ways: with the correct targets,
+        and with a pre-shifted `y` passed to a `forward` that shifts again. The buggy run's training loss is
+        just as low (the chapter measured it *lower*); only greedy generation exposes it.
+        """),
+        code("""
+        line = "First Citizen:\\nBefore we proceed any further, hear me speak.\\n\\n"
+        mt = CharTokenizer(line)
+        ld = torch.tensor(mt.encode(line * 6))
+        def memorise(double_shift, steps=150):
+            torch.manual_seed(0)
+            m = Model(Config(vocab_size=mt.vocab_size, d_model=64, n_layer=2, n_head=4, n_kv_head=2,
+                             d_head=16, d_ff=128, max_T=128))
+            opt = torch.optim.AdamW(m.parameters(), lr=3e-3)
+            for _ in range(steps):
+                ix = torch.randint(len(ld) - 66, (8,))
+                x = torch.stack([ld[i:i + 64] for i in ix])
+                y = torch.stack([ld[i + 1:i + 65] for i in ix]) if double_shift else x
+                _, loss, _ = m(x, targets=y)
+                opt.zero_grad(); loss.backward(); opt.step()
+            return m, loss.item()
+        P, N = 15, len(line) - 15
+        prompt = ld[:P][None]
+        for bug in (False, True):
+            m, loss = memorise(bug)
+            out = m.generate(prompt.clone(), N, temperature=0)[0, P:].tolist()
+            acc = sum(a == b for a, b in zip(out, ld[P:P + N].tolist())) / N
+            print(f"double_shift={bug!s:5}  train loss {loss:.4f}  chars correct {acc:4.0%}  {mt.decode(out)[:40]!r}")
+            if not bug:
+                good_loss, good_acc = loss, acc
+            else:
+                bad_loss, bad_acc, bad_model = loss, acc, m
+        assert good_acc == 1.0 and bad_acc < 0.5                        # generation exposes it ...
+        assert good_loss < 0.1 and bad_loss < 0.1                        # ... the loss curve does not
+        # the tell: teacher-forced, the buggy model's prediction at t is token t+2 (off by exactly one)
+        with torch.no_grad():
+            lg, _, _ = bad_model(ld[None, :64])
+        pred = lg[0].argmax(-1)
+        assert (pred[:-2] == ld[2:64]).float().mean() > 0.9 and (pred[:-1] == ld[1:64]).float().mean() < 0.5
+        """),
+        md("""
+        ## 11.6 — the overfit-one-batch test: loss must go to near zero
+        """),
+        code("""
+        m = tiny()
+        opt = torch.optim.AdamW(m.parameters(), lr=3e-3)
+        torch.manual_seed(2)
+        xb = get_batch(data, 8, 64)
+        for step in range(300):
+            _, loss, _ = m(xb, targets=xb)
+            opt.zero_grad(); loss.backward(); opt.step()
+        print(f"same batch, 300 steps: loss {loss.item():.4f}")
+        assert loss.item() < 0.1
+        """),
+        md("""
+        ## Exercise 11.1 — the measured table, checked for internal consistency
+
+        These are the chapter's own measurements (not re-run here). Every bits-per-byte figure must equal
+        val / ln 2 for the character run and val / (ln 2 · 3.29) for the BPE run, and the model size must
+        match the command's configuration (`tfs/train.py` builds `d_ff = 512` for `d_model = 192`).
+        Tiny Shakespeare is 1,115,394 characters; `make_dataset` trains on 90% of it.
+        """),
+        code("""
+        measured = {0: (4.242, 4.227, 6.10), 250: (1.734, 1.885, 2.72), 500: (1.459, 1.679, 2.42),
+                    1000: (1.321, 1.553, 2.24), 1250: (1.275, 1.512, 2.18), 1500: (1.221, 1.513, 2.18),
+                    2000: (1.089, 1.529, 2.21)}
+        for step, (tr, va, bpb) in measured.items():
+            assert round(bits_per_byte(va, 1.0), 2) == bpb, step
+        assert min(measured, key=lambda s: measured[s][1]) == 1250            # the best step
+        d = 192
+        cfg = Config(vocab_size=65, d_model=d, n_layer=6, n_head=6, n_kv_head=2, d_head=d // 6,
+                     d_ff=256 * round(int(8 * d / 3) / 256) or 256, max_T=256)
+        n = cfg.n_params()
+        print(f"model {n:,} params ({n / 1e6:.1f} M); tokens/param {0.9 * 1_115_394 / n:.2f}; "
+              f"nanoGPT 10.65 M is {10.65e6 / n:.1f}x larger")
+        assert cfg.d_ff == 512 and round(n / 1e6, 1) == 2.4
+        assert round(0.9 * 1_115_394 / n, 2) == 0.42 and round(10.65e6 / n, 1) == 4.5
+        char_bpb, bpe_bpb = bits_per_byte(1.512, 1.00), bits_per_byte(4.362, 3.29)
+        print(f"char {char_bpb:.2f} bpb, BPE {bpe_bpb:.2f} bpb: BPE loss {4.362 / 1.512:.1f}x larger, "
+              f"{1 - bpe_bpb / char_bpb:.0%} better")
+        assert (round(char_bpb, 2), round(bpe_bpb, 2)) == (2.18, 1.91)
+        assert round(4.362 / 1.512, 1) == 2.9 and round(100 * (1 - bpe_bpb / char_bpb)) == 12
+        """),
+        md("""
+        ## Exercise 11.3 — plant a bug, read its signature (tiny model, offline corpus, 80 steps each)
+
+        Reproduced as the chapter describes: removing the label shift or the causal mask gives an
+        implausibly low loss (the model is copying or peeking), far below what the honest run reaches.
+
+        **DISCREPANCY.** Two signatures do not reproduce, both because the chapter's descriptions assume
+        SGD-like behaviour while the loop uses AdamW: (3) forgetting `zero_grad()` does not make "effective
+        LR grow without bound … explodes to NaN" — Adam normalises the ever-growing accumulated gradient, so
+        the run degrades (stale gradients) and stalls above the honest run, but stays finite; (4) `lr=1.0`
+        spikes the loss far above ln V but did not produce NaN within the first steps here. Both are bugs
+        you would catch, but not by the NaN signature the table promises.
+        """),
+        code("""
+        import contextlib
+        _sdpa = F.scaled_dot_product_attention
+        @contextlib.contextmanager
+        def no_causal_mask():
+            F.scaled_dot_product_attention = lambda q, k, v, is_causal=False, **kw: _sdpa(q, k, v, is_causal=False, **kw)
+            try: yield
+            finally: F.scaled_dot_product_attention = _sdpa
+        def planted(bug, steps=80):
+            m = tiny()
+            opt = make_optimizer(m, 1.0 if bug == "lr=1.0" else 3e-3, weight_decay=0.0)
+            torch.manual_seed(3)
+            losses = []
+            ctx = no_causal_mask() if bug == "no causal mask" else contextlib.nullcontext()
+            with ctx:
+                for _ in range(steps):
+                    x = get_batch(data, 16, 64)
+                    logits, loss, _ = m(x, targets=x)
+                    if bug == "no label shift":
+                        loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), x.reshape(-1))
+                    if bug != "no zero_grad":
+                        opt.zero_grad()
+                    loss.backward(); opt.step()
+                    losses.append(loss.item())
+            return losses
+        runs = {b: planted(b) for b in ("honest", "no label shift", "no causal mask", "no zero_grad", "lr=1.0")}
+        for b, ls in runs.items():
+            print(f"{b:15} loss: start {ls[0]:.2f}  max {max(ls):6.2f}  end {ls[-1]:.3f}  any NaN: {any(map(math.isnan, ls))}")
+        honest = runs["honest"][-1]
+        assert runs["no label shift"][-1] < 0.1 < honest                      # crashes to ~0
+        assert runs["no causal mask"][-1] < 0.5 * honest                      # implausibly low
+        assert runs["no zero_grad"][-1] > honest and not any(map(math.isnan, runs["no zero_grad"]))
+        assert max(runs["lr=1.0"]) > 2 * math.log(ctok.vocab_size)           # a huge spike ...
+        assert not any(map(math.isnan, runs["lr=1.0"][:10]))                  # ... but no NaN in 10 steps
+        """),
+    ]
+
+
 # ============================================================ END NOTEBOOKS
 
 
