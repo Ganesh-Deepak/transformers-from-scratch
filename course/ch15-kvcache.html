@@ -19,6 +19,17 @@ at the same bottleneck. It is not FLOPs. It is memory bandwidth.
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span><a href="ch13-decoding.html">Ch&nbsp;13</a> &mdash; the generation loop<br><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; arithmetic intensity<div class="sep"></div><span class="k">Leads to</span><a href="ch16-gqa-mla.html">Ch&nbsp;16</a> &mdash; shrinking the cache<br><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; a different bottleneck<br><a href="ch18-serving.html">Ch&nbsp;18</a> &mdash; serving is built on this arithmetic<div class="sep"></div><span class="k">Why this chapter</span>Not FLOPs. Memory bandwidth. This chapter reframes everything after it.</div>
+<div class="box intuition">
+<span class="t">The whole chapter in five sentences</span>
+<p style="margin-bottom:0"><b>In a causal model a token's keys and values never change</b>, so compute them
+once and keep them: generation drops from O(T³) to O(T²) work. <b>Decode then reads every weight and every
+cached byte to make one token</b>, so it is bandwidth-bound and its speed is bytes ÷ bandwidth. <b>The cache
+grows as 2 · layers · KV heads · head dim · tokens · bytes</b>, and at long context it outgrows the model.
+<b>Chunked prefill and every other cache trick must reproduce exactly what one-shot attention computes</b>, and
+the mask alignment is where they silently fail. <b>You can store the cache more cheaply (Chapter 16, fp8) or
+keep fewer tokens (eviction)</b>, and only the first is lossless.</p>
+</div>
+
 <h2>15.1 · The waste in the naive loop</h2>
 
 <p>Look again at generation. To produce token 101, we feed tokens 1–100 through the model. To produce token
@@ -201,27 +212,27 @@ one token, bf16.</p>
 <div class="step"><div class="i">4</div><div>
 <b>Every layer keeps its own cache.</b> Layer 7's keys are useless to layer 8 — they live in
 different representation spaces:
-<pre style="margin:.4rem 0"><code class="nohl">4,096 × 32 layers = 131,072 bytes = 128 KB per token</code></pre>
+<pre style="margin:.4rem 0"><code class="nohl">4,096 × 32 layers = 131,072 bytes = 128 KiB per token</code></pre>
 </div></div>
 
 <div class="step"><div class="i">5</div><div>
 <b>Now multiply by context.</b> This is where it stops being small:
-<pre style="margin:.4rem 0"><code class="nohl">   2,048 tokens ->  128 KB ×   2,048 =   0.25 GB
-   8,192 tokens ->  128 KB ×   8,192 =   1.00 GB
-  32,768 tokens ->  128 KB ×  32,768 =   4.00 GB
- 131,072 tokens ->  128 KB × 131,072 =  16.00 GB   <- ONE user</code></pre>
+<pre style="margin:.4rem 0"><code class="nohl">   2,048 tokens ->  128 KiB ×   2,048 =   0.25 GiB
+   8,192 tokens ->  128 KiB ×   8,192 =   1.00 GiB
+  32,768 tokens ->  128 KiB ×  32,768 =   4.00 GiB
+ 131,072 tokens ->  128 KiB × 131,072 =  16.00 GiB   <- ONE user</code></pre>
 </div></div>
 
 <div class="step"><div class="i">6</div><div>
-<b>Compare against the model itself.</b> Llama-3-8B in bf16 is <b>15 GB</b> of weights
-(8.03 B × 2 bytes). So at 128k context <b>one user's cache is larger than the entire
-model</b> — 16 GB vs 15 GB. Ten such users need 160 GB of cache alone, which does not fit on
-an 80 GB H100 at any batch size.
+<b>Compare against the model itself.</b> Llama-3-8B in bf16 is 8.03 B × 2 bytes =
+16.06 GB = <b>14.96 GiB</b> of weights. So at 128k context <b>one user's cache is larger than the
+entire model</b>: 16.0 GiB vs 14.96 GiB. Ten such users need 160 GiB of cache alone, which does not
+fit on an 80 GB H100 at any batch size.
 </div></div>
 
 <p style="margin-bottom:0"><b>The factor to attack.</b> Look back at step 3: <code>n_kv_head</code>
 is a free parameter. Full MHA would use 32 there instead of 8 — <b>4× everything above</b>, so
-64 GB for that one 128k user. That single choice is the difference between servable and not.</p>
+64 GiB for that one 128k user. That single choice is the difference between servable and not.</p>
 </div>
 
 <pre><code>def kv_bytes(n_layer, n_kv_head, d_head, seq, batch=1, dtype_bytes=2):
@@ -229,9 +240,9 @@ is a free parameter. Full MHA would use 32 there instead of 8 — <b>4× everyth
     return 2 * n_layer * n_kv_head * d_head * seq * batch * dtype_bytes
 
 # Llama-3-8B, one token
-assert kv_bytes(32, 8, 128, 1) == 131_072          # 128 KB  ✓
+assert kv_bytes(32, 8, 128, 1) == 131_072              # 128 KiB  ✓
 # ...at 128k context
-assert kv_bytes(32, 8, 128, 131072) / 1024**3 == 16.0   # 16 GB  ✓
+assert kv_bytes(32, 8, 128, 131072) / 1024**3 == 16.0   # 16 GiB   ✓
 # ...and what full MHA would have cost
 assert kv_bytes(32, 32, 128, 131072) / 1024**3 == 64.0  # 4× worse</code></pre>
 
@@ -247,20 +258,29 @@ assert kv_bytes(32, 32, 128, 131072) / 1024**3 == 64.0  # 4× worse</code></pre>
 <pre><code>n_layer = 80, n_kv_head = 8, d_head = 128, bf16
 
 per token per layer = 2 × 8 × 128 × 2 bytes  = 4,096 bytes
-per token           = 4096 × 80              = 327,680 bytes ≈ 320 KB
+per token           = 4096 × 80              = 327,680 bytes = 320 KiB
 
-At  8k context:  8192 × 320 KB   ≈  2.5 GB   per sequence
-At 128k context: 131072 × 320 KB ≈  40 GB    per sequence
+At  8k context:  8192 × 320 KiB   =  2.5 GiB   per sequence
+At 128k context: 131072 × 320 KiB =  40 GiB    per sequence
 </code></pre>
 
-<p>The model weights are 140 GB (needs 2×H100 at minimum, realistically 4). On 4×H100 = 320 GB, that leaves
-~180 GB for cache — so <b>4 concurrent users at 128k context</b>, or ~70 at 8k. Your maximum concurrency
-falls straight out of this arithmetic.</p>
+<p>The model weights are 70.6 B × 2 = 141.2 GB (needs 2×H100 at minimum, realistically 4). On 4×H100 =
+320 GB, that leaves 178.8 GB = <b>166.5 GiB</b> for cache, ignoring activations, so <b>4 concurrent users at
+128k context</b>, or 66 at 8k. Your maximum concurrency falls straight out of this arithmetic
+(<code>test_kv_units</code>).</p>
+
+<div class="mn">
+  <span class="k">Units</span>
+  This chapter writes <b>KiB, GiB</b> (2<sup>10</sup>, 2<sup>30</sup> bytes) for anything computed from
+  powers of two, such as cache sizes, and <b>GB</b> (10<sup>9</sup>) for vendor capacities, bandwidths and
+  parameter counts × bytes. The two differ by 7.4% at the giga scale, enough to turn "fits" into
+  "does not fit" in a capacity plan, so convert before you compare.
+</div>
 
 <div class="box warn">
 <span class="t">Without GQA, this model would be unservable</span>
 <p style="margin-bottom:0">With <code>n_kv_head = 64</code> (full MHA) instead of 8, the cache would be
-<b>8× larger</b>: 20 GB at 8k, 320 GB at 128k — a single 128k-context user would not fit on 4 H100s at all.
+<b>8× larger</b>: 20 GiB at 8k, 320 GiB at 128k — a single 128k-context user would not fit on 4 H100s at all.
 GQA is not a nice optimisation; it is what makes long-context serving possible. That's Chapter 16.</p>
 </div>
 
@@ -290,15 +310,16 @@ GQA is not a nice optimisation; it is what makes long-context serving possible. 
   and it's usually within 2×.</div>
 </div>
 <div class="qitem" data-answer="1">
-  <div class="qq">You have 40 GB of KV cache budget. Llama-3-8B (GQA, 128 KB/token) at 8k context per user.
+  <div class="qq">You have 40 GiB of KV cache budget. Llama-3-8B (GQA, 128 KiB/token) at 8k context per user.
   How many concurrent users?</div>
   <div class="opts">
     <div class="opt">~20</div>
-    <div class="opt">~39</div>
+    <div class="opt">40</div>
     <div class="opt">~156</div>
     <div class="opt">~5</div>
   </div>
-  <div class="expl"><b>~39.</b> Per user: 8192 × 128 KB ≈ 1.05 GB. 40 GB ÷ 1.05 GB ≈ 38–39. In practice
+  <div class="expl"><b>40.</b> Per user: 8192 × 128 KiB = 1 GiB exactly. 40 GiB ÷ 1 GiB = 40. (Had the budget been
+  40 GB, that is 37.3 GiB: 37 users. Mixing the units costs three users here.) In practice
   fragmentation cuts this further — which is exactly the problem PagedAttention solves (Chapter 18) by
   allocating the cache in fixed-size blocks like OS virtual memory.</div>
 </div>
@@ -317,11 +338,175 @@ GQA is not a nice optimisation; it is what makes long-context serving possible. 
 <tr><td><b>Sliding window</b></td><td>T/window</td><td>loses long-range attention</td><td>Ch 21</td></tr>
 <tr><td><b>PagedAttention</b></td><td>~2× effective (removes fragmentation)</td><td>none — pure engineering</td><td>Ch 18</td></tr>
 <tr><td><b>Prefix / prompt caching</b></td><td>huge for shared prefixes</td><td>none</td><td>Ch 18</td></tr>
+<tr><td><b>Cross-layer sharing (CLA, YOCO)</b></td><td>2× to ~20×</td><td>architecture change, train from scratch</td><td>Ch 16</td></tr>
+<tr><td><b>Eviction (StreamingLLM, H2O, SnapKV)</b></td><td>T/budget</td><td><b>lossy</b>: dropped tokens cannot be recalled</td><td>§15.8</td></tr>
+<tr><td><b>Offload to CPU / SSD</b></td><td>moves, does not shrink</td><td>PCIe bandwidth on reload</td><td>Ch 18</td></tr>
 </tbody>
 </table>
 </div>
 
-<h2>15.6 · Exercises</h2>
+<h2>15.6 · Measured: the cache on the repo's own model</h2>
+
+<p>The O(T³) vs O(T²) row of §15.1 is easy to state and easy to believe. Here it is measured. The model is
+<code>tfs.model.Model</code> (4 layers, d_model 256, 4 query heads, 2 KV heads, 8,192-token vocabulary),
+random weights, greedy decoding of 480 tokens after a 16-token prompt, on a laptop CPU with 4 threads. Each
+point is the median of 11 neighbouring positions, best of 3 runs.</p>
+
+<div data-viz="series" data-title="Time per generated token, with and without the KV cache"
+     data-sub="Measured with tfs.kvcache.time_generation. Uncached: every step re-runs the whole prefix. Cached: one token per step."
+     data-xlabel="position in the sequence (tokens)" data-ylabel="ms per token">
+<script type="application/json">{"x":[16,76,136,196,256,316,376,436,495],
+"series":[{"name":"without cache","y":[13.15,27.3,41.74,56.69,54.85,72.57,69.77,109.49,155.67]},
+{"name":"with cache","y":[11.43,10.36,11.08,11.51,11.97,12.25,12.09,11.73,14.47]}]}</script>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th class="num">position</th><th class="num">16</th><th class="num">136</th><th class="num">256</th><th class="num">376</th><th class="num">495</th><th class="num">all 480 tokens</th></tr></thead>
+<tbody>
+<tr><td>without cache (ms/token)</td><td class="num">13.2</td><td class="num">41.7</td><td class="num">54.9</td><td class="num">69.8</td><td class="num">155.7</td><td class="num">30.7 s</td></tr>
+<tr><td>with cache (ms/token)</td><td class="num">11.4</td><td class="num">11.1</td><td class="num">12.0</td><td class="num">12.1</td><td class="num">14.5</td><td class="num">5.5 s</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Read it with Chapter 14 in mind. <b>Uncached</b> cost per token grows with position, roughly linearly and
+then faster once the activations stop fitting in the CPU's caches, so total time is superlinear: 30.7 s.
+<b>Cached</b> cost is flat at about 11–12 ms, and that flatness is itself a finding: a model this small is
+<b>overhead-bound</b> (§14.7). Each step is a few dozen tiny operator calls through Python and PyTorch's
+dispatcher, and reading the cache costs almost nothing next to that. On a GPU with a 7B model the cached line
+would instead be set by the weight bytes, and its gentle upward slope by the growing cache. Your numbers will
+differ; the shapes will not. <code>test_cache_timing_shape</code> checks the shapes (uncached slope,
+cached-vs-uncached gap), not the milliseconds.</p>
+
+<h2>15.7 · Chunked prefill, and a bug that does not crash</h2>
+
+<p>A 32k-token prompt prefilled in one forward pass occupies the GPU for hundreds of milliseconds, and every
+user who is mid-decode waits that long for their next token. <b>Chunked prefill</b> (Agrawal et al.,
+Sarathi, 2023; Sarathi-Serve, 2024) splits the prompt into chunks of a few hundred to a few thousand tokens
+and runs one chunk per step <i>alongside</i> the ongoing decodes. Chapter 18 works out the scheduling trade;
+here is the correctness requirement, which is stricter than it looks.</p>
+
+<p>Chunk <i>c</i> starts at absolute position <i>P</i> (the tokens already cached). Its query <i>i</i> sits at
+position <i>P + i</i> and must see <b>all P cached keys</b> plus the chunk's keys up to itself. That is a causal
+mask aligned to the <b>bottom-right</b> of the (chunk × (P + chunk)) score matrix:</p>
+
+<pre><code>P = k.size(2) - T                                   # tokens already in the cache
+qpos = torch.arange(P, P + T)[:, None]              # (T, 1)      absolute query positions
+kpos = torch.arange(P + T)[None, :]                 # (1, P+T)    absolute key positions
+mask = kpos &lt;= qpos                                 # (T, P+T)    True = may attend
+y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)</code></pre>
+
+<div class="box gotcha">
+<span class="t">The repo's own model gets this wrong, silently</span>
+<p style="margin-bottom:0"><code>tfs.model.Model</code> passes <code>is_causal=(T &gt; 1)</code>, which is right
+for training, for one-shot prefill and for one-token decode. Feed it a multi-token chunk on top of a cache
+and PyTorch aligns the causal mask to the <b>top-left</b>: the chunk's first query is treated as position 0 and
+sees only key 0, which is the cache's first token, not its own. It runs, it returns logits of the right shape,
+and they are wrong: prefilling 40 tokens as 32 + 8 gives last-position logits that differ from one-shot prefill
+by up to <b>0.34</b>. <code>tfs.kvcache.prefill_chunked</code> runs the same weights with the bottom-right mask
+above and matches one-shot prefill to 10<sup>−5</sup> for chunk sizes 1, 7, 16 and 40. Both facts are asserted
+in <code>test_chunked_prefill_exact</code>. This is §15.2's second bug, generalised from one query row to
+many.</p>
+</div>
+
+<p>Chunking does not change the result (it is exact) or the total FLOPs. It changes <b>when</b> the work happens,
+which is the entire point: it lets a scheduler cap how much prefill work any one step contains.</p>
+
+<h2>15.8 · Keeping less: eviction and compression</h2>
+
+<p>Every technique in §15.5 keeps every token and stores it more cheaply. The other family keeps <b>fewer
+tokens</b>: decide which cached positions the model will not need and drop them. It is lossy, unlike
+everything else in this chapter, and it rests on an empirical fact: attention is sparse. Most queries put most
+of their weight on a small set of positions.</p>
+
+<h3>StreamingLLM: the window, plus the sinks</h3>
+
+<p>The obvious policy is a sliding window: keep the last <i>w</i> tokens. Xiao et al. (2023) found that it
+fails abruptly the moment the <b>first</b> tokens are evicted, even though they carry little meaning. The
+reason is the softmax (Chapter 5): every query's weights must sum to 1, and a head that has nothing useful to
+attend to parks its weight on the first few positions, which every later token can see. They called these
+<b>attention sinks</b>. Evict them and that parked mass is forced onto real tokens, and perplexity explodes.
+StreamingLLM keeps <b>4 sink tokens plus a recent window</b> and generates stably over millions of tokens with
+a fixed-size cache. It does not remember what fell out of the window: it is a way to keep generating, not a way
+to recall.</p>
+
+<h3>H2O and SnapKV: keep the tokens attention actually uses</h3>
+
+<ul>
+<li><b>H2O</b> ("Heavy-Hitter Oracle", Zhang et al., 2023) keeps the recent tokens plus the older tokens with the
+largest <b>accumulated attention</b> so far, updating the choice as decoding proceeds.</li>
+<li><b>SnapKV</b> (Li et al., 2024) decides once, after prefill: the last few prompt tokens (an
+"observation window", which in a chat prompt usually contains the question) vote on which earlier positions
+they attend to, per head; votes are smoothed with a max-pool so whole phrases survive, and only the top
+positions are kept for decoding.</li>
+</ul>
+
+<div class="example">
+<span class="t">Worked example — how much attention mass each policy keeps</span>
+<p>A synthetic head with the structure these papers measured: a sink on token 0, 24 "heavy hitter" tokens
+scattered through a 1,024-token context, and a recency bias. We keep a budget of <i>B</i> tokens and ask what
+fraction of the newest query's attention lands on what we kept. H2O keeps <i>B</i>/2 recent tokens and
+<i>B</i>/2 heavy hitters chosen from a noisy history of the same pattern.</p>
+<pre style="margin:.4rem 0"><code class="nohl">budget B           64     128     256       (of 1,024 tokens)
+recent only       0.14    0.26    0.46
+sinks + window    0.14    0.27    0.46      (StreamingLLM: 4 sinks + B−4 recent)
+H2O               0.44    0.54    0.69</code></pre>
+<p style="margin-bottom:0">With a quarter of the cache, H2O keeps 69% of the mass; a window keeps 46%. The sinks
+add almost nothing to the <i>mass</i> here, and that is the subtle point: they matter not because the newest
+query uses them much but because evicting them redistributes weight the model learned to park there.
+<code>synthetic_attention</code>, <code>streaming_keep</code>, <code>h2o_keep</code> and
+<code>snapkv_keep</code> in <code>tfs/kvcache.py</code>; asserted in
+<code>test_eviction_policies</code>. Real heads differ: some are almost entirely local, some retrieve from far
+back, which is why the papers choose budgets per head or per layer.</p>
+</div>
+
+<div class="box warn">
+<span class="t">What eviction costs</span>
+<p style="margin-bottom:0">A dropped token is gone. A question that needs a detail the policy discarded (a
+needle in the haystack, the third clause of a contract) cannot be answered, and average benchmarks hide this
+because most questions do not need the dropped tokens. Treat eviction as a capacity lever for workloads whose
+recall needs you have measured, and prefer lossless levers (GQA/MLA, Chapter 16; fp8 KV; offload to CPU memory,
+Chapter 18) where they suffice. Production engines ship the lossless ones by default.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 2 — measuring, chunking, evicting">
+<div class="qitem" data-answer="2">
+  <div class="qq">On the measured CPU plot, cached decode costs ~11 ms per token at position 16 and at position 450. Why is it flat?</div>
+  <div class="opts">
+    <div class="opt">The cache is not being used</div>
+    <div class="opt">CPU attention is O(1) in sequence length</div>
+    <div class="opt">The model is so small that each step is dominated by per-operator overhead, not by reading the cache</div>
+    <div class="opt">The timing is wrong</div>
+  </div>
+  <div class="expl"><b>Overhead-bound (§14.7).</b> A few dozen operator calls per step cost more than the
+  arithmetic and bytes of a 4-layer, 256-wide model. Scale the model up and the line starts to slope.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">You prefill a prompt in chunks with <code>is_causal=True</code> and a cache. What goes wrong?</div>
+  <div class="opts">
+    <div class="opt">The mask is aligned top-left, so the chunk's queries cannot see most of the cached tokens; logits are silently wrong</div>
+    <div class="opt">It raises a shape error</div>
+    <div class="opt">It works, just more slowly</div>
+    <div class="opt">The cache is overwritten</div>
+  </div>
+  <div class="expl"><b>Top-left vs bottom-right.</b> Chunked prefill needs query <i>i</i> of the chunk to see all
+  P cached keys and the chunk up to itself. Build the mask from absolute positions.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">Why does a pure sliding-window cache collapse when it evicts the first few tokens?</div>
+  <div class="opts">
+    <div class="opt">The first tokens hold the system prompt's meaning</div>
+    <div class="opt">RoPE needs position 0 to be present</div>
+    <div class="opt">The window becomes too small</div>
+    <div class="opt">Heads park unneeded softmax mass on those early "sink" tokens; removing them forces that mass onto real tokens</div>
+  </div>
+  <div class="expl"><b>Attention sinks.</b> Softmax weights must sum to 1, so a head that wants to attend to
+  nothing attends to the always-visible first tokens. Keep 4 of them and the window works.</div>
+</div>
+</div>
+
+<h2>15.9 · Exercises</h2>
 
 <div class="exercise">
 <div class="eh"><span class="n">15.1</span><span class="ti">Add a KV cache and measure it</span><span class="lvl">essential</span></div>
@@ -354,10 +539,12 @@ the Llama-3-70B numbers in §15.4, then use it to answer:</p>
 </ol>
 <details class="reveal"><summary>Answers</summary><div>
 <ol>
-<li>Weights 140 GB + 20 users × 40 GB = 800 GB of cache → 940 GB → <b>12 H100s</b> (80 GB each), and
-realistically more for activations and fragmentation.</li>
-<li>fp8 halves the cache: 140 + 400 = 540 GB → <b>7 H100s</b>. Cutting your fleet by 40% is why KV
-quantization is standard in production despite the small accuracy cost.</li>
+<li>Cache: 20 users × 40 GiB = 800 GiB = 859.0 GB. Plus 141.2 GB of weights = 1,000.2 GB →
+<b>13 H100s</b> (80 GB each; 12 would hold only 960 GB), and realistically more for activations and
+fragmentation.</li>
+<li>fp8 halves the cache: 141.2 + 429.5 = 570.7 GB → <b>8 H100s</b>. Cutting the fleet by 5 GPUs is why KV
+quantization is standard in production despite the small accuracy cost. (Computing the cache in GB
+instead of GiB gives 12 and 7: the unit slip of the box above, worth one GPU each time.)</li>
 </ol>
 </div></details>
 </div></div>
@@ -379,11 +566,58 @@ on <i>separate GPU pools</i>. Chapter 18.</p>
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">15.4</span><span class="ti">Find the chunked-prefill bug yourself</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Prefill a 40-token prompt into <code>tfs.model.Model</code> in one call, then again as 32 + 8 tokens
+using <code>caches</code> and <code>pos_offset</code>. Compare the last-position logits. Then write the
+bottom-right mask yourself and show the two agree.</p>
+<details class="reveal"><summary>What you should see, and why</summary><div>
+<p style="margin-bottom:0">A maximum difference of order 0.3 with the stock forward pass, and ~10<sup>−7</sup>
+with your mask. Print the mask PyTorch builds for <code>is_causal=True</code> with an (8, 40) score matrix: it
+is the lower triangle of the top-left 8 × 8 corner, so query 0 of the chunk sees only key 0 of the whole
+sequence.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">15.5</span><span class="ti">Implement StreamingLLM and break it</span><span class="lvl">exploration</span></div>
+<div class="eb">
+<p>Add a fixed-size cache to your Chapter 11 model that keeps <code>n_sink</code> first tokens and a window of
+recent ones (re-index positions inside the cache, as the paper does, so RoPE never sees positions beyond the
+cache size). Generate 2,000 tokens with <code>n_sink = 0</code> and with <code>n_sink = 4</code>, and plot
+per-token loss on held-out text.</p>
+<details class="reveal"><summary>What to look for</summary><div>
+<p style="margin-bottom:0">With no sinks, loss jumps as soon as the first tokens leave the window; with 4 it
+stays near the full-cache loss. Then ask it to repeat a fact stated in token 50 after 1,500 tokens: both fail.
+Sinks make generation stable; they do not make the model remember.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">15.6</span><span class="ti">Size an eviction budget</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>Llama-3-8B at 128k context: 16 GiB of cache per user on a GPU with 50 GiB free for cache. With an
+eviction budget of 4,096 tokens per sequence (sinks + heavy hitters + window), how many users fit? What
+fraction of the cache did each user give up, and what kind of request should never be routed to this
+configuration?</p>
+<details class="reveal"><summary>Answer</summary><div>
+<p style="margin-bottom:0">4,096 × 128 KiB = 0.5 GiB per user → 100 users instead of 3. Each keeps 3.1% of
+its tokens. Never route requests whose answer depends on exact recall from deep in the context: retrieval
+over long documents, contract review, needle-in-a-haystack-style lookups.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://arxiv.org/abs/2211.05102">Pope et al. 2022 — Efficiently Scaling Transformer Inference</a> — the definitive analysis of this chapter's arithmetic.</li>
 <li><a href="https://kipp.ly/transformer-inference-arithmetic/">kipply — Transformer Inference Arithmetic</a> — excellent, concrete, worked numbers.</li>
 <li><a href="https://arxiv.org/abs/2309.06180">Kwon et al. 2023 — PagedAttention / vLLM</a></li>
+<li><a href="https://arxiv.org/abs/2309.17453">Xiao et al. 2023 — Efficient Streaming Language Models with Attention Sinks</a> (StreamingLLM)</li>
+<li><a href="https://arxiv.org/abs/2306.14048">Zhang et al. 2023 — H2O: Heavy-Hitter Oracle</a></li>
+<li><a href="https://arxiv.org/abs/2404.14469">Li et al. 2024 — SnapKV</a></li>
+<li><a href="https://arxiv.org/abs/2308.16369">Agrawal et al. 2023 — SARATHI</a> and <a href="https://arxiv.org/abs/2403.02310">2024 — Sarathi-Serve</a> (chunked prefill)</li>
+<li>Reference code: <code>tfs/kvcache.py</code> · tests: <code>tests/test_inference.py</code> (Ch 15 section)</li>
 <li>Companion notebook: <code>notebooks/15_kv_cache.ipynb</code></li>
 </ul>
 

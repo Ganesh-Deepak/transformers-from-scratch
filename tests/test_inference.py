@@ -158,7 +158,7 @@ def test_chunked_prefill_exact():
         # and the trap: Model.forward with is_causal=True on a multi-token chunk
         _, _, cc = m(ids[:, :32])
         bad, _, _ = m(ids[:, 32:], caches=cc, pos_offset=32)
-        assert (bad[:, -1] - full[:, -1]).abs().max() > 0.1
+        assert r((bad[:, -1] - full[:, -1]).abs().max().item(), 2) == 0.34
 
 
 def test_cache_timing_shape():
@@ -239,6 +239,40 @@ def test_split_kv_decode():
     assert r(FL.decode_occupancy(1, 32, 132), 3) == 0.242
     assert r(FL.decode_occupancy(1, 32, 132, 8), 2) == 1.94
     assert r(FL.decode_occupancy(16, 32, 132), 2) == 3.88
+
+
+def test_split_kv_worked_example():
+    """17.7: scores [1, 3, 2, 5], values [10, 20, 30, 40], two splits."""
+    sc, v = torch.tensor([1., 3., 2., 5.]), torch.tensor([[10.], [20.], [30.], [40.]])
+    oA, lA = FL.scores_partial(sc[:2], v[:2])
+    oB, lB = FL.scores_partial(sc[2:], v[2:])
+    assert (r(lA.item(), 4), r(oA.item(), 4), r(lB.item(), 4), r(oB.item(), 4)) == (3.1269, 18.808, 5.0486, 39.5257)
+    tot = torch.logsumexp(torch.stack([lA, lB]), 0).item()
+    assert r(tot, 5) == 5.18518 and r(math.exp(lA.item() - tot), 4) == 0.1277
+    merged = FL.merge_partials(torch.stack([oA, oB]), torch.stack([lA, lB])).item()
+    direct = (sc.softmax(0) @ v).item()
+    assert r(merged, 3) == r(direct, 3) == 36.881
+
+
+def test_mla_absorption_flops():
+    """16.4: absorbed decode does 3.4x the attention FLOPs of the decompressed form, on 57x fewer bytes."""
+    absorbed, decompressed = 128 * (2 * 576 + 2 * 512), 128 * (2 * 192 + 2 * 128)
+    assert (absorbed, decompressed) == (278_528, 81_920) and r(absorbed / decompressed, 1) == 3.4
+    assert r(2 * 128 * 128 / 576, 1) == 56.9
+
+
+def test_chapter_exercise_numbers():
+    """Exercise answers in Ch 14, 15 and 16."""
+    assert r(G.mfu(70.6e9, 1.6e6 / 1024, 989.4e12), 3) == 0.669                    # 14.5
+    assert r(12 * 80 * 8192 * 8192 / (6 * 70.6e9), 2) == 0.15
+    cache = 20 * KV.kv_bytes(80, 8, 128, 131072) / 1e9                             # 15.2
+    assert r(cache, 1) == 859.0 and math.ceil((cache + 141.2) / 80) == 13
+    assert r(cache / 2 + 141.2, 1) == 570.7 and math.ceil((cache / 2 + 141.2) / 80) == 8
+    assert KV.users_that_fit(50 * KV.GIB, KV.kv_bytes(32, 8, 128, 4096)) == 100    # 15.6
+    assert KV.users_that_fit(50 * KV.GIB, KV.kv_bytes(32, 8, 128, 131072)) == 3
+    mha = KV.kv_bytes(32, 32, 128, 32768) / KV.GIB                                 # 16.5
+    assert (mha, mha / 4, mha / 8, mha / 16) == (16.0, 4.0, 2.0, 1.0)
+    assert 8 * (2 * 80 + 2 * 64) == 2304 and 8 * (2 * 48 + 2 * 32) == 1280         # 16.4
 
 
 def test_flex_style_masks():

@@ -19,6 +19,18 @@ DeepSeek's 2024 low-rank scheme that is <em>both</em> smaller and better than wh
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; heads<br><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; why cache size is the binding constraint<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE, for the MLA section<div class="sep"></div><span class="k">Leads to</span><a href="ch22-frontier.html">Ch&nbsp;22</a> &mdash; sparse attention is the next move<br><a href="ch26-capstone.html">Ch&nbsp;26</a> &mdash; the capstone uses GQA<div class="sep"></div><span class="k">Why this chapter</span>From a blunt 2019 hack to a 2024 scheme that is both smaller and better.</div>
+<div class="box intuition">
+<span class="t">The whole chapter in five sentences</span>
+<p style="margin-bottom:0"><b>The cache is a product of factors</b> (2 · n_layer · n_kv_head · d_head · tokens
+· bytes), and each scheme in this chapter divides a different one. <b>MQA and GQA divide n_kv_head</b> by
+sharing key/value heads among query heads, and GQA with 8 groups costs almost no quality. <b>MLA replaces
+the heads with a 576-value latent</b>, which is smaller than GQA and, in DeepSeek's ablations, better than
+MHA, at the price of a decoupled RoPE slice and two code paths. <b>At decode, absorbed MLA is multi-query
+attention over that latent</b>, about 30× more FLOPs per cached byte than GQA, which is why it suits a
+bandwidth-starved phase. <b>CLA and YOCO divide n_layer</b> by sharing one cache across layers, a choice you
+have to make before pretraining.</p>
+</div>
+
 <h2>16.1 · The idea: share the K/V heads</h2>
 
 <p>Standard MHA gives every query head its own key head and value head. But the cache is proportional to
@@ -311,6 +323,50 @@ task needs, and forcing shared structure regularises it. That is a much better t
 purely "give something up to save memory."</p>
 </div>
 
+<h3>Decode with absorption: MLA turns into MQA</h3>
+
+<p>Follow the absorption identity all the way through one decode step and something unexpected appears.
+Fold <code>W<sup>UK</sup></code> into the query: each head's 128-dim no-RoPE query becomes a <b>512-dim
+query in latent space</b>, <code>q̃<sub>h</sub> = (W<sup>UK</sup><sub>h</sub>)<sup>T</sup> q<sub>h</sub></code>.
+Concatenate its 64-dim RoPE query. Now every head scores against the same cached vector
+<code>[c<sup>KV</sup> ; k<sup>R</sup>]</code>, 576 wide. On the value side, attention weights multiply
+<code>c<sup>KV</sup></code> directly, and <code>W<sup>UV</sup></code> is applied once to the 512-dim result (in
+a real model it folds into the output projection).</p>
+
+<div class="mathblock">
+score<sub>h,t</sub> = [q̃<sub>h</sub> ; q<sup>R</sup><sub>h</sub>] · [c<sup>KV</sup><sub>t</sub> ; k<sup>R</sup><sub>t</sub>]
+&nbsp;&nbsp;&nbsp;&nbsp; out<sub>h</sub> = W<sup>UV</sup><sub>h</sub> Σ<sub>t</sub> p<sub>h,t</sub> c<sup>KV</sup><sub>t</sub>
+<span class="lbl">128 query heads, ONE shared "key/value head": keys 576 wide, values 512 wide</span>
+</div>
+
+<p>That is <b>multi-query attention</b> (§16.2), with a head dimension of 576 instead of 128. MLA stores a
+cache smaller than GQA's <i>and</i>, at decode time, runs the kernel shape that is cheapest to feed:
+every byte of cache read is used by all 128 heads. <code>tfs/mla.py</code> implements both forms;
+<code>test_mla_absorbed_equals_naive</code> checks they agree to 10<sup>−5</sup>.</p>
+
+<div class="example">
+<span class="t">Worked example — attention FLOPs per byte of cache, at decode</span>
+<p>One new query token against one cached token. Each query head does a k-dim dot product
+(2k FLOPs) and a v-dim weighted add (2v FLOPs). Bytes are what is cached per token per layer, in bf16.</p>
+<pre style="margin:.4rem 0"><code class="nohl">                          heads × (2k + 2v)          cached bytes    FLOP/byte
+MHA, 128 × 128            128 × (256 + 256)  = 65,536    65,536          1.0
+GQA-8, Llama-3-70B         64 × (256 + 256)  = 32,768     4,096          8.0
+MLA absorbed, DeepSeek-V3 128 × (1152 + 1024) = 278,528    1,152        241.8</code></pre>
+<p style="margin-bottom:0"><b>30 times the arithmetic intensity of GQA</b>, close to the H100's ridge of 295
+(Chapter 14). Decode attention, the most bandwidth-starved kernel in serving, becomes nearly
+compute-bound. DeepSeek's FlashMLA kernel shows both regimes: its README reports up to
+<b>3,000 GB/s</b> in a memory-bound configuration and up to <b>660 TFLOP/s</b> in a compute-bound one on
+an H800 SXM5. <code>decode_attention_intensity</code>, asserted in
+<code>test_decode_attention_intensity</code>.</p>
+</div>
+
+<p><b>Why there are two code paths.</b> Absorption is not free: per cached token the absorbed form does
+278,528 FLOPs against 81,920 for the decompressed form (128 heads × (2·192 + 2·128)), <b>3.4× the attention
+arithmetic</b>, in exchange for reading 57× fewer bytes. In decode, bandwidth is the constraint and the trade
+is excellent. In prefill, the whole prompt is processed at once, attention is compute-bound, and the
+decompressed form wins. So MLA implementations decompress during prefill and absorb during decode: the
+"implementation complexity" cost listed below, explained.</p>
+
 <h3>What MLA costs</h3>
 
 <ul>
@@ -368,7 +424,96 @@ FlashAttention.</li>
 </div>
 </div>
 
-<h2>16.5 · What everyone actually ships</h2>
+<h2>16.5 · Sharing the cache across layers: CLA and YOCO</h2>
+
+<p>Every scheme so far shrinks the cache <b>within</b> a layer. The formula has another factor nobody has
+touched: <code>n_layer</code>. Chapter 15 said layer 7's keys are useless to layer 8 because they live in
+different representation spaces. That is true of a model trained with separate caches. Train a model
+<i>expecting</i> to share, and adjacent layers can learn to use one set of keys and values.</p>
+
+<ul>
+<li><b>Cross-Layer Attention</b> (CLA; Brandon et al., 2024). Groups of <i>s</i> adjacent layers share one K/V:
+the first layer in each group computes and caches it, the others compute only queries and attend to it.
+CLA2 (<i>s</i> = 2) halves the cache. The paper reports that combining MQA with CLA2 gives a 2× smaller cache
+than MQA alone at about the same perplexity, and is a better point on the accuracy–memory curve than
+shrinking the head count further.</li>
+<li><b>YOCO</b>, "You Only Cache Once" (Sun et al., 2024). The bottom half of the network is a
+<b>self-decoder</b> using an efficient attention that keeps only a fixed-size cache (the paper uses
+sliding-window and gated-retention variants). It produces <b>one</b> global K/V cache, which every layer of the
+top half, the <b>cross-decoder</b>, attends to. The cache stops scaling with depth.</li>
+<li>In production, Character.AI described sharing K/V across neighbouring layers in its own models (2024), on
+top of MQA and local attention, as part of cutting its cache by more than an order of magnitude.</li>
+</ul>
+
+<div class="example">
+<span class="t">Worked example — the n_layer factor, on Llama-3-8B's shapes</span>
+<p>32 layers, 8 KV heads × 128, bf16. Baseline 128 KiB per token (Chapter 15).</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>CLA.</b> Only ⌈32 / s⌉ layers cache anything:
+<pre style="margin:.4rem 0"><code class="nohl">s = 2:  16 caching layers  ->  65,536 bytes = 64 KiB per token   (2×)
+s = 3:  11 caching layers  ->  45,056 bytes = 44 KiB per token   (2.9×)</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>YOCO at 128k context</b>, 16 self-decoder layers with a 4,096-token window, one global cache:
+<pre style="margin:.4rem 0"><code class="nohl">self-decoder:  16 layers × 4,096 tokens × 4 KiB   = 0.25 GiB   (fixed, whatever the context)
+global cache:   1 layer × 131,072 tokens × 4 KiB  = 0.50 GiB
+total                                             = 0.75 GiB    vs 16 GiB for the baseline: 21.3×</code></pre>
+And the advantage grows with context, because only one layer's worth scales with T.
+</div></div>
+<p style="margin-bottom:0"><code>cla_kv_bytes</code> and <code>yoco_kv_bytes</code> in
+<code>tfs/kvcache.py</code>, asserted in <code>test_cross_layer_kv</code>. These are cache sizes for
+hypothetical variants of Llama-3-8B; neither Meta model uses them.</p>
+</div>
+
+<div class="box warn">
+<span class="t">The cost: you must train for it</span>
+<p style="margin-bottom:0">GQA can be retrofitted to an MHA checkpoint with light continued pretraining, and fp8 KV
+needs no training at all. Cross-layer sharing changes what every layer computes, so it is an
+architecture decision made before pretraining, and YOCO additionally changes how prefill works (the
+self-decoder can produce the global cache without running the cross-decoder over the prompt, which the
+paper uses to cut prefill time). Both are composable with GQA, MLA and quantization: they act on a different
+factor of the same product.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 3 — absorption and sharing">
+<div class="qitem" data-answer="2">
+  <div class="qq">Why does absorbed MLA decode behave like multi-query attention?</div>
+  <div class="opts">
+    <div class="opt">DeepSeek-V3 uses only one query head</div>
+    <div class="opt">The RoPE key is shared</div>
+    <div class="opt">After folding W<sup>UK</sup> into the queries and W<sup>UV</sup> into the output, all 128 heads attend to the same cached 576-wide vector</div>
+    <div class="opt">The latent is repeated once per head</div>
+  </div>
+  <div class="expl"><b>One shared key/value per token.</b> Every head reads the same [c<sup>KV</sup> ; k<sup>R</sup>],
+  exactly the MQA access pattern, so each cached byte serves 128 heads: 241.8 FLOPs per byte against GQA-8's 8.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Why does an MLA implementation decompress the latent during prefill instead of always absorbing?</div>
+  <div class="opts">
+    <div class="opt">Absorption does ~3.4× more attention FLOPs; prefill is compute-bound, so the extra arithmetic costs more than the saved bytes</div>
+    <div class="opt">Absorption is only exact for one query token</div>
+    <div class="opt">Prefill has no cache to read</div>
+    <div class="opt">The decompressed form uses less memory</div>
+  </div>
+  <div class="expl"><b>Pick the form that saves the scarce resource.</b> Both forms are exact for any number of
+  queries. Decode is short of bandwidth, so absorb; prefill is short of FLOPs, so decompress.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">A 32-layer model uses CLA with groups of 2 layers and GQA-8. Compared with the same model without CLA, its cache is:</div>
+  <div class="opts">
+    <div class="opt">The same: sharing across layers does not change the cache</div>
+    <div class="opt">8× smaller</div>
+    <div class="opt">16× smaller</div>
+    <div class="opt">2× smaller: only 16 of the 32 layers store K/V, and the GQA saving applies on top</div>
+  </div>
+  <div class="expl"><b>A different factor of the same product.</b> CLA divides the n_layer factor; GQA divides the
+  n_kv_head factor. The two multiply.</div>
+</div>
+</div>
+
+<h2>16.6 · What everyone actually ships</h2>
 
 <div class="tw">
 <table>
@@ -394,7 +539,7 @@ engineering, not evidence. Meanwhile the newest frontier isn't compressing the c
 <b>not attending to most of it</b>, which is sparse attention (Chapter 22).</p>
 </div>
 
-<h2>16.6 · Exercises</h2>
+<h2>16.7 · Exercises</h2>
 
 <div class="exercise">
 <div class="eh"><span class="n">16.1</span><span class="ti">Implement GQA and prove it degrades to MHA and MQA</span><span class="lvl">essential</span></div>
@@ -459,6 +604,38 @@ large part of the explanation — architecture choices show up directly on the i
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">16.4</span><span class="ti">Implement absorbed MLA decode</span><span class="lvl">hard</span></div>
+<div class="eb">
+<p>Starting from your exercise 16.2 MLA, write a decode path that never decompresses the cache: fold
+<code>W_uk</code> into the query, attend against <code>[c_kv ; k_rope]</code> with all heads sharing it, and apply
+<code>W_uv</code> after the weighted sum. Assert it matches the decompressed path for one new token after a
+20-token cache, then count FLOPs and cached bytes per token for each path.</p>
+<details class="reveal"><summary>Check yourself</summary><div>
+<p style="margin-bottom:0">Compare with <code>tfs.mla.mla_decode_absorbed</code>. With exercise 16.2's
+dimensions (8 heads, rank 64, nope 32, rope 16, v 32) the absorbed form scores against an 80-wide shared
+vector; per cached token it does 8 × (2·80 + 2·64) = 2,304 FLOPs on 160 bytes (bf16), against
+8 × (2·48 + 2·32) = 1,280 FLOPs for the decompressed form. The ratio of cached bytes between the two forms is
+what makes absorption win at decode.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">16.5</span><span class="ti">Stack the factors</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>Start from a 32-layer MHA model (32 heads × 128, bf16) at 32k context. Apply, cumulatively: GQA-8, then
+CLA2, then fp8 KV. Give the cache per user after each step, and the factor each step contributed. Then say
+which steps need retraining and which do not.</p>
+<details class="reveal"><summary>Answer</summary><div>
+<pre><code class="nohl">MHA:        2 × 32 × 32 × 128 × 32768 × 2 = 16 GiB
++ GQA-8:    ÷ 4  ->  4 GiB
++ CLA2:     ÷ 2  ->  2 GiB
++ fp8 KV:   ÷ 2  ->  1 GiB          16× in total</code></pre>
+<p style="margin-bottom:0">fp8 KV needs no training (calibrate scales). GQA can be uptrained from an MHA
+checkpoint. CLA changes the architecture and in practice means pretraining with it from the start.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://arxiv.org/abs/2305.13245">Ainslie et al. 2023 — GQA</a> (includes the "uptraining" recipe for converting MHA checkpoints)</li>
@@ -467,6 +644,10 @@ large part of the explanation — architecture choices show up directly on the i
 <li><a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 Technical Report</a></li>
 <li><a href="https://mccormickml.com/2025/04/26/inner-workings-of-mla/">Chris McCormick — The Inner Workings of MLA</a> — the clearest walkthrough of absorption.</li>
 <li><a href="https://github.com/deepseek-ai/FlashMLA">deepseek-ai/FlashMLA</a> — the production kernel.</li>
+<li><a href="https://arxiv.org/abs/2405.12981">Brandon et al. 2024 — Reducing Transformer Key-Value Cache Size with Cross-Layer Attention</a> (CLA)</li>
+<li><a href="https://arxiv.org/abs/2405.05254">Sun et al. 2024 — You Only Cache Once</a> (YOCO)</li>
+<li><a href="https://research.character.ai/optimizing-inference/">Character.AI 2024 — Optimizing AI Inference at Character.AI</a> (cross-layer KV sharing in production)</li>
+<li>Reference code: <code>tfs/mla.py</code>, <code>tfs/kvcache.py</code> · tests: <code>tests/test_inference.py</code> (Ch 16 section)</li>
 <li>Companion notebook: <code>notebooks/16_gqa_mla.ipynb</code></li>
 </ul>
 

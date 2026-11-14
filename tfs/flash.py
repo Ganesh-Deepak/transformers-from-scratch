@@ -79,9 +79,22 @@ def split_kv_decode(q, K, V, n_splits):
         o, l = attend_partial(q, K[s:s + size], V[s:s + size])
         outs.append(o)
         lses.append(l)
-    lses = torch.stack(lses)                                           # (n_splits,)
-    w = torch.exp(lses - torch.logsumexp(lses, 0))                     # (n_splits,)  sums to 1
-    return (w[:, None] * torch.stack(outs)).sum(0)                     # (d,)
+    return merge_partials(torch.stack(outs), torch.stack(lses))
+
+
+def merge_partials(outs, lses):
+    """
+    The Flash-Decoding reduction. outs: (S, d) normalised partial outputs,
+    lses: (S,) their log-sum-exps. Weight each by exp(lse_i - lse_total).
+    """
+    w = torch.exp(lses - torch.logsumexp(lses, 0))                     # (S,)  sums to 1
+    return (w[:, None] * outs).sum(0)                                  # (d,)
+
+
+def scores_partial(scores, values):
+    """attend_partial when the scores are given: (normalised output, lse)."""
+    lse = torch.logsumexp(scores, 0)
+    return torch.exp(scores - lse) @ values, lse
 
 
 def decode_occupancy(batch, heads, n_sm, splits=1):
