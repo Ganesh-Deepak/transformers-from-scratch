@@ -318,6 +318,20 @@ def test_decode_profile_and_cost():
     assert r(S.cost_per_mtok(2.5, 6450, 0.6), 3) == 0.179
 
 
+def test_ch18_exercise_and_traffic():
+    """18.4 traffic split; exercises 18.4 and 18.6."""
+    kv = 256 * 2048 * S.kv_bytes_per_token(32, 8, 128)
+    assert r(kv / 1e9, 1) == 68.7 and r(kv / (kv + 8.03e9 * 2), 2) == 0.81
+    got = []
+    for kvb in (2, 1):
+        b = S.max_batch_for_memory(80e9, 4096, 4e9, kv_dtype_bytes=kvb)
+        p = S.decode_profile(b, 4096, kv_dtype_bytes=kvb)
+        got.append((b, r(p["tpot"] * 1e3, 2), r(p["tok_per_s"]), r(S.cost_per_mtok(2.5, p["tok_per_s"], 0.7), 3)))
+    assert got == [(111, 22.58, 4915, 0.202), (223, 22.66, 9840, 0.101)]
+    n, B = S.batch_for_compute_bound_experts(128, 8)
+    assert r(B) == 4726 and r(B / 64) == 74 and S.tokens_per_expert(512, 8, 128) == 32
+
+
 def test_prefill_cost():
     tps = G.tokens_per_s_at_mfu(8.03e9, 0.5, 989.4e12, train=False)
     assert r(S.cost_per_mtok(2.5, tps), 4) == 0.0225

@@ -18,7 +18,19 @@ more throughput than any architectural change since GQA. If you ever deploy a mo
 that saves you money.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; prefill vs decode<br><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; the kernel<br><a href="ch13-decoding.html">Ch&nbsp;13</a> &mdash; sampling<div class="sep"></div><span class="k">Leads to</span><a href="ch22-frontier.html">Ch&nbsp;22</a> &mdash; where the frontier went next<div class="sep"></div><span class="k">Why this chapter</span>Systems engineering that buys more throughput than any architectural change since GQA.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; prefill vs decode<br><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; the kernel<br><a href="ch13-decoding.html">Ch&nbsp;13</a> &mdash; sampling<br><a href="ch14-gpu.html">Ch&nbsp;14</a> &mdash; the roofline every cost here comes from<br><a href="ch00-numbers.html">Ch&nbsp;00</a> &mdash; fp8, MXFP4 and NVFP4<div class="sep"></div><span class="k">Leads to</span><a href="ch20-moe.html">Ch&nbsp;20</a> &mdash; §20.7: why batched MoE decode reads most experts<br><a href="ch23-sft-rlhf.html">Ch&nbsp;23</a> &mdash; fine-tuning, whose adapters §18.10 serves<br><a href="ch22-frontier.html">Ch&nbsp;22</a> &mdash; where the frontier went next<div class="sep"></div><span class="k">Why this chapter</span>Systems engineering that buys more throughput than any architectural change since GQA.</div>
+<div class="box intuition">
+<span class="t">The whole chapter in five sentences</span>
+<p style="margin-bottom:0"><b>Users feel TTFT, TPOT and their tails; the business pays per GPU-hour</b>, and
+goodput (requests that met their SLO) is the number that connects the two. <b>Batch size trades latency for cost
+per token</b>, and memory for the KV cache caps the batch long before compute does, so PagedAttention and KV
+quantization raise throughput by raising the cap. <b>Prefill and decode are different machines</b>, and chunked
+prefill or disaggregation keeps one from spoiling the other. <b>Fewer bytes per step is the universal lever</b>:
+fp8 and fp4 weights, speculative decoding's free FLOPs, prefix caches kept in CPU memory instead of recomputed.
+<b>MoE and multi-LoRA are bandwidth problems in disguise</b>: experts need large batches per expert, which is why
+they are served across hundreds of GPUs, and every distinct adapter in a batch is extra traffic.</p>
+</div>
+
 <h2>18.1 · PagedAttention — virtual memory for the KV cache</h2>
 
 <p>The naive approach pre-allocates a contiguous buffer of <code>max_length</code> per sequence. If a user's
@@ -75,7 +87,212 @@ batch full is nearly pure profit. Reported throughput gains over static batching
 <b>2–4×, sometimes over 20×</b> on skewed length distributions. Every serious server — vLLM, TensorRT-LLM,
 SGLang, TGI — does this.</p>
 
-<h2>18.3 · Speculative decoding</h2>
+<h2>18.3 · What users feel: SLOs, percentiles and goodput</h2>
+
+<p>A serving system is judged on numbers its users feel, and they are not "throughput":</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Metric</th><th>Definition</th><th>Set mostly by</th></tr></thead>
+<tbody>
+<tr><td><b>TTFT</b>, time to first token</td><td>request arrives → first token sent</td><td>queueing + prefill (Chapter 15)</td></tr>
+<tr><td><b>TPOT</b>, time per output token (also ITL, inter-token latency)</td><td>average gap between tokens after the first</td><td>the decode step time, which grows with batch</td></tr>
+<tr><td><b>E2E latency</b></td><td>TTFT + TPOT × (output tokens − 1)</td><td>both, and the output length</td></tr>
+<tr><td><b>Throughput</b></td><td>tokens (or requests) per second, summed over users</td><td>batch size</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>A <b>service-level objective</b> (SLO) states targets for the first two, at a <b>percentile</b>: "TTFT under
+500 ms and TPOT under 30 ms for 99% of requests". Percentiles, not means, because the users who leave are the
+ones in the tail, and averages hide tails. A mean TTFT of 300 ms is consistent with one request in ten
+waiting 2 seconds.</p>
+
+<p>Throughput counts every token, including those of requests that missed their SLO and whose user has
+already given up. <b>Goodput</b> counts only the requests that met it. DistServe (Zhong et al., 2024) made it
+the headline metric: the highest request rate a system can sustain while a target fraction (say 90%) of
+requests meets both SLOs.</p>
+
+<div class="example">
+<span class="t">Worked example — ten requests, two seconds</span>
+<pre style="margin:.4rem 0"><code class="nohl">request    1     2     3     4     5     6     7     8     9    10
+TTFT (s) 0.12  0.30  0.18  0.90  0.15  0.22  0.25  0.11  2.40  0.19
+TPOT(ms)   20    25    45    30    22    28    31    19    24    26</code></pre>
+<div class="step"><div class="i">1</div><div>
+<b>Percentiles of TTFT</b> (nearest rank): p50 = <b>0.19 s</b>, p90 = <b>0.90 s</b>, p99 = <b>2.40 s</b>. The
+median looks excellent; the tail is a different product.
+</div></div>
+<div class="step"><div class="i">2</div><div>
+<b>SLO: TTFT ≤ 0.5 s and TPOT ≤ 30 ms.</b> Request 3 fails on TPOT, 4 and 9 on TTFT, 7 on TPOT (31 ms):
+<b>6 of 10 attain</b> the SLO.
+</div></div>
+<div class="step"><div class="i">3</div><div>
+<b>Over the 2-second window:</b> throughput 5 requests/s, goodput <b>3 requests/s</b>. A scheduler that
+raised throughput to 6 requests/s by batching harder, and pushed two more requests over 30 ms, would have
+<i>lowered</i> goodput.
+</div></div>
+<p style="margin-bottom:0"><code>percentile</code>, <code>slo_attainment</code>, <code>goodput</code> in
+<code>tfs/serving.py</code>; asserted in <code>test_slo_metrics</code>.</p>
+</div>
+
+<h2>18.4 · The scheduler's trade, computed</h2>
+
+<p>Every scheduling decision moves work between those metrics. To see how, use nothing but Chapter 14's
+roofline: one step reads all the weights plus every active sequence's cache, does 2N FLOPs per token in the
+step, and takes the longer of the two times. Llama-3-8B (8.03 B parameters, 128 KiB of cache per token) in
+bf16 on one H100; every sequence holds 2,048 tokens of context.</p>
+
+<div class="example">
+<span class="t">Worked example — what batch size buys, and what it costs</span>
+
+<div class="step"><div class="i">1</div><div>
+<b>Decode only.</b> Step time is TPOT; batch ÷ step time is throughput.
+<pre style="margin:.4rem 0"><code class="nohl">batch   TPOT (ms)   tokens/s   bound
+    1      4.87         205    memory
+    8      5.44       1,472    memory
+   32      7.36       4,349    memory
+   64      9.92       6,450    memory
+  128     15.05       8,505    memory
+  256     25.31      10,116    memory</code></pre>
+Batch 1 → 256 multiplies throughput by 49 and TPOT by 5.2. That is the trade, as a table.
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Why it is still memory-bound at 256.</b> Chapter 14 said decode turns compute-bound around batch 295. That
+counted only the <i>weights</i>. Here every sequence also reads its own 2,048 × 128 KiB = 256 MiB of cache,
+and at batch 256 that is 68.7 GB per step against 16.1 GB of weights: the cache is <b>81%</b> of the traffic.
+Weights are shared by the batch; caches are not. This is why Chapter 16's savings translate directly into
+throughput.
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>Two limits on batch.</b> A TPOT target of 30 ms allows batch 314. Memory allows only
+<b>223</b> sequences at this context (80 GB − 16.06 GB of weights − 4 GB reserved for activations, divided by
+256 MiB). Memory binds first, which is the usual situation, and why PagedAttention (§18.1) and KV
+quantization (§18.7) raise throughput: they raise the batch the memory allows.
+</div></div>
+<p style="margin-bottom:0"><code>decode_profile</code>, <code>max_batch_for_tpot</code>,
+<code>max_batch_for_memory</code>; asserted in <code>test_decode_profile_and_cost</code>. A real engine
+reaches perhaps 60–80% of these roofline speeds; the shape of the trade is what transfers.</p>
+</div>
+
+<h3>Chunked prefill: trading TTFT against TPOT</h3>
+
+<p>Now an 8,192-token prompt arrives while 64 sequences are decoding. Chapter 15 §15.7 showed how to prefill
+it in chunks exactly. The scheduler picks the chunk size: each step runs the 64 decodes plus one chunk.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th class="num">chunk (tokens)</th><th class="num">steps to finish the prompt</th><th class="num">TPOT for the 64 decoding users</th><th class="num">TTFT for the new request</th><th>step is</th></tr></thead>
+<tbody>
+<tr><td class="num">256</td><td class="num">32</td><td class="num">9.92 ms</td><td class="num">317.5 ms</td><td>memory-bound</td></tr>
+<tr><td class="num">512</td><td class="num">16</td><td class="num">9.92 ms</td><td class="num">158.8 ms</td><td>memory-bound</td></tr>
+<tr><td class="num">1,024</td><td class="num">8</td><td class="num">17.66 ms</td><td class="num">141.3 ms</td><td>compute-bound</td></tr>
+<tr><td class="num">2,048</td><td class="num">4</td><td class="num">34.28 ms</td><td class="num">137.1 ms</td><td>compute-bound</td></tr>
+<tr><td class="num">8,192 (no chunking)</td><td class="num">1</td><td class="num">134.01 ms</td><td class="num">134.0 ms</td><td>compute-bound</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Read the table from the bottom. Without chunking, the 64 users already decoding see one token take
+<b>134 ms</b>, 13× their normal gap: a visible stutter, multiplied by every long prompt that arrives. With
+512-token chunks they see no slowdown at all, and the new request waits 159 ms instead of 134. The
+reason is the roofline again: a decode step is memory-bound, so the GPU has spare FLOPs, and prompt tokens
+fill them <b>for free</b> until compute time reaches memory time. That happens at a chunk of <b>547</b>
+tokens here (<code>balanced_chunk</code>); past it, each extra prompt token in the step slows everyone. This
+is Sarathi-Serve's argument, and why chunked prefill with a token budget per step is the default scheduling
+policy in vLLM and SGLang. Disaggregation (§18.8) is the other answer: give prefill its own GPUs, so the two
+never share a step. (<code>chunked_prefill_trade</code>, asserted in
+<code>test_chunked_prefill_trade</code>; the chunk's attention FLOPs are left out, which is fair at these
+lengths.)</p>
+
+<h2>18.5 · Dollars per million tokens</h2>
+
+<p>The economics follow from the same table. A GPU costs a fixed amount per hour whether it is busy or not;
+the cost of a token is that price divided by the tokens it produces in the hour.</p>
+
+<div class="mathblock">
+$ per million tokens = <span class="frac"><span class="n">GPU price per hour</span><span class="d">tokens/s × 3600 × utilisation</span></span> × 10<sup>6</sup>
+<span class="lbl">utilisation = the fraction of paid hours actually spent serving at that throughput</span>
+</div>
+
+<div class="example">
+<span class="t">Worked example — the cost of an output token, Llama-3-8B on one H100</span>
+<p>Take <b>$2.50 per GPU-hour</b> as an assumed rental price (prices vary widely by provider, commitment and
+year; substitute your own). Roofline throughputs from §18.4.</p>
+<pre style="margin:.4rem 0"><code class="nohl">batch      tokens/s     $ per million output tokens (100% utilised)
+    1          205        3.385
+    8        1,472        0.472
+   32        4,349        0.160
+   64        6,450        0.108
+  256       10,116        0.069</code></pre>
+<p><b>Batch 1 costs 49× what batch 256 does</b>, on the same GPU, at the same price. And utilisation divides
+straight through: batch 64 at 60% utilisation (quiet nights, headroom for spikes) is <b>$0.179</b>, not
+$0.108.</p>
+<p style="margin-bottom:0"><b>Input tokens are cheaper.</b> Prefill is compute-bound: at 50% MFU an H100 prefills
+0.5 × 989.4 × 10<sup>12</sup> ÷ (2 × 8.03 × 10<sup>9</sup>) = <b>30,803 tokens/s</b>, so $0.0225 per million.
+An output token at batch 64 costs <b>4.8×</b> an input token. That is the arithmetic behind API price lists
+that charge several times more for output than for input, and behind prefix caching's value: a cached input
+token costs nearly nothing. (<code>cost_per_mtok</code>; <code>test_decode_profile_and_cost</code>,
+<code>test_prefill_cost</code>.)</p>
+</div>
+
+<div class="box intuition">
+<span class="t">The whole of serving economics in one sentence</span>
+<p style="margin-bottom:0">Cost per token falls as batch rises, latency per token rises with it, memory caps it,
+and the job of every technique in this chapter is to move that cap or bend that curve: PagedAttention and
+KV quantization raise the cap, speculative decoding lowers latency at small batch, chunked prefill and
+disaggregation stop prefill from spoiling TPOT, and lower-precision weights shrink every step.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 1 — SLOs and cost">
+<div class="qitem" data-answer="2">
+  <div class="qq">A scheduler change raises throughput from 5 to 6 requests/s but pushes two more requests over the TPOT target. What happened to goodput in the worked example?</div>
+  <div class="opts">
+    <div class="opt">It rose, because throughput rose</div>
+    <div class="opt">Unchanged</div>
+    <div class="opt">It can fall: goodput counts only requests that met the SLO, and two of them stopped meeting it</div>
+    <div class="opt">Goodput is undefined above 5 requests/s</div>
+  </div>
+  <div class="expl"><b>Throughput is not what users get.</b> Goodput is requests per second that met both
+  targets; trading SLO misses for raw throughput can lower it.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Llama-3-8B, batch 256, 2,048 tokens of context each, on an H100. What is most of the HBM traffic of a decode step?</div>
+  <div class="opts">
+    <div class="opt">The KV caches: 68.7 GB against 16.1 GB of weights</div>
+    <div class="opt">The weights, as always in decode</div>
+    <div class="opt">Activations</div>
+    <div class="opt">The logits</div>
+  </div>
+  <div class="expl"><b>Weights are shared by the batch; caches are not.</b> At large batch and long context the
+  cache dominates, which keeps decode memory-bound beyond Chapter 14's weights-only estimate of batch 295.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">Why does chunked prefill with 512-token chunks not slow down the users who are decoding, in the §18.4 example?</div>
+  <div class="opts">
+    <div class="opt">Prefill tokens are processed on a different GPU</div>
+    <div class="opt">Chunks are processed only when nobody is decoding</div>
+    <div class="opt">Prompt tokens skip attention</div>
+    <div class="opt">The decode step is memory-bound with spare FLOPs; 512 prompt tokens fit in them (compute only catches up with memory at ~547 tokens)</div>
+  </div>
+  <div class="expl"><b>Free FLOPs again.</b> The same reason batching and speculative decoding work: in a
+  memory-bound step, extra tokens cost nothing until compute time reaches memory time.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">Why do API providers price output tokens several times higher than input tokens?</div>
+  <div class="opts">
+    <div class="opt">Output tokens are longer</div>
+    <div class="opt">Prefill is compute-bound and processes tens of thousands of tokens/s; decode is memory-bound and produces far fewer per GPU-second</div>
+    <div class="opt">Input tokens are cached for free</div>
+    <div class="opt">Output tokens need a larger vocabulary</div>
+  </div>
+  <div class="expl"><b>Two different machines (Chapter 15).</b> 30,803 prefill tokens/s against 6,450 decode
+  tokens/s at batch 64 in the example: 4.8× per token.</div>
+</div>
+</div>
+
+<h2>18.6 · Speculative decoding</h2>
 
 <p>The cleverest idea in inference. It exploits the fact from Chapter 15 that decode is memory-bound:
 verifying <code>k</code> tokens costs almost exactly the same as generating 1, because either way you read
@@ -169,7 +386,7 @@ summarising a provided document) accepts most drafts; creative text accepts few.
 <b>large batch sizes</b> you're already compute-bound, so the free verification capacity disappears and
 speculative decoding can be a net loss. It is a low-batch / low-latency optimisation.</p>
 
-<h2>18.4 · Quantization</h2>
+<h2>18.7 · Quantization, and serving in fp8 and fp4</h2>
 
 <div class="tw">
 <table>
@@ -178,6 +395,7 @@ speculative decoding can be a net loss. It is a low-batch / low-latency optimisa
 <tr><td><b>bf16</b></td><td>16</td><td>baseline</td><td>—</td></tr>
 <tr><td><b>FP8</b> (e4m3)</td><td>8</td><td>weights + activations</td><td>near-zero on H100+; native tensor-core support</td></tr>
 <tr><td><b>GPTQ / AWQ</b></td><td>4</td><td>weights only</td><td>small; AWQ protects salient channels using activation statistics</td></tr>
+<tr><td><b>MXFP4 / NVFP4</b></td><td>4.25 / 4.5</td><td>weights (and on Blackwell, activations)</td><td>small with good scaling; native on Blackwell</td></tr>
 <tr><td><b>GGUF k-quants</b></td><td>2–8</td><td>weights, mixed per-tensor</td><td>Q4_K_M is the usual sweet spot for local inference</td></tr>
 <tr><td><b>KV cache fp8/int4</b></td><td>8 / 4</td><td>the cache only</td><td>small; 2–4× more concurrent users</td></tr>
 </tbody>
@@ -187,10 +405,47 @@ speculative decoding can be a net loss. It is a low-batch / low-latency optimisa
 <div class="box intuition">
 <span class="t">Why quantizing <i>weights</i> speeds up decode</span>
 <p style="margin-bottom:0">Because decode is bandwidth-bound. Int4 weights are 4× fewer bytes to read from
-HBM, so you get roughly 4× the token rate — even though the arithmetic is dequantized back to fp16 before
-the matmul. You're not saving FLOPs, you're saving <i>traffic</i>. This also means quantization helps decode
-far more than prefill.</p>
+HBM, so you get up to 4× the token rate, even if the arithmetic is dequantized back to bf16 before the
+matmul. You're not saving FLOPs, you're saving <i>traffic</i>. This also means weight-only quantization helps
+decode far more than prefill.</p>
 </div>
+
+<h3>The block-scaled formats, as deployment decisions</h3>
+
+<p>Chapter 0 §0.6 built the 4-bit formats bit by bit. Here is what each one costs to store, counting its
+scales, and what that buys a 70.6 B-parameter dense model (Llama-3-70B-sized) at batch 1:</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Format</th><th class="num">bits per weight, incl. scales</th><th class="num">weights</th><th class="num">H100 decode ceiling</th><th>matmul runs in</th></tr></thead>
+<tbody>
+<tr><td>bf16</td><td class="num">16</td><td class="num">141.2 GB</td><td class="num">24 tok/s</td><td>bf16</td></tr>
+<tr><td>fp8, one fp32 scale per 128 × 128 block</td><td class="num">8.002</td><td class="num">70.6 GB</td><td class="num">47 tok/s</td><td>fp8 on H100 and B200</td></tr>
+<tr><td>MXFP4: e2m1 + an E8M0 scale per 32</td><td class="num">4.25</td><td class="num">37.5 GB</td><td class="num">89 tok/s</td><td>bf16/fp8 after dequant on H100; fp4 on B200</td></tr>
+<tr><td>NVFP4: e2m1 + an e4m3 scale per 16</td><td class="num">4.5</td><td class="num">39.7 GB</td><td class="num">84 tok/s</td><td>bf16/fp8 after dequant on H100; fp4 on B200</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>(The ceiling is bandwidth ÷ weight bytes, 3.35 TB/s on one H100, ignoring the cache and the fact that 141 GB
+does not fit on one GPU; it is the bound, not a measurement. <code>bits_per_weight</code>,
+<code>weight_bytes</code>, asserted in <code>test_weight_formats</code>.)</p>
+
+<p>Three decisions fall out of the table:</p>
+<ul>
+<li><b>Hopper vs Blackwell changes what 4-bit buys.</b> On an H100, MXFP4 or NVFP4 weights are a
+<i>storage and bandwidth</i> format: the kernel loads 4-bit values and scales, dequantizes in registers and
+multiplies in bf16 or fp8. Decode gets faster; prefill does not. Blackwell's tensor cores multiply fp4
+directly at twice the fp8 rate (Chapter 14 §14.8), so prefill gets faster too, if activations are quantized
+as well.</li>
+<li><b>NVFP4 costs a quarter of a bit more than MXFP4</b> (a scale per 16 values instead of 32, in e4m3 instead
+of a power of two). The finer, more precise scaling is why NVIDIA reports it tracking fp8 accuracy more
+closely; the bandwidth cost is 6%.</li>
+<li><b>fp8 is the safe default</b> for weights on H100-class hardware: half the bytes, native matmuls, and
+quality differences that are usually within noise. DeepSeek-V3 was trained and released in fp8 with
+128 × 128 weight blocks, so its fp8 weights are not a post-hoc approximation. gpt-oss ships its MoE weights in
+MXFP4, which is how the 117 B-parameter model fits on one 80 GB GPU (Chapter 0, Chapter 20).</li>
+</ul>
 
 <div class="box warn">
 <span class="t">Evaluate quantized models on your actual task</span>
@@ -200,7 +455,7 @@ earlier than perplexity suggests — the errors compound across steps. Always te
 care about, not a proxy.</p>
 </div>
 
-<h2>18.5 · Prefill–decode disaggregation</h2>
+<h2>18.8 · Prefill–decode disaggregation</h2>
 
 <p>Chapter 15 showed prefill is compute-bound and decode is memory-bound. Running them on the same GPU in
 the same batch means each interferes with the other — a long prefill stalls every decode in flight
@@ -209,11 +464,13 @@ the same batch means each interferes with the other — a long prefill stalls ev
 <p>The 2024–2026 answer is to run them on <b>separate GPU pools</b>: prefill workers produce the KV cache
 and transfer it over the interconnect to decode workers. Prefill nodes optimise for throughput, decode nodes
 for bandwidth and batch size. Systems like DistServe, Splitwise, Mooncake and current vLLM/SGLang builds
-support this, and it's now standard in large deployments. An intermediate option — <b>chunked prefill</b>,
-which slices long prompts into pieces interleaved with decode steps — gets much of the benefit on a single
-pool.</p>
+support this, and it's now standard in large deployments. An intermediate option, <b>chunked prefill</b>
+(§18.4, and Chapter 15 §15.7 for exactness), which slices long prompts into pieces interleaved with decode steps,
+gets much of the benefit on a single pool. Disaggregation's own cost is the cache hand-off: a prefill node must
+ship each request's KV cache to a decode node (1 GiB for 8k tokens of Llama-3-8B), which is why it is deployed on
+fast interconnects and pairs naturally with the cache-transfer layers of §18.11.</p>
 
-<div class="quiz" data-title="Checkpoint 1 — serving">
+<div class="quiz" data-title="Checkpoint 2 — speculation, quantization, disaggregation">
 <div class="qitem" data-answer="1">
   <div class="qq">Why does speculative decoding give a speedup at all, given it does <i>more</i> total work?</div>
   <div class="opts">
@@ -254,7 +511,191 @@ pool.</p>
 </div>
 </div>
 
-<h2>18.6 · Choosing a serving stack</h2>
+<h2>18.9 · Serving MoE: expert parallelism</h2>
+
+<p>Chapter 20 §20.7 derived the fact that shapes MoE serving: a batch of <i>b</i> decoding tokens, each choosing
+<i>k</i> of <i>E</i> experts, reads E(1 − (1 − k/E)<sup>b</sup>) distinct experts per layer, so DeepSeek-V3 reads
+87% of its routed experts at a batch of 64. Sparsity saves FLOPs, not bandwidth. The serving question is what
+to do about it, and the answer is to make the batch <b>per expert</b> large.</p>
+
+<div class="example">
+<span class="t">Worked example — how big a batch makes an expert compute-bound?</span>
+<div class="step"><div class="i">1</div><div>
+<b>Tokens per expert.</b> With uniform routing, each routed expert sees b · k / E of the batch's tokens. A
+global decode batch of 4,096 tokens on DeepSeek-V3 (256 experts, top-8) gives each expert
+4,096 × 8 / 256 = <b>128 tokens</b> per step.
+</div></div>
+<div class="step"><div class="i">2</div><div>
+<b>The ridge, in tokens.</b> An expert's matmul with n tokens does 2n FLOPs per weight, and an fp8 weight is 1
+byte, so its intensity is 2n FLOP/byte. On an H100's fp8 ridge of 590.7 (Chapter 14), it is compute-bound at
+n ≈ <b>295 tokens per expert</b>, which needs a global batch of 295 × 256 / 8 ≈ <b>9,451 tokens</b>.
+</div></div>
+<div class="step"><div class="i">3</div><div>
+<b>Memory per expert.</b> One routed expert of one layer is a SwiGLU with d_model 7,168 and expert width
+2,048: 3 × 7,168 × 2,048 = 44.0 M parameters. Across 58 MoE layers that is 2.55 B parameters, 2.55 GB in fp8:
+one expert slot per layer fits easily on a GPU, with the rest of HBM left for cache.
+</div></div>
+<p style="margin-bottom:0"><code>tokens_per_expert</code>, <code>batch_for_compute_bound_experts</code>;
+<code>test_moe_expert_parallel</code>.</p>
+</div>
+
+<p>No single GPU can hold a batch of 9,451 sequences' caches, but a <b>cluster</b> can, if the experts are spread
+across it. That is expert parallelism (EP) for inference: attention runs data-parallel (each GPU holds its own
+sequences and their caches), and before each MoE layer an all-to-all sends every token to the GPUs holding its
+chosen experts and back (Chapter 20 §20.6). Every GPU then runs <i>few</i> experts on <i>many</i> tokens, which is
+the regime a GPU is good at. DeepSeek's report (§3.4) describes exactly this split:</p>
+
+<ul>
+<li><b>Prefill</b> on units of 4 nodes, 32 GPUs: attention with 4-way tensor parallelism and sequence
+parallelism, 8-way data parallelism; MoE with <b>EP32</b>, plus 32 redundant copies of the most-loaded experts.</li>
+<li><b>Decode</b> on units of 40 nodes, 320 GPUs: MoE with <b>EP320</b>, each GPU hosting a single routed expert
+(per layer), with 64 GPUs holding redundant and shared experts, and the all-to-all over InfiniBand using
+direct GPU-initiated transfers to keep latency low.</li>
+</ul>
+
+<p>Two consequences worth carrying away. <b>Load balance becomes a serving problem</b>: the busiest expert's
+GPU sets the step time for the whole cluster, which is why the deployment duplicates hot experts, re-chosen
+from observed load statistics. And <b>MoE is cheap per token only at scale</b>: on a single 8-GPU node at
+modest batch, an MoE reads most of its experts every step and behaves like a dense model of its <i>total</i>
+size. Small deployments of large MoEs are bandwidth-bound; the economics of §18.5 arrive only when the batch per
+expert does.</p>
+
+<h2>18.10 · Many fine-tunes on one GPU: multi-LoRA serving</h2>
+
+<p>LoRA (Hu et al., 2021; Chapter 23) fine-tunes a model by learning a low-rank update to chosen weight matrices
+instead of changing them: <code>W' = W + (α/r) · B A</code>, with A of shape (r, d<sub>in</sub>) and B of shape
+(d<sub>out</sub>, r), and r small (8 to 64). A product with a thousand customer fine-tunes is then one base model
+plus a thousand small adapters, and the serving question is how to batch requests that use <b>different</b>
+adapters.</p>
+
+<div class="example">
+<span class="t">Worked example — a rank-16 adapter on Llama-3-8B</span>
+<div class="step"><div class="i">1</div><div>
+<b>Size.</b> Adapting all seven matrices of every block (q, k, v, o, gate, up, down) adds r(d<sub>in</sub> + d<sub>out</sub>)
+per matrix:
+<pre style="margin:.4rem 0"><code class="nohl">per layer: 16 × [(4096+4096) + 2×(4096+1024) + (4096+4096) + 2×(4096+14336) + (14336+4096)]
+         = 16 × 81,920 = 1,310,720
+× 32 layers = 41,943,040 parameters = 83.9 MB in bf16      0.52% of the base model</code></pre>
+A thousand adapters are 84 GB, on disk or in CPU memory; a thousand full fine-tunes would be 16 TB.
+</div></div>
+<div class="step"><div class="i">2</div><div>
+<b>The batch cost nobody mentions.</b> FLOPs per token rise by 0.52%, nothing. But in a decode step each
+<i>distinct</i> adapter in the batch must be read from HBM, like the weights. A batch of 64 requests using 64
+different adapters reads 64 × 83.9 MB = <b>5.37 GB</b> of adapter weights per step, a third of the base
+model's 16.06 GB. Batching requests that share adapters is worth real throughput.
+</div></div>
+<p style="margin-bottom:0"><code>lora_params</code>, <code>lora_batch_bytes</code>; <code>test_multi_lora</code>.</p>
+</div>
+
+<p>Systems such as <b>Punica</b> (Chen et al., 2023) and <b>S-LoRA</b> (Sheng et al., 2023) make this work: the
+base model's matmul runs once for the whole batch, and a custom kernel (Punica's segmented gather matrix-vector
+multiply, SGMV) applies each request's own A and B in one launch, gathering the right adapter per row. S-LoRA adds
+paging for adapters, keeping the hot ones in GPU memory in the same pool as the KV cache and fetching cold ones from
+CPU memory on demand, and reports serving thousands of adapters on one GPU. vLLM and SGLang support multi-LoRA
+batching on the same principles. The alternative, merging each adapter into a full copy of the weights, is fastest
+per request and hopeless beyond a handful of fine-tunes.</p>
+
+<h2>18.11 · Where the cache lives: offload tiers</h2>
+
+<p>Prefix caching (§18.1) only helps if the cached prefix is still there when the next request needs it. HBM is
+small, so engines evict, and an evicted prefix must be recomputed by prefill. The alternative is a hierarchy:
+keep evicted KV blocks in <b>CPU memory</b>, then on <b>local SSD</b>, then in a shared store, and copy them back
+when a request hits them. Whether that pays depends on one comparison: <b>reload time vs recompute time.</b></p>
+
+<div class="example">
+<span class="t">Worked example — an 8,192-token prefix of Llama-3-8B</span>
+<pre style="margin:.4rem 0"><code class="nohl">cache to restore:   8,192 × 128 KiB                              = 1.00 GiB
+
+reload over PCIe 5.0 x16 (~64 GB/s)                               =  16.8 ms
+reload from a local NVMe SSD (~7 GB/s)                             = 153.4 ms
+recompute by prefill:  2N·T + 2·n_layer·d·T²  = 1.49 × 10¹⁴ FLOPs
+                       at 50% of 989.4 TFLOP/s                     = 301.5 ms</code></pre>
+<p style="margin-bottom:0">From CPU memory the prefix comes back <b>18× faster</b> than recomputing it; even
+from SSD, 2× faster, and the GPU is free to do other work during a transfer while recompute occupies it. The
+ratio improves with context length, because recompute grows with T² (attention) while reload grows with T.
+<code>reload_vs_recompute</code>, <code>test_kv_offload_break_even</code>; link speeds are round assumptions,
+check your hardware.</p>
+</div>
+
+<p>This is what <b>LMCache</b> (an open-source KV-cache layer for vLLM) and Moonshot AI's <b>Mooncake</b> (the
+"KVCache-centric" architecture behind its Kimi service, Qin et al., 2024) build: a pool of CPU memory and SSD
+across the cluster, holding KV blocks addressed by a hash of the token prefix, so a long document or a multi-turn
+conversation is prefilled once and reused by whichever GPU serves the next turn. Prefill–decode disaggregation
+(§18.8) needs the same machinery, since prefill nodes hand their caches to decode nodes. The limits are the links:
+PCIe is about 50× slower than HBM (Chapter 14 §14.9), so offload holds caches between requests, never during
+attention.</p>
+
+<h2>18.12 · Structured output inside the engine</h2>
+
+<p>Chapter 13 §13.4 showed how a grammar becomes a token mask. Inside a serving engine the issue is timing. The
+mask for step t+1 depends on the token chosen at step t, it is computed on the CPU, and the GPU's decode step for a
+small model can take only a few milliseconds. A slow mask idles the GPU for every structured request in the batch.
+Three engineering moves make it cheap:</p>
+
+<ul>
+<li><b>Precompute what you can.</b> XGrammar caches masks for context-independent tokens per automaton state
+and checks only the few stack-dependent tokens live (Dong et al., 2024, report mask generation up to 100× faster
+than earlier engines).</li>
+<li><b>Overlap.</b> Compute the next mask on the CPU while the GPU runs the forward pass, so it is ready when the
+logits are.</li>
+<li><b>Skip the model where the grammar decides.</b> When only one continuation is legal (the rest of a JSON key,
+a closing <code>"},</code>), there is nothing to sample. SGLang's <b>jump-forward decoding</b> (Zheng et al., 2023)
+appends those tokens directly, which can make structured output <i>faster</i> than free text. It has to respect
+token boundaries: forcing in characters must not leave the model with a non-canonical tokenization (Chapter 13
+§13.4), so the engine re-tokenizes at the jump.</li>
+</ul>
+
+<p>vLLM and SGLang expose structured output through backends including XGrammar, llguidance and Outlines; a
+request carries a JSON schema or a grammar, and the engine attaches a matcher to that sequence.</p>
+
+<div class="quiz" data-title="Checkpoint 3 — MoE, LoRA, offload, structure">
+<div class="qitem" data-answer="1">
+  <div class="qq">Why do large MoE deployments spread one model's experts over hundreds of GPUs (DeepSeek's EP320) rather than replicate the whole model on 8-GPU nodes?</div>
+  <div class="opts">
+    <div class="opt">The model does not fit on 8 GPUs at all</div>
+    <div class="opt">Each expert needs hundreds of tokens per step to be compute-bound; only a very large global batch, spread over many GPUs, gives every expert that many</div>
+    <div class="opt">Expert parallelism removes the all-to-all</div>
+    <div class="opt">It reduces the KV cache</div>
+  </div>
+  <div class="expl"><b>Batch per expert.</b> Tokens per expert = b·k/E. At 256 experts, top-8, an fp8 expert on an
+  H100 needs ~295 tokens, a global batch of ~9,451: possible across a cluster, not on one node.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">A batch of 64 decoding requests uses 64 different rank-16 LoRA adapters on Llama-3-8B. What extra cost dominates?</div>
+  <div class="opts">
+    <div class="opt">The adapters' FLOPs, which double the step</div>
+    <div class="opt">Nothing: adapters are free</div>
+    <div class="opt">Merging each adapter into the weights every step</div>
+    <div class="opt">Reading 64 distinct adapters, 5.37 GB per step, about a third of the base weights' traffic</div>
+  </div>
+  <div class="expl"><b>Bandwidth again.</b> The extra FLOPs are 0.5%. Each distinct adapter must be read once per
+  step, so batch requests that share adapters where you can.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Is it worth offloading an evicted 8k-token prefix to CPU memory rather than recomputing it later?</div>
+  <div class="opts">
+    <div class="opt">Yes: reloading 1 GiB over PCIe takes ~17 ms; recomputing it takes ~300 ms of GPU time</div>
+    <div class="opt">No: PCIe is slower than recomputing</div>
+    <div class="opt">Only for prefixes under 100 tokens</div>
+    <div class="opt">Only if the prefix is in fp32</div>
+  </div>
+  <div class="expl"><b>18× faster, and the GPU is not busy while it waits.</b> And the gap grows with length,
+  because recompute pays the T² attention term.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">What does jump-forward decoding do?</div>
+  <div class="opts">
+    <div class="opt">Skips layers of the model for easy tokens</div>
+    <div class="opt">Drafts tokens with a smaller model</div>
+    <div class="opt">Appends tokens the grammar forces (only one legal continuation) without running the model for them</div>
+    <div class="opt">Jumps to the end of the prompt during prefill</div>
+  </div>
+  <div class="expl"><b>No choice, no sampling.</b> When the grammar allows exactly one continuation, append it.
+  The engine must re-tokenize so the model is not left on a non-canonical token path.</div>
+</div>
+</div>
+
+<h2>18.13 · Choosing a serving stack</h2>
 
 <div class="tw">
 <table>
@@ -265,11 +706,12 @@ pool.</p>
 <tr><td><b>TensorRT-LLM</b></td><td>maximum NVIDIA throughput when you can afford the build complexity</td></tr>
 <tr><td><b>llama.cpp / Ollama</b></td><td>local, CPU or Apple Silicon, GGUF quantization</td></tr>
 <tr><td><b>HF TGI</b></td><td>tight HuggingFace ecosystem integration</td></tr>
+<tr><td><b>+ LMCache / Mooncake</b></td><td>a KV-cache layer across CPU memory and SSD (§18.11), added to an engine</td></tr>
 </tbody>
 </table>
 </div>
 
-<h2>18.7 · Exercises</h2>
+<h2>18.14 · Exercises</h2>
 
 <div class="exercise">
 <div class="eh"><span class="n">18.1</span><span class="ti">Implement speculative decoding</span><span class="lvl">hard</span></div>
@@ -339,12 +781,87 @@ breaks your latency SLA. Almost nobody measures this, and almost everyone should
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">18.4</span><span class="ti">Build the cost model</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Write <code>decode_profile(b, ctx)</code> and <code>cost_per_mtok(price, tok_per_s, util)</code> for a model
+and GPU of your choice (or read <code>tfs/serving.py</code> after you try). Then answer for Llama-3-8B on one H100
+at $2.50/hour and 70% utilisation, with 4,096 tokens of context per sequence:</p>
+<ol>
+<li>The largest batch that fits in memory (4 GB reserved), and its TPOT and $/M output tokens.</li>
+<li>The same with an fp8 KV cache.</li>
+<li>Which change would you make first to halve the cost per token: fp8 weights or fp8 KV? Predict, then compute.</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">bf16 KV:  max batch = (80 − 16.06 − 4) GB / 512 MiB  = 111      TPOT 22.58 ms   4,915 tok/s   $0.202 / M
+fp8 KV:   max batch = 59.94 GB / 256 MiB            = 223      TPOT 22.66 ms   9,840 tok/s   $0.101 / M</code></pre>
+<p style="margin-bottom:0">fp8 KV doubles the batch at almost the same step time, because at this context the
+cache is most of the traffic and the cache per step stays the same size; cost halves. fp8 <i>weights</i> would
+free 8 GB (more batch) and cut 8 GB of traffic per step; useful, but the cache is the bigger lever here. At short
+contexts the answer flips. (Compute these with <code>decode_profile(b, 4096, kv_dtype_bytes=1)</code>.)</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">18.5</span><span class="ti">Simulate a scheduler and measure goodput</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Simulate a stream of requests (Poisson arrivals, prompt lengths 200–8,000, outputs 50–500) on the roofline
+model of §18.4. Implement two policies: (a) prefill a whole prompt in one step whenever one is waiting, (b)
+chunked prefill with a token budget of 512 per step. For arrival rates from 1 to 20 requests/s, plot p99 TTFT, p99
+TPOT, throughput and goodput (TTFT ≤ 1 s, TPOT ≤ 50 ms).</p>
+<details class="reveal"><summary>What you should find</summary><div>
+<p style="margin-bottom:0">Policy (a) has better TTFT at low load but its p99 TPOT blows through 50 ms as soon as
+long prompts are common, because every big prefill stalls everyone. Policy (b) holds TPOT flat and gives higher
+<i>goodput</i> at the same throughput. At high load both fail on TTFT: queueing, not compute. That last regime is
+where you add GPUs; no scheduler fixes it.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">18.6</span><span class="ti">Size an expert-parallel deployment</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>A 128-expert, top-8 MoE with fp8 experts runs on H100s. (1) What global decode batch makes each expert
+compute-bound? (2) If attention is data-parallel and each GPU can hold the caches of 64 sequences, how many GPUs
+must the deployment span? (3) What does that say about serving this model on a single 8-GPU node?</p>
+<details class="reveal"><summary>Answer</summary><div>
+<pre><code class="nohl">1. tokens per expert needed ≈ 295  ->  global batch = 295.4 × 128 / 8 ≈ 4,726
+2. 4,725 / 64 ≈ 74 GPUs
+3. one node holds 512 sequences: 512 × 8 / 128 = 32 tokens per expert, a ninth of the ridge</code></pre>
+<p style="margin-bottom:0">On one node it works, but each expert's matmul is memory-bound and the model behaves
+like a dense model of its total size for bandwidth. Large EP is not about fitting the model; it is about feeding
+the experts.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">18.7</span><span class="ti">Predict, then measure: prefix caching and offload</span><span class="lvl">applied</span></div>
+<div class="eb">
+<p>Prediction first: with vLLM serving a 7–8B model, a 6,000-token shared document, and 50 different short
+questions about it, how much lower will mean TTFT be with prefix caching on than off? Then measure it. If your
+vLLM build supports CPU offload of KV blocks (or LMCache), shrink GPU memory for the cache until the document is
+evicted between requests, and measure TTFT with and without offload.</p>
+<details class="reveal"><summary>How to read it</summary><div>
+<p style="margin-bottom:0">With caching, every question after the first skips about 6,000 tokens of prefill,
+so TTFT should fall several-fold. With an evicted prefix, offload should land between the cached and uncached
+TTFT, close to cached if the link is fast: §18.11's 1 GiB in ~17 ms over PCIe against hundreds of milliseconds to
+recompute. If offload is <i>slower</i> than recompute, check whether the transfer overlaps compute and whether the
+blocks went to SSD instead of CPU memory.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://arxiv.org/abs/2309.06180">Kwon et al. 2023 — Efficient Memory Management for LLM Serving with PagedAttention</a></li>
 <li><a href="https://arxiv.org/abs/2211.17192">Leviathan et al. 2023 — Fast Inference via Speculative Decoding</a></li>
 <li><a href="https://arxiv.org/abs/2401.10774">Cai et al. 2024 — Medusa</a> · <a href="https://arxiv.org/abs/2401.15077">Li et al. 2024 — EAGLE</a></li>
-<li><a href="https://arxiv.org/abs/2401.09670">Zhong et al. 2024 — DistServe</a> (prefill/decode disaggregation)</li>
+<li><a href="https://arxiv.org/abs/2401.09670">Zhong et al. 2024 — DistServe</a> (prefill/decode disaggregation, goodput)</li>
+<li><a href="https://arxiv.org/abs/2403.02310">Agrawal et al. 2024 — Sarathi-Serve</a> (chunked prefill and stall-free scheduling)</li>
+<li><a href="https://arxiv.org/abs/2412.19437">DeepSeek-AI 2024 — DeepSeek-V3 Technical Report</a> (§3.4: prefill EP32, decode EP320, redundant experts)</li>
+<li><a href="https://arxiv.org/abs/2106.09685">Hu et al. 2021 — LoRA</a> · <a href="https://arxiv.org/abs/2310.18547">Chen et al. 2023 — Punica</a> · <a href="https://arxiv.org/abs/2311.03285">Sheng et al. 2023 — S-LoRA</a></li>
+<li><a href="https://arxiv.org/abs/2407.00079">Qin et al. 2024 — Mooncake</a> · <a href="https://github.com/LMCache/LMCache">LMCache</a> (KV-cache offload and sharing)</li>
+<li><a href="https://arxiv.org/abs/2411.15100">Dong et al. 2024 — XGrammar</a> · <a href="https://arxiv.org/abs/2312.07104">Zheng et al. 2023 — SGLang</a> (compressed FSM, jump-forward decoding)</li>
+<li><a href="https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf">OCP Microscaling (MX) Formats v1.0</a> (MXFP4) · NVFP4: see Chapter 0's sources</li>
+<li>Reference code: <code>tfs/serving.py</code> · tests: <code>tests/test_inference.py</code> (Ch 18 section)</li>
 <li><a href="https://docs.vllm.ai/">vLLM documentation</a></li>
 <li>Companion notebook: not written yet (planned as <code class="planned">notebooks/18_serving.ipynb</code>)</li>
 </ul>
