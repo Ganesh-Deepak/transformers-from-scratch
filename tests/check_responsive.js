@@ -40,7 +40,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "tfs-resp-"));
 const WIDTHS = [320, 375, 390, 430, 768, 1024, 1440, 1920];
 const PAGES = ["index.html", "ch00-numbers.html", "ch01-tensors.html", "ch05-attention.html", "ch06-mha.html",
                "ch11-training.html", "ch12-precision.html", "ch16-gqa-mla.html", "ch17-flashattention.html",
-               "ch19-distributed.html", "ch23-sft-rlhf.html"];
+               "ch19-distributed.html", "ch23-sft-rlhf.html", "ch26-evaluation.html"];
 
 /* Runs INSIDE the harness page, against the iframe's window/document. */
 const PROBE = `

@@ -90,20 +90,22 @@ const PARTS = [
     n: "Part VI", t: "Making It Useful",
     d: "Turning a text predictor into an assistant",
     ch: [
-      { id: "23", f: "ch23-sft-rlhf.html", t: "SFT, RLHF, and PPO",
-        s: "The three-stage pipeline, reward models, and why RL entered the picture at all", tag: "70 min" },
+      { id: "23", f: "ch23-sft-rlhf.html", t: "SFT, LoRA, RLHF, and PPO",
+        s: "Fine-tuning on 0.5% of the parameters, the synthetic-data recipe, reward models, PPO and GAE derived", tag: "110 min" },
       { id: "24", f: "ch24-dpo.html", t: "DPO From First Principles",
-        s: "Bradley-Terry → the KL-constrained optimum → the DPO loss, derived line by line", tag: "85 min" },
+        s: "Bradley-Terry → the KL-constrained optimum → the DPO loss, derived line by line; then online DPO", tag: "95 min" },
       { id: "25", f: "ch25-grpo.html", t: "DPO Variants, GRPO, and RLVR",
-        s: "IPO, KTO, ORPO, SimPO, then the reasoning stack: GRPO, DAPO, verifiable rewards", tag: "70 min" },
+        s: "IPO, KTO, ORPO, SimPO; GRPO, DAPO, Dr. GRPO, GSPO; process rewards and agentic RL", tag: "100 min" },
+      { id: "26", f: "ch26-evaluation.html", t: "Evaluating LLMs",
+        s: "Benchmarks, contamination, pass@k derived, LLM judges and their biases, error bars, private evals", tag: "85 min" },
     ]
   },
   {
     n: "Part VII", t: "Capstone",
     d: "Put every piece together",
     ch: [
-      { id: "26", f: "ch26-capstone.html", t: "Build a Modern LLM End to End",
-        s: "RMSNorm + RoPE + GQA + SwiGLU + KV cache, trained, then DPO-aligned", tag: "4-8 hrs" },
+      { id: "27", f: "ch27-capstone.html", t: "Build a Modern LLM End to End",
+        s: "RMSNorm + RoPE + GQA + SwiGLU + KV cache, trained, DPO-aligned, LoRA-tuned, evaluated", tag: "5-9 hrs" },
     ]
   },
 ];

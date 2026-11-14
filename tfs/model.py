@@ -1,7 +1,7 @@
 """
 A modern small transformer — Chapters 6-9, 13, 15.
 
-Architecture (matches the Chapter 26 capstone spec):
+Architecture (matches the Chapter 27 capstone spec):
     RMSNorm (pre-norm)  ·  RoPE  ·  Grouped-Query Attention  ·  SwiGLU
     + KV cache for efficient generation
 

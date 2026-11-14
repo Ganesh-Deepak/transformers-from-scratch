@@ -18,7 +18,7 @@ with <em>a single loss function you can write in six lines</em>. It is not a heu
 it is derived from exactly the same objective PPO optimises. This chapter does the derivation completely.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch23-sft-rlhf.html">Ch&nbsp;23</a> &mdash; Bradley-Terry and the KL-constrained objective<div class="sep"></div><span class="k">Leads to</span><a href="ch25-grpo.html">Ch&nbsp;25</a> &mdash; the variants, and what replaced it for reasoning<div class="sep"></div><span class="k">Why this chapter</span>Your language model is secretly a reward model. Eight lines of algebra prove it.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch23-sft-rlhf.html">Ch&nbsp;23</a> &mdash; Bradley-Terry and the KL-constrained objective<div class="sep"></div><span class="k">Leads to</span><a href="ch25-grpo.html">Ch&nbsp;25</a> &mdash; the variants, and what replaced it for reasoning<br><a href="ch26-evaluation.html">Ch&nbsp;26</a> &mdash; win rates, and why they need length control<div class="sep"></div><span class="k">Why this chapter</span>Your language model is secretly a reward model. Eight lines of algebra prove it. The online-DPO numbers in 24.8 come from <code>tfs/dpo.py</code> and are asserted in <code>tests/test_posttraining.py</code>.</div>
 <div class="box intuition">
 <span class="t">The claim</span>
 <p style="margin-bottom:0">Rafailov et al. (2023) proved that <b>your language model is secretly a reward
@@ -79,7 +79,7 @@ min<sub>π</sub> E<sub>y∼π</sub><big>[</big> log <span class="frac"><span cla
 <span class="math">π</span> at all. A KL divergence is minimised (at zero) precisely when the two
 distributions are equal. Therefore:</p>
 
-<div class="mathblock" style="font-size:1.2em;border-left-color:var(--k)">
+<div class="mathblock" style="font-size:1.2em">
 π*(y|x) = <span class="frac"><span class="n">1</span><span class="d">Z(x)</span></span> π<sub>ref</sub>(y|x) · exp<big>(</big><span class="frac"><span class="n">1</span><span class="d">β</span></span> r(x,y)<big>)</big>
 <span class="lbl">the exact optimum of the KL-constrained RLHF objective</span>
 </div>
@@ -98,7 +98,7 @@ does next is.</p>
 
 <p>Solve the same equation for <span class="math">r</span>. Take logs of both sides and rearrange:</p>
 
-<div class="mathblock" style="font-size:1.15em;border-left-color:var(--q)">
+<div class="mathblock" style="font-size:1.15em">
 r(x,y) = β log <span class="frac"><span class="n">π*(y|x)</span><span class="d">π<sub>ref</sub>(y|x)</span></span> + β log Z(x)
 </div>
 
@@ -146,8 +146,8 @@ gone.</p>
 
 <p>Plug that difference into the Bradley-Terry negative log-likelihood:</p>
 
-<div class="mathblock" style="font-size:1.1em;border-left-color:var(--o)">
-ℒ<sub>DPO</sub> = − E<sub>(x,y<sub>w</sub>,y<sub>l</sub>)∼D</sub> <big>[</big> log σ<big(</big>
+<div class="mathblock" style="font-size:1.1em">
+ℒ<sub>DPO</sub> = − E<sub>(x,y<sub>w</sub>,y<sub>l</sub>)∼D</sub> <big>[</big> log σ<big>(</big>
 β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>w</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>w</sub>|x)</span></span>
 − β log <span class="frac"><span class="n">π<sub>θ</sub>(y<sub>l</sub>|x)</span><span class="d">π<sub>ref</sub>(y<sub>l</sub>|x)</span></span>
 <big>)</big> <big>]</big>
@@ -190,7 +190,7 @@ def sequence_logp(model, ids, labels):
 <ol style="margin-bottom:0">
 <li><b>Sum log-probs, don't average.</b> The derivation is about
 <span class="math">log π(y|x) = Σ<sub>t</sub> log π(y<sub>t</sub>|x, y<sub>&lt;t</sub>)</span> — a sum.
-Averaging by length changes the objective (that variant is <a href="#">SimPO</a>, Chapter 25, and it is a
+Averaging by length changes the objective (that variant is <a href="ch25-grpo.html">SimPO</a>, Chapter 25, and it is a
 deliberate different choice, not a bug fix).</li>
 <li><b>Mask the prompt.</b> Only response tokens count, exactly as in SFT.</li>
 <li><b><code>π<sub>ref</sub></code> must be frozen and in eval mode.</b> Compute its log-probs under
@@ -206,7 +206,7 @@ memory and time, since the reference never changes.</li>
 <div class="mathblock" style="font-size:1.02em">
 ∇<sub>θ</sub>ℒ = −β E <big>[</big>
 <span style="color:var(--warn)">σ(r̂<sub>l</sub> − r̂<sub>w</sub>)</span> ·
-<big(</big> <span style="color:var(--ok)">∇ log π(y<sub>w</sub>|x)</span> − <span style="color:var(--stop)">∇ log π(y<sub>l</sub>|x)</span> <big>)</big>
+<big>(</big> <span style="color:var(--ok)">∇ log π(y<sub>w</sub>|x)</span> − <span style="color:var(--stop)">∇ log π(y<sub>l</sub>|x)</span> <big>)</big>
 <big>]</big>
 <span class="lbl">r̂ = the implicit reward β·log(π/π<sub>ref</sub>)</span>
 </div>
@@ -294,7 +294,136 @@ al. 2024</a>) find PPO retains an edge on the hardest tasks for exactly this rea
 model or judge, retrain, repeat — recovering much of the on-policy benefit while keeping DPO's simplicity.</p>
 </div>
 
-<h2>24.8 · Exercises</h2>
+<h2>24.8 · Online and iterative DPO, in code</h2>
+
+<p>The box above names the fix; this section builds it and measures it. Online DPO keeps DPO's loss and changes
+only <i>where the pairs come from</i>: each round, sample from the current policy, label the samples with a
+reward model, a judge or a verifier, add the new pairs, train a little, and repeat.</p>
+
+<pre><code>def online_dpo(policy, ref, prompts, label, rounds, k=8, beta=0.1):
+    pairs = []
+    for _ in range(rounds):
+        for x in prompts:
+            ys = [policy.generate(x, temperature=1.0) for _ in range(k)]   # ON-policy samples
+            best, worst = label(x, ys)                                    # RM, judge or verifier
+            if best is not None:
+                pairs.append((x, best, worst))
+        ref_logps = precompute_reference_logps(ref, pairs)                # ref is still frozen
+        train_dpo(policy, pairs, ref_logps, beta, steps=...)              # the loss of 24.5, unchanged</code></pre>
+
+<p>Two design choices hide in that loop. <b>Which pairs</b>: best-versus-worst of k samples gives the widest
+margin; random pairs give more of them. <b>Whether the reference moves</b>: in iterative DPO as practised (Xu et al.
+2023; the Llama 3 and Tülu 3 recipes), each round's reference is often reset to the previous round's policy, so
+the KL leash is relative to where you are. The toy below keeps π<sub>ref</sub> fixed, so the comparison with
+offline DPO is clean.</p>
+
+<h3>A model small enough to see everything</h3>
+
+<p>Make the "language model" a single prompt with 8 possible responses and one logit per response. Response
+<i>y</i> has reward <i>y</i>/7. The reference policy, like most SFT models, puts most of its mass on mediocre
+responses: probabilities [0.30, 0.30, 0.20, 0.14, 0.02, 0.02, 0.01, 0.01], expected reward <b>0.204</b>.
+For this tabular policy the DPO gradient has a closed form, and it says something sharp:</p>
+
+<div class="mathblock">
+∂/∂θ ( log π(w) − log π(l) ) = e<sub>w</sub> − e<sub>l</sub>
+&nbsp;&nbsp;⟹&nbsp;&nbsp;
+∇ℒ = −(β/N) Σ<sub>i</sub> σ(−β m<sub>i</sub>) ( e<sub>w<sub>i</sub></sub> − e<sub>l<sub>i</sub></sub> )
+<span class="lbl">the softmax normaliser cancels in the difference, exactly as Z(x) did in 24.4 · m<sub>i</sub> = the implicit reward margin of pair i</span>
+</div>
+
+<p><b>Each pair moves only its own two logits, by equal and opposite amounts. A response that appears in no pair
+receives exactly zero gradient.</b> (Its probability still changes, because the others' logits move, but DPO
+never learns anything <i>about</i> it.) The test checks this closed form against autograd on
+<code>dpo_loss</code>. Offline DPO can therefore only rearrange the responses its dataset happened to contain,
+and it spends its pairs on comparisons the reference made, not the ones the policy is now making.</p>
+
+<div class="example">
+<span class="t">Worked example — offline vs online DPO at the same budget</span>
+<p>Both runs see 20 rounds × 8 samples = 160 samples, label each group of 8 as best-vs-worst (20 pairs), and take
+200 gradient steps with β = 0.1 and learning rate 1.0. Only the sampling policy differs.</p>
+<div class="step"><div class="i">1</div><div>
+<b>Offline:</b> all 160 samples come from π<sub>ref</sub>, then DPO trains on the 20 pairs. Typical pairs are
+(2, 0), (3, 0), (5, 0): nearly every "rejected" is the reference's commonest bad answer, so most of the signal
+says "not response 0", which the policy learns quickly and then has nothing more to learn from.
+</div></div>
+<div class="step"><div class="i">2</div><div>
+<b>Online:</b> each round samples 8 from the <i>current</i> policy. As it moves up, its pairs move with it:
+(3, 2), (5, 2), (7, 1) appear, comparisons between the answers it now actually gives.
+</div></div>
+<div class="step"><div class="i">3</div><div>
+<b>Result, averaged over 40 random seeds</b> (<code>test_online_dpo_beats_offline_dpo_at_equal_budget</code>):
+<pre style="margin:.4rem 0"><code class="nohl">                     expected reward
+reference policy         0.204
+offline DPO              0.395
+online DPO               0.483        better than offline on 40 of 40 seeds</code></pre>
+</div></div>
+<p style="margin-bottom:0"><b>Same loss, same samples, same steps: only the source of the pairs changed.</b> In
+a real model generalisation softens the "zero gradient for unseen responses" result (raising one good answer
+raises similar ones), but the direction is the same, and it is what Xu et al. (2024) and Tajwar et al. (2024)
+measured at scale: on-policy samples are where preference optimisation's gains come from.</p>
+</div>
+
+<h2>24.9 · DPO on reasoning traces</h2>
+
+<p>For problems with a checkable answer, preference pairs can be built with no human at all: sample several
+chains of thought from the model, mark those whose final answer is correct as chosen and the others as
+rejected, and run DPO. <b>Iterative Reasoning Preference Optimization</b> (Pang et al. 2024) does this round after
+round, and reported Llama-2-70B-Chat rising from 55.6% to 81.6% on GSM8K. Three details matter, and each is a
+consequence of the derivation:</p>
+
+<ul>
+<li><b>Add an NLL term on the chosen trace.</b> Section 24.6's warning bites hard on long traces: DPO can satisfy
+the margin by lowering both log-probabilities, and with hundreds of tokens per trace the chosen one's likelihood
+can collapse. Pang et al. found DPO alone did much worse than DPO plus a negative log-likelihood loss on the
+chosen trace (the same fix as ORPO, Ch 25).</li>
+<li><b>Summed log-probs scale with length.</b> A 2,000-token trace has a log-probability in the thousands of
+nats, so the margin β·(…) is large and noisy, and the loss carries a length signal: if correct traces tend to be
+shorter or longer than wrong ones, DPO learns length. Match lengths when building pairs, or normalise.</li>
+<li><b>It is still off-policy within a round.</b> The pairs go stale as the model changes, which is why the
+method iterates, and why most labs now train reasoning with the on-policy RL of Chapter 25. DPO on traces remains
+the cheap option: no generation inside the training step, and no value model.</li>
+</ul>
+
+<div class="quiz" data-title="Checkpoint 2 — DPO in practice">
+<div class="qitem" data-answer="3">
+  <div class="qq">For a tabular policy, which logits does one DPO pair (w, l) change?</div>
+  <div class="opts">
+    <div class="opt">All of them, through the softmax normaliser</div>
+    <div class="opt">Only the chosen response's</div>
+    <div class="opt">All except the rejected one's</div>
+    <div class="opt">Only w's and l's, by equal and opposite amounts; the normaliser cancels in the log-prob difference</div>
+  </div>
+  <div class="expl"><b>e<sub>w</sub> − e<sub>l</sub>.</b> ∂log π(y)/∂θ = e<sub>y</sub> − π, and the π terms cancel
+  in the difference. So a response absent from every pair is never pushed, which is why offline DPO cannot learn
+  about answers its data never contained.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Online DPO beats offline DPO in the toy with the same samples and steps. What actually changed?</div>
+  <div class="opts">
+    <div class="opt">Where the pairs come from: online pairs compare responses the current policy gives, offline pairs compare the reference's</div>
+    <div class="opt">The loss function</div>
+    <div class="opt">The β value</div>
+    <div class="opt">The reference model was updated every round</div>
+  </div>
+  <div class="expl"><b>Only the sampling distribution.</b> The toy keeps the loss, β, learning rate, budget and
+  π<sub>ref</sub> identical. Offline pairs mostly say "not response 0"; once the policy stops producing response 0
+  they carry little information.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">You run DPO on (correct trace, wrong trace) pairs from your own model. Accuracy on the training prompts drops and generations get vaguer. The most likely cause and fix?</div>
+  <div class="opts">
+    <div class="opt">β too large; lower it</div>
+    <div class="opt">The pairs are mislabelled</div>
+    <div class="opt">Likelihood displacement on long traces: both log-probs are falling. Add an NLL term on the chosen trace, as Iterative RPO does</div>
+    <div class="opt">The model needs a value head</div>
+  </div>
+  <div class="expl"><b>The 24.6 failure, amplified by length.</b> The loss constrains only the margin. On
+  hundreds of tokens it is easy to lower the rejected trace by lowering everything; an SFT term on the chosen
+  trace anchors its likelihood.</div>
+</div>
+</div>
+
+<h2>24.10 · Exercises</h2>
 
 <div class="exercise">
 <div class="eh"><span class="n">24.1</span><span class="ti">Derive it yourself</span><span class="lvl">essential — do this on paper</span></div>
@@ -344,12 +473,35 @@ you can use a DPO'd model as a reranker for free, with no separate reward model 
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">24.4</span><span class="ti">Online DPO on a real (small) model</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Start from the SFT checkpoint of exercise 24.2 and a reward function you can compute (a trained reward model,
+or a rule such as "answers under 40 words that contain the key term"). Give offline and online DPO the same
+budget: R rounds × k samples per prompt and the same number of gradient steps.</p>
+<ol>
+<li>Offline: sample every completion from the SFT model up front, build best-vs-worst pairs, train.</li>
+<li>Online: sample from the current policy each round, add that round's pairs, train.</li>
+<li>Plot mean reward of fresh samples and mean KL to the SFT model after each round, for both. Reproduce the toy
+first with <code>tfs.dpo.offline_dpo</code> and <code>online_dpo</code> so you know what the curves should
+look like.</li>
+</ol>
+<details class="reveal"><summary>What to look for</summary><div>
+<p style="margin-bottom:0">Online should reach higher reward at a given KL, and keep improving after offline
+flattens. Compare reward <i>at matched KL</i>, not just final reward: a run that drifts further from the
+reference can buy reward with exactly the reward hacking of Chapter 23, and the KL axis is how you see it.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://arxiv.org/abs/2305.18290">Rafailov et al. 2023 — Direct Preference Optimization</a> — read Appendix A.1 for the derivation in the authors' own notation.</li>
 <li><a href="https://arxiv.org/abs/2404.10719">Xu et al. 2024 — Is DPO Superior to PPO for LLM Alignment?</a> — the careful head-to-head.</li>
 <li><a href="https://arxiv.org/abs/2410.08847">Razin et al. 2024 — Unintentional Unalignment (likelihood displacement)</a></li>
+<li><a href="https://arxiv.org/abs/2312.16682">Xu et al. 2023 — Iterative preference optimization with the pairwise Cringe loss</a> · <a href="https://arxiv.org/abs/2404.14367">Tajwar et al. 2024 — Preference fine-tuning should leverage suboptimal, on-policy data</a></li>
+<li><a href="https://arxiv.org/abs/2404.19733">Pang et al. 2024 — Iterative Reasoning Preference Optimization</a> (DPO + NLL on reasoning traces)</li>
 <li><a href="https://huggingface.co/docs/trl/dpo_trainer">TRL DPOTrainer</a> — the reference implementation.</li>
+<li>Reference code: <code>tfs/dpo.py</code> (including <code>online_dpo</code>) · tests: <code>tests/test_tfs.py</code>, <code>tests/test_posttraining.py</code></li>
 <li>Companion notebook: <code>notebooks/24_dpo.ipynb</code></li>
 </ul>
 

@@ -171,6 +171,8 @@ def test_lora_adapter_counts():
     assert Config().n_params() == 12_587_904
     assert L.lora_adapter_params(384, 6, 6, 2, 64, 1024, 8) == 325_632
     assert L.lora_adapter_params(384, 6, 6, 2, 64, 1024, 8, targets=("q_proj", "v_proj")) == 61_440
+    assert round(100 * 325_632 / 12_587_904, 2) == 2.59 and round(100 * 61_440 / 12_587_904, 2) == 0.49
+    assert round(12_587_904 * 16 / 1e6, 1) == 201.4 and round(325_632 * 16 / 1e6, 1) == 5.2
 
 
 def test_finetune_memory_full_lora_qlora():
@@ -184,6 +186,24 @@ def test_finetune_memory_full_lora_qlora():
     c70 = L.llama_param_counts(128256, 8192, 80, 64, 8, 128, 28672)
     n70 = L.lora_adapter_params(8192, 80, 64, 8, 128, 28672, 16)
     assert [round(L.finetune_memory_gb(c70, n70, m)) for m in ("full", "lora", "qlora")] == [1129, 144, 43]
+
+
+def test_adapter_size_and_serving_overhead():
+    """23.3: one r=16 adapter for Llama-3-8B is 83.9 MB, 191x smaller than the base, +0.60% FLOPs."""
+    c = L.llama_param_counts(128256, 4096, 32, 32, 8, 128, 14336)
+    n = L.lora_adapter_params(4096, 32, 32, 8, 128, 14336, 16)
+    assert round(n * 2 / 1e6, 1) == 83.9 and round(c["total"] * 2 / 1e9, 1) == 16.1
+    assert round(c["total"] / n) == 191
+    assert round(100 * n / c["linear"], 2) == 0.60
+
+
+def test_exercise_23_3_sizing():
+    c = L.llama_param_counts(152064, 5120, 40, 40, 8, 128, 13824)
+    assert c["linear"] == 40 * 275_251_200 and round(c["linear"] / 1e9, 2) == 11.01
+    assert round(c["total"] / 1e9, 2) == 12.57 and c["embed"] == 1_557_135_360
+    n = L.lora_adapter_params(5120, 40, 40, 8, 128, 13824, 32)
+    assert n == 40 * 2_867_200
+    assert [round(L.finetune_memory_gb(c, n, m), 1) for m in ("full", "lora", "qlora")] == [201.1, 27.0, 10.6]
 
 
 # ==================================================== Ch 23 — GAE and KL shaping
@@ -310,6 +330,21 @@ def test_agent_loss_mask_counts_only_policy_tokens():
                             ("assistant", 25), ("tool", 150), ("assistant", 35)])
     assert m.shape == (500,) and int(m.sum()) == 100
     assert m[50:90].all() and not m[90:290].any()
+
+
+def test_exercise_25_6_agentic_rl_cost():
+    tokens = 512 * 8 * 30_000
+    assert tokens == 122_880_000 and int(tokens * 0.2) == 24_576_000
+    assert tokens / 20_000 == 6144 and round(tokens / 20_000 / 3600, 1) == 1.7
+    assert 4096 * 15 * 2 / 256 == 480 and round(4096 * 15 * 2 / 3600) == 34
+
+
+def test_dapo_and_summed_penalties_in_the_length_example():
+    A = RL.grpo_advantages([1, 1, 0, 0])
+    lens = [100, 300, 200, 1000]
+    assert [round(x * 1e4, 2) for x in RL.token_weights(A, lens, "dapo")] == [6.25, 6.25, -6.25, -6.25]
+    g = RL.token_weights(A, lens, "grpo")
+    assert round(g[2] * 200, 3) == round(g[3] * 1000, 3) == -0.25     # equal per sequence
 
 
 # ==================================================== Ch 26 — evaluation
