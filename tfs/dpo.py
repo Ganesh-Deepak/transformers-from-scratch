@@ -95,3 +95,101 @@ def precompute_reference_logps(ref_model, batches):
     for ids, labels in batches:
         out.append(sequence_logp(ref_model, ids, labels))
     return torch.cat(out)
+
+
+# ============================================================ Ch 24.8 — online / iterative DPO
+#
+# A tabular "language model": one prompt, Y possible responses, a logit per
+# response. Small enough that every probability is exact, rich enough to show
+# the one thing that matters: offline DPO can only rearrange the responses its
+# dataset contains, online DPO keeps finding better ones.
+
+def bandit_logps(logits: torch.Tensor) -> torch.Tensor:
+    return logits.log_softmax(-1)                                    # (Y,)
+
+
+def bandit_expected_reward(logits: torch.Tensor, rewards: torch.Tensor) -> float:
+    return float((logits.softmax(-1) * rewards).sum())
+
+
+def bandit_dpo_grad(logits, ref_logps, pairs, beta):
+    """
+    The DPO gradient for a tabular policy, in closed form. Because
+    d(log pi(w) - log pi(l))/d logits = e_w - e_l exactly (the softmax normaliser
+    cancels, just as Z(x) does in 24.4), each pair moves ONLY its own two logits:
+        grad = -(beta/N) * sum_i sigmoid(-beta m_i) (e_w - e_l)
+    A response that appears in no pair gets exactly zero gradient.
+    """
+    lp = bandit_logps(logits)
+    g = torch.zeros_like(logits)
+    for w, l in pairs:
+        m = (lp[w] - ref_logps[w]) - (lp[l] - ref_logps[l])
+        c = beta * torch.sigmoid(-beta * m) / len(pairs)
+        g[w] -= c
+        g[l] += c
+    return g
+
+
+def _dpo_steps(logits, ref_logps, pairs, beta, lr, steps):
+    """
+    Full-batch gradient descent on the DPO loss over (chosen, rejected) ids, using
+    bandit_dpo_grad's closed form in plain Python floats (torch per-element ops on an
+    8-vector are ~50x slower than the arithmetic itself).
+    """
+    if not pairs:
+        return logits
+    import math
+    th, ref = logits.tolist(), ref_logps.tolist()
+    n = len(pairs)
+    for _ in range(steps):
+        lse = math.log(sum(math.exp(t) for t in th))
+        lp = [t - lse for t in th]
+        g = [0.0] * len(th)
+        for w, l in pairs:
+            m = (lp[w] - ref[w]) - (lp[l] - ref[l])
+            c = beta / (1 + math.exp(beta * m)) / n          # beta * sigmoid(-beta m) / N
+            g[w] -= c
+            g[l] += c
+        th = [t - lr * gi for t, gi in zip(th, g)]
+    return torch.tensor(th, dtype=logits.dtype)
+
+
+def _label(samples, rewards):
+    """Best-vs-worst of a group, as a reward model or judge would label it."""
+    best = max(samples, key=lambda y: rewards[y])
+    worst = min(samples, key=lambda y: rewards[y])
+    return (best, worst) if rewards[best] > rewards[worst] else None
+
+
+def offline_dpo(ref_logits, rewards, rounds=20, k=8, beta=0.1, lr=1.0, steps=10, seed=0):
+    """All data sampled ONCE from the reference policy, then trained on for the same compute."""
+    g = torch.Generator().manual_seed(seed)
+    ref_logps = bandit_logps(ref_logits)
+    pairs = []
+    for _ in range(rounds):
+        s = torch.multinomial(ref_logits.softmax(-1), k, replacement=True, generator=g).tolist()
+        p = _label(s, rewards)
+        if p:
+            pairs.append(p)
+    logits = _dpo_steps(ref_logits.clone(), ref_logps, pairs, beta, lr, steps * rounds)
+    return logits, pairs
+
+
+def online_dpo(ref_logits, rewards, rounds=20, k=8, beta=0.1, lr=1.0, steps=10, seed=0):
+    """
+    Iterative DPO: each round samples k responses from the CURRENT policy, labels the
+    best and worst, adds the pair, and trains. Same number of samples and steps as
+    offline_dpo. Returns (final logits, pairs, expected reward after each round).
+    """
+    g = torch.Generator().manual_seed(seed)
+    ref_logps = bandit_logps(ref_logits)
+    logits = ref_logits.clone()
+    pairs, curve = [], []
+    for _ in range(rounds):
+        s = torch.multinomial(logits.softmax(-1), k, replacement=True, generator=g).tolist()
+        p = _label(s, rewards)
+        if p:
+            pairs.append(p)
+        logits = _dpo_steps(logits, ref_logps, pairs, beta, lr, steps)
+        curve.append(bandit_expected_reward(logits, rewards))
+    return logits, pairs, curve
