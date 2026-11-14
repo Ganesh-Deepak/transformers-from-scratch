@@ -144,9 +144,12 @@ function run(scenarioSrc, page, seed) {
     'window.addEventListener("load", function () {',
     "  window.__realTimeout(function () {",
     "    var out;",
+    '    var done = function (o) { document.getElementById("__result").textContent = JSON.stringify(o); };',
     "    try { out = (function () {", HELPERS, scenarioSrc, "})(); }",
     '    catch (e) { out = { error: String((e && e.stack) || e) }; }',
-    '    document.getElementById("__result").textContent = JSON.stringify(out);',
+    // a scenario may return a promise when it must let observers run
+    '    if (out && typeof out.then === "function") out.then(done, function (e) { done({ error: String((e && e.stack) || e) }); });',
+    '    else done(out);',
     "  }, 150);",
     "});",
     "</scr" + "ipt></body>",
@@ -652,6 +655,73 @@ const sd2 = run([
 if (sd2.error) ok(false, "sidebar reload scenario ran", sd2.error);
 else ok(sd2.open[0] && sd2.open[2] && sd2.open.filter(Boolean).length === 2 && sd2.secs,
         "sidebar: remembered state is restored on the next visit", sd2.open.map(Number).join("") + " secs folded=" + sd2.secs);
+
+/* ------------------------------- Phase 3: the shape inspector ------------ */
+console.log("\n shape inspector");
+const INSP = [
+  "var r = {};",
+  "var p = document.getElementById('inspector'), btn = $('.insp-toggle');",
+  "r.exists = !!p && !!btn;",
+  "r.openOnWide = !p.hidden && document.body.classList.contains('insp-open') && btn.getAttribute('aria-expanded') === 'true';",
+  "var main = $('main'), wrapR = getComputedStyle($('.wrap')).paddingRight;",
+  "r.reservesColumn = parseFloat(wrapR) > 250;",
+  "r.rows = [].slice.call(p.querySelectorAll('.insp-ax')).map(function (b) { return b.getAttribute('data-axis') + ':' + b.querySelector('.sym').textContent; }).join(' ');",
+  // pin from the key, as a reader would
+  "var t = p.querySelector('.insp-ax[data-axis=\"time\"]'); t.click();",
+  "r.pinnedFromKey = t.getAttribute('aria-pressed') === 'true' && (document.documentElement.getAttribute('data-ax-pinned') || '').indexOf('time') !== -1;",
+  "r.textLit = [].slice.call(main.querySelectorAll('b[data-axis=\"time\"]')).slice(0, 5).every(function (b) { return getComputedStyle(b).opacity === '1'; });",
+  "r.clearShown = !p.querySelector('.insp-clear').hidden;",
+  "t.click();",
+  "r.unpinned = t.getAttribute('aria-pressed') === 'false';",
+  // move to section 6.3 and read the live list
+  "var h = [].slice.call(main.querySelectorAll(':scope > h2'))[2];",
+  "window.scrollTo(0, h.getBoundingClientRect().top + window.scrollY - 100); tfsInspector.refresh();",
+  "r.where = p.querySelector('.insp-where').textContent;",
+  "r.listed = [].slice.call(p.querySelectorAll('.insp-shapes li .shp')).map(function (s) { return s.textContent.replace(/\\s+/g, ''); });",
+  "r.badgesLive = p.querySelectorAll('.insp-shapes [data-axis]').length > 0 && p.querySelector('.insp-shapes .shp').getAttribute('tabindex') === '0';",
+  "r.timeCount = t.querySelector('.ct').textContent;",
+  // jump
+  "p.querySelector('.insp-jump').click();",
+  "r.flashed = main.querySelectorAll('.shp.insp-flash').length === 1;",
+  // a widget redrawing its shapes in this section is picked up (debounced)
+  "var hh = [].slice.call(main.querySelectorAll(':scope > h2'))[3];",
+  "var add = document.createElement('p'); add.innerHTML = '<span class=\"shp\">(<b data-axis=\"batch\">B</b>, <b data-axis=\"vocab\">V</b>)</span>';",
+  "main.insertBefore(add, hh);",
+  // the observer runs after this script yields (real timer: setTimeout is faked),
+  // then its 200ms debounce is a FAKE timer, so advance the clock past it
+  "return new Promise(function (res) { window.__realTimeout(function () {",
+  "  window.__advance(400);",
+  "  r.picksUpRedraw = [].slice.call(p.querySelectorAll('.insp-shapes li .shp')).some(function (s) { return s.textContent === '(B, V)'; });",
+  "  p.querySelector('.insp-close').click();",
+  "  r.closed = p.hidden && !document.body.classList.contains('insp-open') && localStorage.getItem('tfs-inspector') === 'closed';",
+  "  res(r);",
+  "}, 50); });",
+].join("\n");
+const ins = run(INSP, "ch06-mha.html");
+if (ins.error) ok(false, "inspector scenario ran", ins.error);
+else {
+  ok(ins.exists, "inspector: built, with a topbar toggle");
+  ok(ins.openOnWide, "inspector: open by default on a wide screen");
+  ok(ins.reservesColumn, "inspector: reserves its column (text reflows, is not covered)");
+  ok(ins.rows === "batch:B time:T feat:C head:nh headdim:hd vocab:V", "inspector: the key lists every axis with its letter", ins.rows);
+  ok(ins.pinnedFromKey && ins.textLit, "inspector: pressing an axis in the key pins it and lights it in the text");
+  ok(ins.clearShown, "inspector: 'clear pinned axes' appears while something is pinned");
+  ok(ins.unpinned, "inspector: pressing it again unpins");
+  ok(/^6\.3/.test(ins.where), "inspector: follows the section you are reading", ins.where);
+  ok(ins.listed.length > 0 && new Set(ins.listed).size === ins.listed.length, "inspector: lists that section's shapes, de-duplicated",
+     ins.listed.slice(0, 4).join(" "));
+  ok(ins.badgesLive, "inspector: listed shapes are live, focusable badges");
+  ok(/^×\d+$/.test(ins.timeCount), "inspector: per-axis counts for the section", ins.timeCount);
+  ok(ins.flashed, "inspector: jump marks the shape it scrolled to");
+  ok(ins.picksUpRedraw, "inspector: picks up shapes a widget draws later");
+  ok(ins.closed, "inspector: closes, and remembers that");
+}
+const ins2 = run([
+  "var p = document.getElementById('inspector');",
+  "return { hidden: p.hidden, pad: parseFloat(getComputedStyle($('.wrap')).paddingRight) };",
+].join("\n"), "ch06-mha.html", { "tfs-inspector": "closed" });
+if (ins2.error) ok(false, "inspector reload scenario ran", ins2.error);
+else ok(ins2.hidden && ins2.pad < 100, "inspector: stays closed on the next page, and gives the column back", JSON.stringify(ins2));
 
 /* ------------------------------- 5. every chapter, condensed -------------- */
 if (ALL) {

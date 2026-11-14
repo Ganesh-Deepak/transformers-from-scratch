@@ -6,7 +6,7 @@
 <title>Ch 1 — Tensors, Shapes, and How to Actually See Them</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=21">
+<link rel="stylesheet" href="assets/style.css?v=23">
 </head>
 <body>
 <main>
@@ -169,9 +169,9 @@ vector of 3 numbers."</b> Read it right-to-left and it composes:
 <p>The single most common shape in this entire course is <code>(B, T, C)</code>:</p>
 
 <div class="dimkey">
-  <span class="chip"><b>B</b> = 2 <span>&nbsp;sequences in the batch</span></span>
-  <span class="chip"><b>T</b> = 4 <span>&nbsp;tokens in each sequence</span></span>
-  <span class="chip"><b>C</b> = 3 <span>&nbsp;numbers describing each token</span></span>
+  <span class="chip"><b data-axis="batch">B</b> = 2 <span>&nbsp;sequences in the batch</span></span>
+  <span class="chip"><b data-axis="time">T</b> = 4 <span>&nbsp;tokens in each sequence</span></span>
+  <span class="chip"><b data-axis="feat">C</b> = 3 <span>&nbsp;numbers describing each token</span></span>
 </div>
 
 <p>So <code>(2, 4, 3)</code> means: <b>2 sentences, each 4 tokens long, each token represented by a
@@ -610,10 +610,10 @@ not weights, is often what OOMs you.</li>
 
 </main>
 
-<script src="assets/chapters.js?v=21"></script>
-<script src="assets/course.js?v=21"></script>
-<script src="assets/viz.js?v=21"></script>
-<script src="assets/axes.js?v=21"></script>
+<script src="assets/chapters.js?v=23"></script>
+<script src="assets/course.js?v=23"></script>
+<script src="assets/viz.js?v=23"></script>
+<script src="assets/axes.js?v=23"></script>
 <script>initChapter("01");</script>
 </body>
 </html>

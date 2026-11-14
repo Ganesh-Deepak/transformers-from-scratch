@@ -279,6 +279,226 @@ function tfsResolveAxis(part) {
   });
 })();
 
+/* ============================================================================
+   PHASE 3 — THE SHAPE INSPECTOR: the axis key, always one click away.
+
+   WHERE IT LIVES, AND WHY
+   The choice was "margin column or pinned". There is no margin column any
+   more: the prose takes 75% of the width and margin notes sit inline. A
+   floating box would cover text. So it is a DOCKED panel, the mirror image
+   of the chapter sidebar:
+     - wide screens (>= 64rem): a right-hand rail that RESERVES its column,
+       so the text reflows beside it instead of being covered;
+     - narrow screens: a bottom sheet over the page, closed by default.
+   Toggled from the topbar ("Shapes"), remembered across pages.
+
+   WHAT IT SHOWS
+     1. The key: every axis with its letter, its name, its meaning and how
+        often it appears in the section you are reading. Not colour-only: the
+        letter and the name carry the meaning in greyscale. Each row is a
+        real [data-axis] control, so the existing bus does the work: hover
+        previews, click / tap / Enter pins, Escape clears.
+     2. The live shapes of the section you are reading, de-duplicated, as
+        real badges (same keyboard composite as in the text) with a jump
+        button. "Live": it follows your scroll and re-reads the section when
+        a widget redraws its shapes.
+   Without JS none of this exists, and nothing needs it: the badges in the
+   text are coloured by CSS alone.
+   ========================================================================= */
+(function () {
+  if (typeof document === "undefined") return;
+
+  var SYM = { batch: "B", time: "T", feat: "C", head: "nh", headdim: "hd", vocab: "V" };
+  var ORDER = ["batch", "time", "feat", "head", "headdim", "vocab"];
+  var KEY = "tfs-inspector";
+  var WIDE = "(min-width: 64rem)";
+
+  function store(v) {
+    try { if (v === undefined) return localStorage.getItem(KEY); localStorage.setItem(KEY, v); } catch (e) { return null; }
+  }
+  function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+  function visible(el) { return el.getClientRects().length > 0; }
+
+  function build() {
+    var main = document.querySelector("main");
+    var bar = document.querySelector(".topbar");
+    if (!main || !bar || document.getElementById("inspector")) return;
+    if (!main.querySelector(".shp [data-axis], [data-viz] [data-axis]")) return;   // a page with no shapes needs no key
+
+    /* ---- the topbar toggle, next to Focus ---- */
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "insp-toggle";
+    btn.setAttribute("aria-controls", "inspector");
+    btn.innerHTML = '<span class="insp-ico" aria-hidden="true">(B,T)</span><span class="insp-lbl">Shapes</span>';
+    btn.title = "Shape inspector: the axis key and this section's shapes";
+    var anchor = bar.querySelector(".focus-toggle") || bar.querySelector(".prog") || bar.querySelector(".theme-toggle");
+    bar.insertBefore(btn, anchor);
+
+    /* ---- the panel ---- */
+    var panel = document.createElement("aside");
+    panel.className = "inspector";
+    panel.id = "inspector";
+    panel.setAttribute("aria-label", "Shape inspector");
+    panel.innerHTML =
+      '<div class="insp-head"><div><div class="insp-k">Shape key</div><div class="insp-where"></div></div>' +
+      '<button type="button" class="insp-close" aria-label="Close the shape key">&times;</button></div>' +
+      '<div class="insp-axes" role="group" aria-label="Axes: press one to light it everywhere">' +
+      ORDER.map(function (k) {
+        var a = TFS_AXES[k];
+        return '<button type="button" class="insp-ax" data-axis="' + k + '">' +
+          '<span class="sym">' + SYM[k] + '</span>' +
+          '<span class="nm">' + esc(a.label) + '</span>' +
+          '<span class="ct" title="appearances in this section"></span>' +
+          '<span class="bl">' + esc(a.blurb) + '</span></button>';
+      }).join("") + "</div>" +
+      '<div class="insp-sub">In this section <span class="insp-n"></span></div>' +
+      '<ol class="insp-shapes"></ol>' +
+      '<p class="insp-empty" hidden>No tensor shapes in this section.</p>' +
+      '<div class="insp-foot"><button type="button" class="insp-clear" hidden>Clear pinned axes</button>' +
+      '<p class="insp-hint">Hover, tap or Tab to any axis to light it everywhere. Enter pins it; Esc clears.</p></div>';
+    document.body.appendChild(panel);
+
+    var where = panel.querySelector(".insp-where");
+    var list = panel.querySelector(".insp-shapes");
+    var empty = panel.querySelector(".insp-empty");
+    var countEl = panel.querySelector(".insp-n");
+    var clearBtn = panel.querySelector(".insp-clear");
+
+    /* ---- open / closed ---- */
+    function setOpen(open, remember) {
+      panel.hidden = !open;
+      btn.setAttribute("aria-expanded", String(open));
+      document.body.classList.toggle("insp-open", open);
+      if (remember) store(open ? "open" : "closed");
+      if (open) refresh(true);
+      if (window.layoutMarginNotes) requestAnimationFrame(window.layoutMarginNotes);
+    }
+    var saved = store();
+    setOpen(saved ? saved === "open" : matchMedia(WIDE).matches, false);
+    function animate() {
+      document.body.classList.add("side-anim");
+      setTimeout(function () { document.body.classList.remove("side-anim"); }, 400);
+    }
+    btn.addEventListener("click", function () { animate(); setOpen(panel.hidden, true); });
+    panel.querySelector(".insp-close").addEventListener("click", function () { animate(); setOpen(false, true); btn.focus(); });
+    clearBtn.addEventListener("click", function () { window.tfsAxis.clear(); });
+    document.addEventListener("keydown", function (e) {
+      // Esc closes the SHEET on a phone (it covers the page); the rail stays
+      if (e.key === "Escape" && !panel.hidden && !matchMedia(WIDE).matches) setOpen(false, true);
+    });
+
+    /* ---- which section are you reading? ---- */
+    function sections() {
+      return [].slice.call(main.children).filter(function (c) { return c.tagName === "H2" && visible(c); });
+    }
+    function currentIndex() {
+      var hs = sections(), line = window.innerHeight * 0.35, idx = -1;
+      for (var i = 0; i < hs.length; i++) if (hs[i].getBoundingClientRect().top < line) idx = i;
+      return { idx: idx, h: idx >= 0 ? hs[idx] : null };
+    }
+
+    /* every visible shape in section idx (-1 = before the first heading) */
+    function shapesIn(h) {
+      var out = [], inside = !h;
+      [].slice.call(main.children).forEach(function (c) {
+        if (c.tagName === "H2" && visible(c)) { inside = c === h; return; }
+        if (!inside) return;
+        var found = c.matches(".shp") ? [c] : [].slice.call(c.querySelectorAll(".shp"));
+        found.forEach(function (s) { if (visible(s) && s.querySelector("[data-axis]")) out.push(s); });
+      });
+      return out;
+    }
+
+    var lastKey = null;
+    function refresh(force) {
+      if (panel.hidden) return;
+      var cur = currentIndex();
+      var shapes = shapesIn(cur.h);
+      var key = (cur.h ? cur.h.id : "intro") + "|" + shapes.map(function (s) { return s.textContent; }).join("|");
+      if (!force && key === lastKey) return;
+      lastKey = key;
+
+      where.textContent = cur.h ? cur.h.textContent.replace(/\s+/g, " ").trim() : "Introduction";
+
+      // per-axis counts for this section
+      var counts = {};
+      shapes.forEach(function (s) {
+        s.querySelectorAll("[data-axis]").forEach(function (b) {
+          var a = b.getAttribute("data-axis"); counts[a] = (counts[a] || 0) + 1;
+        });
+      });
+      panel.querySelectorAll(".insp-ax").forEach(function (b) {
+        var n = counts[b.getAttribute("data-axis")] || 0;
+        b.querySelector(".ct").textContent = n ? "×" + n : "–";
+        b.classList.toggle("absent", !n);
+      });
+
+      // de-duplicated shapes, first occurrence wins, with a multiplicity
+      var seen = {}, uniq = [];
+      shapes.forEach(function (s) {
+        // spacing is not meaning: (B, T, C) and (B,T,C) are one shape
+        var t = s.textContent.replace(/\s+/g, " ").trim(), k = t.replace(/\s+/g, "");
+        if (seen[k]) { seen[k].n++; return; }
+        seen[k] = { el: s, n: 1, text: t };
+        uniq.push(seen[k]);
+      });
+      list.innerHTML = "";
+      uniq.slice(0, 24).forEach(function (u) {
+        var li = document.createElement("li");
+        var clone = u.el.cloneNode(true);
+        clone.querySelectorAll(".ax-cursor").forEach(function (x) { x.classList.remove("ax-cursor"); });
+        clone.removeAttribute("id");
+        li.appendChild(clone);
+        if (u.n > 1) {
+          var m = document.createElement("span");
+          m.className = "insp-mult"; m.textContent = "×" + u.n;
+          m.title = "appears " + u.n + " times in this section";
+          li.appendChild(m);
+        }
+        var jump = document.createElement("button");
+        jump.type = "button"; jump.className = "insp-jump";
+        jump.setAttribute("aria-label", "Jump to " + u.text);
+        jump.innerHTML = '<span aria-hidden="true">→</span>';
+        jump.addEventListener("click", function () {
+          var reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+          u.el.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+          u.el.classList.add("insp-flash");
+          setTimeout(function () { u.el.classList.remove("insp-flash"); }, 1600);
+          if (!matchMedia(WIDE).matches) setOpen(false, false);   // the sheet would hide it
+        });
+        li.appendChild(jump);
+        list.appendChild(li);
+      });
+      countEl.textContent = uniq.length ? "(" + uniq.length + (uniq.length > 24 ? ", first 24" : "") + ")" : "";
+      empty.hidden = uniq.length > 0;
+      list.hidden = uniq.length === 0;
+    }
+
+    /* follow the reader: section changes on scroll, shapes change when a
+       widget redraws (childList only: the bus rewrites aria-pressed on every
+       badge, and watching attributes would refresh on every hover) */
+    var raf = 0;
+    window.addEventListener("scroll", function () {
+      cancelAnimationFrame(raf); raf = requestAnimationFrame(function () { refresh(false); });
+    }, { passive: true });
+    var mt = 0;
+    new MutationObserver(function () {
+      clearTimeout(mt); mt = setTimeout(function () { refresh(false); }, 200);
+    }).observe(main, { childList: true, subtree: true });
+    document.addEventListener("tfs:axis", function (e) {
+      clearBtn.hidden = !e.detail.pinned.length;
+    });
+    window.addEventListener("resize", function () { refresh(true); });
+
+    window.tfsInspector = { refresh: function () { refresh(true); }, open: function (v) { setOpen(v !== false, false); } };
+    refresh(true);
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", build);
+  else build();
+})();
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { TFS_AXES: TFS_AXES, TFS_AXIS_SYMBOLS: TFS_AXIS_SYMBOLS, tfsResolveAxis: tfsResolveAxis };
 }

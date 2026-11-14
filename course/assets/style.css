@@ -165,22 +165,22 @@
    for `background` while working for `color`. This is unambiguous. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --paper: #14100F;
-    --surface: #282120;
-    --surface-2: #3A312B;
-    --sheet: #14100F;
-    --sheet-edge: transparent;
-    --sheet-shadow: none;
-    --ink: #F9F0E4;
-    --ink-2: #DBCBB8;
-    --ink-3: #AC998B;
-    --ink-4: #82736A;
-    --line: #3A312B;
-    --line-2: #AD8468;
+    --paper: #1A1513;
+    --surface: #342C27;
+    --surface-2: #463B34;
+    --sheet: #27211E;
+    --sheet-edge: #6E5A4C;
+    --sheet-shadow: 9px 9px 0 rgba(0, 0, 0, .45);
+    --ink: #FBF4EA;
+    --ink-2: #EADFCF;
+    --ink-3: #CBBBAA;
+    --ink-4: #A69585;
+    --line: #4E433B;
+    --line-2: #B08A70;
     --stamp: #B34B33;
     --stamp-ink: #FFF1E0;
-    --dot: rgba(249, 240, 228, .075);
-    --shadow-hue: rgba(0, 0, 0, .72);
+    --dot: rgba(249, 240, 228, .06);
+    --shadow-hue: rgba(0, 0, 0, .55);
     --accent: #CBA4FF;
     --accent-2: #E2CAFF;
     --accent-bg: #32234E;
@@ -189,9 +189,9 @@
        marks; these are mostly text glyphs and thin strokes, where the muted
        in-band set read as murky (the "dull" dark mode already rejected once).
        Every separation floor still passes: colour-blind dE 15.6, normal 15.7. */
-    --dim-1: #B9892D;
-    --dim-2: #2594FB;
-    --dim-3: #CE509D;
+    --dim-1: #D29E3C;
+    --dim-2: #4AA6FF;
+    --dim-3: #DE68AE;
     --dim-4: #87E028;
     --dim-5: #35E1C5;
     --dim-1-bg: #4A2B12;
@@ -205,7 +205,7 @@
     --ok-bg: #22461F;
     --warn-bg: #463514;
     --stop-bg: #4C231A;
-    --syn-comment: #9C8878;
+    --syn-comment: #B09C8B;
     --syn-key: #FF9AD4;
     --syn-str: #A8E05F;
     --syn-num: #F5C059;
@@ -262,28 +262,28 @@
 }
 
 :root[data-theme="dark"] {
-  --paper: #14100F;
-  --surface: #282120;
-  --surface-2: #3A312B;
-  --sheet: #14100F;
-  --sheet-edge: transparent;
-  --sheet-shadow: none;
-  --ink: #F9F0E4;
-  --ink-2: #DBCBB8;
-  --ink-3: #AC998B;
-  --ink-4: #82736A;
-  --line: #3A312B;
-  --line-2: #AD8468;
+  --paper: #1A1513;
+  --surface: #342C27;
+  --surface-2: #463B34;
+  --sheet: #27211E;
+  --sheet-edge: #6E5A4C;
+  --sheet-shadow: 9px 9px 0 rgba(0, 0, 0, .45);
+  --ink: #FBF4EA;
+  --ink-2: #EADFCF;
+  --ink-3: #CBBBAA;
+  --ink-4: #A69585;
+  --line: #4E433B;
+  --line-2: #B08A70;
   --stamp: #B34B33;
   --stamp-ink: #FFF1E0;
-  --dot: rgba(249, 240, 228, .075);
-  --shadow-hue: rgba(0, 0, 0, .72);
+  --dot: rgba(249, 240, 228, .06);
+  --shadow-hue: rgba(0, 0, 0, .55);
   --accent: #CBA4FF;
   --accent-2: #E2CAFF;
   --accent-bg: #32234E;
-  --dim-1: #B9892D;
-  --dim-2: #2594FB;
-  --dim-3: #CE509D;
+  --dim-1: #D29E3C;
+  --dim-2: #4AA6FF;
+  --dim-3: #DE68AE;
   --dim-4: #87E028;
   --dim-5: #35E1C5;
   --dim-1-bg: #4A2B12;
@@ -297,7 +297,7 @@
   --ok-bg: #22461F;
   --warn-bg: #463514;
   --stop-bg: #4C231A;
-  --syn-comment: #9C8878;
+  --syn-comment: #B09C8B;
   --syn-key: #FF9AD4;
   --syn-str: #A8E05F;
   --syn-num: #F5C059;
@@ -1020,7 +1020,7 @@ pre:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
   padding: .26rem .55rem;
   font-variant-numeric: tabular-nums lining-nums;
 }
-.dimkey .chip b { color: var(--dim-2); }
+.dimkey .chip b:not([data-axis]) { color: var(--dim-2); }   /* an axis letter takes its own axis colour */
 .dimkey .chip span { color: var(--ink-3); font-family: var(--label); }
 
 /* -------------------------------------------------------------- tables */
@@ -1844,7 +1844,7 @@ b[data-axis].ax-cursor { outline: 2px dashed currentColor; outline-offset: 1px; 
    focus toggle were 22-27px tall on phones. Inline axis badges in running
    text are exempt, as WCAG 2.5.8 allows for targets inside a sentence. */
 @media (pointer: coarse) {
-  .topbar .home { display: inline-flex; align-items: center; min-height: 2.5rem; }
+  .topbar .home { display: inline-flex; align-items: center; gap: .28em; min-height: 2.5rem; }   /* gap: flex drops the space before <i> */
   .focus-toggle, .theme-toggle, .menu-btn,
   .study-nav button, .section-tools button, .ex-check,
   main .btn, main select,
@@ -1856,3 +1856,140 @@ b[data-axis].ax-cursor { outline: 2px dashed currentColor; outline-offset: 1px; 
   pre .copy-btn { opacity: 1; min-height: 2rem; }
   pre:has(> .copy-btn) { padding-top: 2.9rem; }   /* the button sits above the code, not on it */
 }
+
+/* ==========================================================================
+   SHAPE INSPECTOR (Phase 3) — see axes.js for the reasoning.
+   Wide: a right rail that reserves its column (the .wrap gives up the space,
+   so text reflows instead of being covered). Narrow: a bottom sheet.
+   ========================================================================= */
+:root { --dock: 18.5rem; }
+
+.insp-toggle {
+  display: inline-flex; align-items: center; gap: .4rem;
+  padding: .28rem .58rem;
+  font-family: var(--label); font-size: .71rem; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--stamp-ink); background: transparent;
+  border: var(--rule) solid color-mix(in srgb, var(--stamp-ink) 38%, transparent);
+  border-radius: var(--radius); cursor: pointer;
+}
+.insp-toggle .insp-ico { font-family: var(--mono); letter-spacing: 0; text-transform: none; font-size: .72rem; opacity: .9; }
+.insp-toggle:hover, .insp-toggle[aria-expanded="true"] {
+  color: #fff; border-color: var(--stamp-ink);
+  background: color-mix(in srgb, var(--stamp-ink) 16%, transparent);
+}
+
+.inspector {
+  position: fixed; z-index: 56;
+  top: var(--topbar-h); right: 0; bottom: 0;
+  width: var(--dock);
+  overflow-y: auto; overscroll-behavior: contain;
+  padding: 1rem .9rem 3rem;
+  background: var(--paper);
+  border-left: var(--rule-2) solid var(--line-2);
+  font-family: var(--label);
+}
+.inspector[hidden] { display: none; }
+@media (min-width: 64rem) {
+  body.insp-open .wrap { padding-right: calc(var(--dock) + clamp(1rem, 4vw, 2.5rem)); }
+}
+
+.insp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: .6rem; margin-bottom: .8rem; }
+.insp-k {
+  display: inline-block; padding: .2rem .5rem;
+  font-size: .72rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--stamp-ink); background: var(--stamp); border-radius: var(--radius);
+}
+.insp-where { margin-top: .45rem; font-size: .82rem; font-weight: 600; line-height: 1.3; color: var(--ink-2); }
+.insp-close {
+  flex: none; width: 2rem; height: 2rem; display: grid; place-items: center;
+  font-size: 1.25rem; line-height: 1; color: var(--ink-2);
+  background: var(--surface); border: 1.5px solid var(--line-2); border-radius: var(--radius); cursor: pointer;
+}
+.insp-close:hover { color: var(--ink); background: var(--surface-2); }
+
+/* the key: one row per axis. Letter + name carry it in greyscale. */
+.insp-axes { display: flex; flex-direction: column; gap: .35rem; }
+.insp-ax {
+  display: grid; grid-template-columns: 2.2rem 1fr auto; grid-template-rows: auto auto;
+  column-gap: .55rem; align-items: baseline; text-align: left;
+  width: 100%; padding: .45rem .55rem;
+  background: var(--surface); color: var(--ink);
+  border: 1.5px solid var(--line-2); border-left-width: 5px; border-radius: var(--radius);
+  font-family: var(--label); cursor: pointer;
+}
+.insp-ax .sym { grid-row: 1 / 3; align-self: center; font-family: var(--mono); font-size: 1.05rem; font-weight: 800; text-align: center; }
+.insp-ax .nm  { font-size: .86rem; font-weight: 700; }
+.insp-ax .ct  { font-family: var(--mono); font-size: .76rem; font-weight: 700; color: var(--ink-3); }
+.insp-ax .bl  { grid-column: 2 / 4; font-size: .74rem; line-height: 1.35; color: var(--ink-3); }
+.insp-ax[data-axis="batch"]   { border-left-color: var(--dim-1); } .insp-ax[data-axis="batch"]   .sym { color: var(--dim-1); }
+.insp-ax[data-axis="time"]    { border-left-color: var(--dim-2); } .insp-ax[data-axis="time"]    .sym { color: var(--dim-2); }
+.insp-ax[data-axis="feat"]    { border-left-color: var(--dim-3); } .insp-ax[data-axis="feat"]    .sym { color: var(--dim-3); }
+.insp-ax[data-axis="head"]    { border-left-color: var(--dim-4); } .insp-ax[data-axis="head"]    .sym { color: var(--dim-4); }
+.insp-ax[data-axis="headdim"] { border-left-color: var(--dim-5); } .insp-ax[data-axis="headdim"] .sym { color: var(--dim-5); }
+.insp-ax[data-axis="vocab"]   { border-left-style: dotted; border-left-color: var(--ink-3); }
+.insp-ax[data-axis="vocab"] .sym { color: var(--ink-2); text-decoration: underline dotted; }
+.insp-ax.absent { opacity: .62; }
+.insp-ax:hover { background: var(--surface-2); opacity: 1; }
+/* active (hovered or pinned) row: filled; pinned additionally gets a word,
+   so the state reads without colour */
+:root[data-ax~="batch"] .insp-ax[data-axis="batch"], :root[data-ax~="time"] .insp-ax[data-axis="time"],
+:root[data-ax~="feat"] .insp-ax[data-axis="feat"], :root[data-ax~="head"] .insp-ax[data-axis="head"],
+:root[data-ax~="headdim"] .insp-ax[data-axis="headdim"], :root[data-ax~="vocab"] .insp-ax[data-axis="vocab"] {
+  background: var(--surface-2); opacity: 1; border-top-color: var(--ink-2); border-right-color: var(--ink-2); border-bottom-color: var(--ink-2);
+}
+.insp-ax[aria-pressed="true"] { box-shadow: 3px 3px 0 var(--shadow-hue); }
+.insp-ax[aria-pressed="true"] .nm::after {
+  content: "pinned"; margin-left: .45rem; padding: .02rem .3rem;
+  font-size: .7rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--paper); background: var(--ink); border-radius: 2px; vertical-align: .1em;
+}
+
+.insp-sub {
+  margin: 1.2rem 0 .5rem; padding-bottom: .3rem;
+  font-size: .72rem; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; color: var(--ink-2);
+  border-bottom: 2px solid var(--line-2);
+}
+.insp-sub span { font-family: var(--mono); letter-spacing: 0; color: var(--ink-3); }
+.insp-shapes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .3rem; }
+.insp-shapes[hidden] { display: none; }
+.insp-shapes li {
+  display: flex; align-items: center; gap: .4rem;
+  padding: .35rem .4rem .35rem .55rem;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  font-family: var(--mono); font-size: .86rem;
+}
+.insp-shapes li .shp { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.insp-mult { font-size: .72rem; font-weight: 700; color: var(--ink-3); }
+.insp-jump {
+  flex: none; width: 1.9rem; height: 1.9rem; display: grid; place-items: center;
+  color: var(--accent); background: none; border: 1.5px solid var(--line-2); border-radius: var(--radius); cursor: pointer;
+}
+.insp-jump:hover { background: var(--accent-bg); border-color: var(--accent); }
+.insp-empty { font-family: var(--body); font-size: .9rem; color: var(--ink-3); margin: .3rem 0; }
+.insp-foot { margin-top: 1rem; }
+.insp-clear {
+  width: 100%; padding: .45rem; margin-bottom: .6rem;
+  font-family: var(--label); font-size: .76rem; font-weight: 700;
+  color: var(--ink); background: var(--surface); border: 1.5px solid var(--ink-2); border-radius: var(--radius); cursor: pointer;
+}
+.insp-clear[hidden] { display: none; }
+.insp-clear:hover { background: var(--surface-2); }
+.insp-hint { font-size: .76rem; line-height: 1.45; color: var(--ink-3); margin: 0; }
+
+/* a shape the reader jumped to: a frame, so it reads without colour */
+.shp.insp-flash { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+/* narrow: a bottom sheet over the page; the topbar keeps just the glyph */
+@media (max-width: 63.99rem) {
+  .inspector {
+    top: auto; left: 0; right: 0; bottom: 0; width: auto; max-height: min(62vh, 34rem);
+    padding: .9rem max(1rem, env(safe-area-inset-right, 0px)) calc(1.4rem + env(safe-area-inset-bottom, 0px)) max(1rem, env(safe-area-inset-left, 0px));
+    border-left: 0; border-top: var(--rule-2) solid var(--line-2);
+    box-shadow: 0 -6px 0 var(--shadow-hue);
+  }
+  .insp-axes { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); }
+}
+@media (max-width: 40rem) { .insp-toggle .insp-lbl { display: none; } }
+@media (pointer: coarse) { .insp-toggle, .insp-jump, .insp-close { min-height: 2.5rem; min-width: 2.5rem; justify-content: center; } }
+@media print { .inspector, .insp-toggle { display: none !important; } }

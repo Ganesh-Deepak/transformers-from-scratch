@@ -108,6 +108,8 @@ for (const theme of ["light", "dark"]) {
     ["ink on sheet", t["--ink"], t["--sheet"], 4.5],
     ["ink-3 on sheet", t["--ink-3"], t["--sheet"], 4.5],
     ["accent on sheet", t["--accent"], t["--sheet"], 4.5],
+    ["ink-3 on surface", t["--ink-3"], t["--surface"], 4.5],
+    ...["1","2","3","4","5"].map(n => ["dim-" + n + " on sheet", t["--dim-" + n], t["--sheet"], 3.0]),
     ["accent on paper", t["--accent"], t["--paper"], 4.5],
     ["accent on surface", t["--accent"], t["--surface"], 4.5],
     ["dim-1 on paper", t["--dim-1"], t["--paper"], 3.0],
