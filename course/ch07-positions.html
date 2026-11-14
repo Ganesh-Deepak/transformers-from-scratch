@@ -6,7 +6,7 @@
 <title>Ch 7 — Position: Sinusoidal → Learned → RoPE → ALiBi</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=24">
+<link rel="stylesheet" href="assets/style.css?v=26">
 </head>
 <body>
 <main>
@@ -228,7 +228,7 @@ def apply_rope(q, k, cos, sin):
 <span class="t">Two conventions, both correct</span>
 <p style="margin-bottom:0">The original paper pairs <b>adjacent</b> dimensions
 <code>(x0,x1), (x2,x3), …</code>. The HuggingFace/Llama implementation above pairs
-<code>(x0, x_{d/2}), (x1, x_{1+d/2}), …</code> — it splits the head in half instead. These are related by a
+<code>(x0, x<sub>d/2</sub>), (x1, x<sub>1+d/2</sub>), …</code> — it splits the head in half instead. These are related by a
 fixed permutation of the feature axis, so they are <b>mathematically equivalent</b> (the model just learns
 its weights in the corresponding permuted basis). But they are <b>not interchangeable at inference</b>:
 loading Llama weights into an adjacent-pair implementation produces garbage. If you ever port RoPE between
@@ -339,7 +339,9 @@ for decoders than for encoders.</p>
 its base frequency</b> for long context. Llama 3 raised the base from 10,000 to <b>500,000</b> specifically
 to make 128k context viable — a one-line change with a large effect. Many current long-context models also
 interleave <b>local (sliding-window) RoPE layers</b> with a few <b>global</b> layers, so most layers only pay
-attention cost over a small window. Gemma 2/3 popularised that pattern. Chapter 21 covers the scaling
+attention cost over a small window. Gemma 2/3 popularised that pattern. Llama 4 goes one step further and
+leaves out positional encoding entirely in every fourth (global) attention layer, interleaving RoPE layers
+with NoPE layers so that the long-range layers are not tied to trained rotation angles. Chapter 21 covers the scaling
 methods properly.</p>
 </div>
 
@@ -396,8 +398,9 @@ exact issue described in §7.4's convention box.</p>
 <details class="reveal"><summary>Answers</summary><div>
 <ol>
 <li>Shortest is always 2π ≈ 6.28 tokens (i=0, θ=1). Longest at base=10000 is
-2π·10000<sup>126/128</sup> ≈ 5.9×10⁴ tokens; at base=500000 it's ≈ 3.0×10⁶ tokens.</li>
-<li>Roughly 21 of 64 pairs exceed 4096 tokens at base 10000; roughly 30 at base 500000.</li>
+2π·10000<sup>126/128</sup> ≈ 5.4×10⁴ tokens; at base=500000 it's ≈ 2.6×10⁶ tokens.</li>
+<li>18 of 64 pairs exceed 4096 tokens at base 10000; 32 at base 500000. (A pair i has wavelength
+<code>2π · base<sup>2i/d</sup></code>, so it exceeds L when <code>i &gt; (d/2) · ln(L/2π) / ln(base)</code>.)</li>
 <li>Raising the base <b>stretches all wavelengths</b>, so more dimensions still complete less than one full
 rotation across the whole context — meaning they encode position <i>unambiguously</i> rather than wrapping
 around. Dimensions that wrap many times within the context can't distinguish distance 100 from distance
@@ -412,15 +415,15 @@ around. Dimensions that wrap many times within the context can't distinguish dis
 <li><a href="https://blog.eleuther.ai/rotary-embeddings/">EleutherAI — Rotary Embeddings: A Relative Revolution</a> — the best intuitive explanation.</li>
 <li><a href="https://arxiv.org/abs/2108.12409">Press et al. 2021 — ALiBi</a></li>
 <li><a href="https://arxiv.org/abs/2305.19466">Kazemnejad et al. 2023 — The Impact of Positional Encoding on Length Generalization</a> (NoPE)</li>
-<li>Companion notebook: <code>notebooks/07_positions.ipynb</code></li>
+<li>Companion notebook: not written yet (planned as <code class="planned">notebooks/07_positions.ipynb</code>)</li>
 </ul>
 
 </main>
 
-<script src="assets/chapters.js?v=24"></script>
-<script src="assets/course.js?v=24"></script>
-<script src="assets/viz.js?v=24"></script>
-<script src="assets/axes.js?v=24"></script>
+<script src="assets/chapters.js?v=26"></script>
+<script src="assets/course.js?v=26"></script>
+<script src="assets/viz.js?v=26"></script>
+<script src="assets/axes.js?v=26"></script>
 <script>initChapter("07");</script>
 </body>
 </html>

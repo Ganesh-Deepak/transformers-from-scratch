@@ -6,7 +6,7 @@
 <title>Ch 19 — Distributed Training: DP, TP, PP, ZeRO</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=24">
+<link rel="stylesheet" href="assets/style.css?v=26">
 </head>
 <body>
 <main>
@@ -236,7 +236,7 @@ bubble fraction = <span class="frac"><span class="n">p &minus; 1</span><span cla
 design pressure behind <b>1F1B</b> scheduling (same bubble, far less activation memory, because a
 microbatch's activations are freed as soon as its backward runs) and <b>interleaved 1F1B</b>, which gives
 each GPU <span class="math">v</span> non-contiguous chunks of layers and cuts the bubble to
-<span class="math">(p-1)/(vm)</span> at the cost of <span class="math">v\times</span> more boundary
+<span class="math">(p-1)/(vm)</span> at the cost of <span class="math">v×</span> more boundary
 messages.</p>
 </div>
 
@@ -274,9 +274,9 @@ will read is that calculation, and the surprising part is how little freedom the
 <h3>Activation checkpointing, the fifth lever</h3>
 
 <p>None of the above touches activations, which grow with
-<span class="math">B \times T \times d \times \text{layers}</span> and often dominate. <b>Gradient
+<span class="math">B × T × d × layers</span> and often dominate. <b>Gradient
 checkpointing</b> stores only layer boundaries and recomputes the interior during backward: memory drops
-from <span class="math">O(L)</span> to <span class="math">O(\sqrt{L})</span> with an optimal schedule,
+from <span class="math">O(L)</span> to <span class="math">O(√L)</span> with an optimal schedule,
 for roughly <b>30% more compute</b>. Since <a href="ch14-gpu.html">Ch&nbsp;14</a> established that most
 of training is memory-bound anyway, trading FLOPs for bytes is usually a win — the recompute frequently
 costs less wall-clock time than it saves.</p>
@@ -392,15 +392,15 @@ it fails. Your explanation should name the nonlinearity.</p>
 <li><a href="https://arxiv.org/abs/2104.04473">Narayanan et al. 2021 — Efficient Large-Scale Training on GPU Clusters</a> — where the 3-D mesh reasoning is laid out properly.</li>
 <li><a href="https://arxiv.org/abs/1604.06174">Chen et al. 2016 — Training Deep Nets with Sublinear Memory Cost</a> — the √L checkpointing result.</li>
 <li><a href="https://docs.pytorch.org/docs/stable/fsdp.html">PyTorch FSDP</a> — ZeRO-3 as actually shipped.</li>
-<li>Companion notebook: <code>notebooks/19_distributed.ipynb</code></li>
+<li>Companion notebook: not written yet (planned as <code class="planned">notebooks/19_distributed.ipynb</code>)</li>
 </ul>
 
 </main>
 
-<script src="assets/chapters.js?v=24"></script>
-<script src="assets/course.js?v=24"></script>
-<script src="assets/viz.js?v=24"></script>
-<script src="assets/axes.js?v=24"></script>
+<script src="assets/chapters.js?v=26"></script>
+<script src="assets/course.js?v=26"></script>
+<script src="assets/viz.js?v=26"></script>
+<script src="assets/axes.js?v=26"></script>
 <script>initChapter("19");</script>
 </body>
 </html>

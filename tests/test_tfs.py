@@ -471,6 +471,147 @@ def test_number_format_ranges_derive_from_bit_counts():
     assert torch.tensor(3e-8).half().item() == 2.0 ** -24                  # ... not at 2^-24
 
 
+# ==================================================== Ch 20 — mixture of experts
+
+from tfs import moe as M
+
+
+def _moe(gating="softmax", E=8, k=2, shared=0, seed=0):
+    torch.manual_seed(seed)
+    return M.MoE(d_model=32, d_ff=48, n_expert=E, top_k=k, n_shared=shared, gating=gating)
+
+
+def test_moe_sorted_dispatch_matches_loop():
+    """20.3: sorting slots by expert (the grouped-GEMM layout) computes exactly
+    what the readable per-expert loop computes, for every router."""
+    x = torch.randn(3, 11, 32)
+    for g in ("softmax", "topk_softmax", "sigmoid"):
+        m = _moe(g, shared=1)
+        a, _ = m.forward_loop(x)
+        b, _ = m(x)
+        assert a.shape == x.shape and torch.allclose(a, b, atol=1e-5), g
+
+
+def test_topk_softmax_equals_renormalised_softmax_topk():
+    """20.2: Mixtral's 'top-k of the logits, then softmax' and 'softmax, top-k,
+    renormalise' are the same function. Without the renormalisation they are not."""
+    logits = torch.randn(64, 16)
+    w1, i1, _ = M.route_topk_softmax(logits, 4)
+    w2, i2, _ = M.route_softmax_topk(logits, 4, renorm=True)
+    w3, _, _ = M.route_softmax_topk(logits, 4, renorm=False)
+    assert torch.equal(i1, i2) and torch.allclose(w1, w2, atol=1e-6)
+    assert not torch.allclose(w1, w3)
+    assert torch.allclose(w3.sum(-1) < 1, torch.ones(64, dtype=torch.bool))
+
+
+def test_router_learns_only_through_gate_weights():
+    """20.2: top-k is not differentiable. The router's gradient arrives through
+    the gate weights that multiply the chosen experts' outputs, and only for the
+    chosen experts' logits (topk_softmax) -- unchosen logits get exactly zero."""
+    m = _moe("topk_softmax")
+    x = torch.randn(1, 5, 32)
+    out, (logits, idx, _) = m(x)
+    m.zero_grad(); out.sum().backward()
+    assert m.router.weight.grad is not None and m.router.weight.grad.abs().sum() > 0
+    # gradient w.r.t. the logits themselves: recompute with a leaf
+    xf = x.reshape(-1, 32)
+    lg = m.router(xf).detach().requires_grad_(True)
+    w, i, _ = M.route_topk_softmax(lg, 2)
+    (w * torch.randn_like(w)).sum().backward()
+    chosen = torch.zeros_like(lg, dtype=torch.bool).scatter_(1, i, True)
+    assert (lg.grad[~chosen] == 0).all() and (lg.grad[chosen] != 0).any()
+
+
+def test_top1_renormalised_router_gets_no_gradient():
+    """20.2: with k=1, renormalising (or softmax over the single chosen logit)
+    makes every gate exactly 1, so the router receives NO gradient and never
+    learns. Switch Transformer keeps the raw probability p for exactly this
+    reason; with it the router does learn."""
+    torch.manual_seed(0)
+    lg = torch.randn(32, 8, requires_grad=True)
+    w, _, _ = M.route_softmax_topk(lg, 1, renorm=True)
+    assert torch.all(w == 1)
+    (w * torch.randn_like(w)).sum().backward()
+    assert lg.grad.abs().max() < 1e-6           # zero analytically; p/p round-off only
+    lg.grad = None
+    w, _, _ = M.route_topk_softmax(lg, 1)        # Mixtral's form at k=1: exactly zero
+    (w * torch.randn_like(w)).sum().backward()
+    assert lg.grad.abs().max() == 0
+    lg.grad = None
+    w, _, _ = M.route_softmax_topk(lg, 1, renorm=False)       # Switch: keep p
+    (w * torch.randn_like(w)).sum().backward()
+    assert lg.grad.abs().max() > 1e-3
+
+
+def test_load_balance_loss_values():
+    """20.4: E * sum f_i P_i is 1 for perfectly uniform routing and E when every
+    token goes to one expert with probability 1."""
+    E, N = 8, 800
+    probs = torch.full((N, E), 1 / E)
+    idx = torch.arange(N).remainder(E).unsqueeze(-1)        # round-robin, top-1
+    assert abs(M.load_balance_loss(probs, idx).item() - 1.0) < 1e-6
+    probs = torch.zeros(N, E); probs[:, 3] = 1
+    idx = torch.full((N, 1), 3)
+    assert abs(M.load_balance_loss(probs, idx).item() - E) < 1e-6
+
+
+def test_bias_balancing_fixes_load_without_touching_gates():
+    """20.4: DeepSeek-V3's bias rule balances a router that is heavily skewed
+    toward a few experts, and never changes the gate weight of a chosen expert."""
+    torch.manual_seed(1)
+    E, k, N = 16, 2, 4096
+    skew = torch.linspace(2.0, -2.0, E)                     # experts 0..3 strongly preferred
+    bias = torch.zeros(E)
+    cv0 = None
+    for step in range(400):
+        logits = torch.randn(N, E) + skew
+        w, idx, _ = M.route_sigmoid_bias(logits, k, bias)
+        if cv0 is None:
+            cv0 = M.load_cv(idx, E)
+        M.update_bias(bias, idx, gamma=0.02)
+    cv1 = M.load_cv(idx, E)
+    assert cv0 > 1.0 and cv1 < 0.15, (cv0, cv1)
+    # gates are the UNBIASED affinities of the chosen experts
+    s = logits.sigmoid()
+    g = s.gather(-1, idx); g = g / g.sum(-1, keepdim=True)
+    assert torch.allclose(w, g)
+
+
+def test_expected_distinct_experts_formula():
+    """20.7: a batch of b tokens touches E(1-(1-k/E)^b) experts on average.
+    DeepSeek-V3 shape (E=256, k=8): ~222 of 256 at b=64."""
+    torch.manual_seed(0)
+    E, k, b = 256, 8, 64
+    sims = []
+    for _ in range(300):
+        picks = torch.rand(b, E).argsort(-1)[:, :k]          # k distinct experts per token
+        sims.append(picks.unique().numel())
+    mc = sum(sims) / len(sims)
+    f = M.expected_distinct_experts(E, k, b)
+    assert abs(mc - f) < 1.0, (mc, f)
+    assert round(f) == 222
+
+
+def test_moe_parameter_arithmetic():
+    """20.1 exercise numbers and the DeepSeek-V3 / Mixtral totals the chapter quotes."""
+    dense = M.mlp_params(4096, 14336) * 32
+    assert round(dense / 1e9, 2) == 5.64
+    tot, act = M.moe_params(4096, 1792, 64, 4)
+    assert round((tot - 4096 * 64) * 32 / 1e9, 1) == 45.1 and round((act - 4096 * 64) * 32 / 1e9, 2) == 2.82
+    assert math.comb(256, 8) > 4.0e14 and math.comb(256, 8) < 4.2e14 and math.comb(8, 2) == 28
+    # Mixtral 8x7B MLP: 8 experts of the Mistral-7B SwiGLU, 32 layers
+    per_layer = M.mlp_params(4096, 14336)
+    assert round(8 * per_layer * 32 / 1e9, 1) == 45.1     # of 46.7 B total
+    assert round(2 * per_layer * 32 / 1e9, 1) == 11.3     # of 12.9 B active
+
+
+def test_capacity_and_all_to_all():
+    """20.3 / 20.6 arithmetic."""
+    assert M.expert_capacity(4096, 64, 2, 1.25) == 160
+    # one DeepSeek-V3-shaped layer, 4096 tokens per device, bf16, top-8, C=7168
+    assert M.all_to_all_bytes(4096, 8, 7168, 2) == 939_524_096   # ~0.94 GB per layer per device
+
+
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

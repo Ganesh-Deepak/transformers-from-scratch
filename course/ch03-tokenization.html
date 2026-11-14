@@ -6,7 +6,7 @@
 <title>Ch 3 — Tokenization: Text → Integers</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=24">
+<link rel="stylesheet" href="assets/style.css?v=26">
 </head>
 <body>
 <main>
@@ -252,7 +252,8 @@ family of bugs, covered in §3.5.</p>
 <tr><td>Llama 2</td><td class="num">32,000</td><td>SentencePiece BPE</td></tr>
 <tr><td>Llama 3 / 3.1</td><td class="num">128,256</td><td>tiktoken-style BPE</td></tr>
 <tr><td>Qwen 2.5 / 3</td><td class="num">151,936</td><td>byte-level BPE, multilingual-heavy</td></tr>
-<tr><td>Gemma 2 / 3</td><td class="num">256,000</td><td>SentencePiece, very multilingual</td></tr>
+<tr><td>Gemma 2</td><td class="num">256,000</td><td>SentencePiece, very multilingual</td></tr>
+<tr><td>Gemma 3</td><td class="num">262,144</td><td>SentencePiece, very multilingual</td></tr>
 <tr><td>DeepSeek-V3</td><td class="num">129,280</td><td>byte-level BPE</td></tr>
 </tbody>
 </table>
@@ -302,7 +303,7 @@ result before training. Never hand-write the format.</p>
 <h2>3.5 · Tokenizer pathologies — why LLMs are weird about specific things</h2>
 
 <h3>Arithmetic</h3>
-<pre><code># GPT-2 tokenizes numbers inconsistently:
+<pre><code># GPT-2 tokenizes numbers inconsistently (illustrative splits; run 3.2 to see your tokenizer's):
 "127"   -> ["127"]          1 token
 "128"   -> ["128"]          1 token
 "1270"  -> ["127", "0"]     2 tokens
@@ -444,15 +445,15 @@ you expect.</p>
 <li><a href="https://github.com/karpathy/minbpe">karpathy/minbpe</a> — clean reference implementation.</li>
 <li><a href="https://arxiv.org/abs/1508.07909">Sennrich et al. 2015</a> — the paper that brought BPE to NLP.</li>
 <li><a href="https://www.lesswrong.com/posts/aPeJE8bSo6rAFoLqg/solidgoldmagikarp-plus-prompt-generation">SolidGoldMagikarp</a> — the under-trained token investigation.</li>
-<li>Companion notebook: <code>notebooks/03_tokenization.ipynb</code></li>
+<li>Companion notebook: not written yet (planned as <code class="planned">notebooks/03_tokenization.ipynb</code>)</li>
 </ul>
 
 </main>
 
-<script src="assets/chapters.js?v=24"></script>
-<script src="assets/course.js?v=24"></script>
-<script src="assets/viz.js?v=24"></script>
-<script src="assets/axes.js?v=24"></script>
+<script src="assets/chapters.js?v=26"></script>
+<script src="assets/course.js?v=26"></script>
+<script src="assets/viz.js?v=26"></script>
+<script src="assets/axes.js?v=26"></script>
 <script>initChapter("03");</script>
 </body>
 </html>

@@ -6,7 +6,7 @@
 <title>Ch 5 — Attention From Scratch</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=24">
+<link rel="stylesheet" href="assets/style.css?v=26">
 </head>
 <body>
 <main>
@@ -419,11 +419,11 @@ passes. This is the trick that makes pretraining tractable.</p>
 
 <div class="tw">
 <table>
-<thead><tr><th>Quantity</th><th>Cost</th><th>At T=1k, d=64</th><th>At T=128k, d=64</th></tr></thead>
+<thead><tr><th>One layer of a 7B-class model (d_model 4096, 32 heads)</th><th>Cost</th><th class="num">T = 1,024</th><th class="num">T = 131,072</th></tr></thead>
 <tbody>
-<tr><td>score matrix memory</td><td>O(T²)</td><td>1M floats = 4 MB</td><td>1.6×10¹⁰ = <b>64 GB</b> (per head!)</td></tr>
-<tr><td>QKᵀ FLOPs</td><td>O(T²·d)</td><td>1.3×10⁸</td><td>2×10¹²</td></tr>
-<tr><td>projections FLOPs</td><td>O(T·d²)</td><td>8×10⁶</td><td>1×10⁹</td></tr>
+<tr><td>score matrices, all heads, bf16</td><td>h·T²·2 bytes</td><td class="num">67 MB</td><td class="num"><b>1.1 TB</b></td></tr>
+<tr><td>attention matmuls (QKᵀ and ·V), forward</td><td>4·T²·d</td><td class="num">1.7×10¹⁰</td><td class="num">2.8×10¹⁴</td></tr>
+<tr><td>weight matmuls (QKVO + MLP), forward</td><td>≈ 24·T·d²</td><td class="num">4.1×10¹¹</td><td class="num">5.3×10¹³</td></tr>
 </tbody>
 </table>
 </div>
@@ -431,12 +431,13 @@ passes. This is the trick that makes pretraining tractable.</p>
 <p>Two lessons:</p>
 <ul>
 <li><b>Attention is quadratic in sequence length.</b> Doubling context quadruples attention cost.</li>
-<li><b>At short context, the projections dominate; at long context, attention dominates.</b> The crossover
-for typical models is a few thousand tokens. This is why "attention is O(T²)" only became an emergency once
-people wanted 128k contexts.</li>
+<li><b>At short context, the weight matmuls dominate; at long context, attention dominates.</b> Per layer
+the two are equal when <code>4·T²·d = 24·T·d²</code>, i.e. at <b>T = 6·d_model</b>: about 25k tokens
+for d_model = 4096. At 1k tokens the weights cost 24× more than attention; at 128k attention costs 5× more.
+This is why "attention is O(T²)" only became an emergency once people wanted 128k contexts.</li>
 </ul>
 
-<p>The 64 GB figure is not a typo, and it explains FlashAttention's existence: naive attention at long context
+<p>The 1.1 TB figure is not a typo, and it explains FlashAttention's existence: naive attention at long context
 doesn't fit in memory <i>at all</i>, even though the final output is tiny.</p>
 
 <h2>5.9 · Exercises</h2>
@@ -515,7 +516,7 @@ the first few tokens in the cache — comes directly from this observation. We r
 <li>How much memory does the full set of attention score matrices take in bf16 at <code>T=4096</code>?
 At <code>T=32768</code>?</li>
 <li>At what <code>T</code> do attention FLOPs (<code>~12·n_layer·d_model·T²</code>) exceed the
-parameter FLOPs (<code>~2N·T</code>) for a 7B model?</li>
+parameter FLOPs (<code>~6N·T</code>, also for a training step) for a 7B model?</li>
 </ol>
 <details class="reveal"><summary>Answers</summary><div>
 <ol>
@@ -523,9 +524,12 @@ parameter FLOPs (<code>~2N·T</code>) for a 7B model?</li>
 layer</b>. All 32 layers at once would be 34 GB — though in practice you only hold one or two at a time.
 At T=32768 it's <b>68.7 GB for a single layer</b>. This is why FlashAttention isn't an optimisation, it's a
 prerequisite.</li>
-<li>Setting <code>12·32·4096·T² = 2·7e9·T</code> gives <code>T ≈ 8900</code>. So somewhere around
-<b>~9k tokens</b> attention overtakes the feed-forward path for a 7B model — comfortably inside the context
-lengths people actually use, which is why this stopped being a theoretical concern around 2023.</li>
+<li>Compare like with like. For a training step, attention costs <code>12·L·d·T²</code> per sequence
+(4 for the two matmuls, × 3 for forward and backward) and the weights cost <code>6·N·T</code>. Setting them
+equal: <code>T = N / (2·L·d) = 7e9 / (2·32·4096) ≈ 27k</code> tokens. (A common slip is to compare the
+training attention figure with the <i>forward-only</i> <code>2N·T</code>, which gives a wrong ~9k.) A causal
+kernel that skips the masked half roughly doubles the crossover. Either way it sits inside the context lengths
+people now train at, which is why this stopped being a theoretical concern around 2023.</li>
 </ol>
 </div></details>
 </div></div>
@@ -542,10 +546,10 @@ lengths people actually use, which is why this stopped being a theoretical conce
 
 </main>
 
-<script src="assets/chapters.js?v=24"></script>
-<script src="assets/course.js?v=24"></script>
-<script src="assets/viz.js?v=24"></script>
-<script src="assets/axes.js?v=24"></script>
+<script src="assets/chapters.js?v=26"></script>
+<script src="assets/course.js?v=26"></script>
+<script src="assets/viz.js?v=26"></script>
+<script src="assets/axes.js?v=26"></script>
 <script>initChapter("05");</script>
 </body>
 </html>

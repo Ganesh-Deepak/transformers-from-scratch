@@ -6,7 +6,7 @@
 <title>Ch 2 — Matrix Multiplication as a Machine</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=24">
+<link rel="stylesheet" href="assets/style.css?v=26">
 </head>
 <body>
 <main>
@@ -370,7 +370,8 @@ every scaling-law calculation in Chapter 21, and it's worth being able to derive
 <div class="box warn">
 <span class="t">What 6ND leaves out</span>
 <p style="margin-bottom:0">Attention's <code>T×T</code> score matrix costs FLOPs that don't scale with
-parameter count — roughly <code>12 · n_layer · d_model · T²</code> per sequence. For short contexts this is a
+parameter count — roughly <code>12 · n_layer · d_model · T²</code> per sequence for a training step (4 for the two
+attention matmuls of the forward pass, × 3 for forward plus backward; a causal mask can skip about half). For short contexts this is a
 few percent and everyone ignores it. At <code>T = 128k</code> it can dominate. That crossover is exactly why
 sparse attention (Chapter 22) exists.</p>
 </div>
@@ -396,9 +397,10 @@ sparse attention (Chapter 22) exists.</p>
     <div class="opt">≈ 8.4 × 10<sup>22</sup></div>
     <div class="opt">≈ 4.2 × 10<sup>25</sup></div>
   </div>
-  <div class="expl"><b>6ND = 6 × 7×10⁹ × 2×10¹² = 8.4 × 10²².</b> For scale: an H100 does roughly
-  10¹⁵ bf16 FLOP/s at realistic utilisation, so this is ~8.4×10⁷ GPU-seconds ≈ 2.7 GPU-years ≈
-  <b>10 days on 100 H100s</b>. Being able to do this estimate in your head is genuinely useful.</div>
+  <div class="expl"><b>6ND = 6 × 7×10⁹ × 2×10¹² = 8.4 × 10²².</b> For scale: an H100's dense bf16
+  <i>peak</i> is about 10¹⁵ FLOP/s, but real training runs reach roughly 40–50% of peak (Chapter 14 calls
+  this MFU). At ~4.5×10¹⁴ FLOP/s that is ~1.9×10⁸ GPU-seconds ≈ 6 GPU-years ≈
+  <b>3 weeks on 100 H100s</b>. Dividing by the peak instead is the most common way this estimate goes wrong. Being able to do this estimate in your head is genuinely useful.</div>
 </div>
 </div>
 
@@ -524,10 +526,10 @@ transformers at moderate context length. It starts to break down for MoE models 
 
 </main>
 
-<script src="assets/chapters.js?v=24"></script>
-<script src="assets/course.js?v=24"></script>
-<script src="assets/viz.js?v=24"></script>
-<script src="assets/axes.js?v=24"></script>
+<script src="assets/chapters.js?v=26"></script>
+<script src="assets/course.js?v=26"></script>
+<script src="assets/viz.js?v=26"></script>
+<script src="assets/axes.js?v=26"></script>
 <script>initChapter("02");</script>
 </body>
 </html>

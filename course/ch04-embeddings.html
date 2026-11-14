@@ -6,7 +6,7 @@
 <title>Ch 4 — Embeddings and the Residual Stream</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=24">
+<link rel="stylesheet" href="assets/style.css?v=26">
 </head>
 <body>
 <main>
@@ -103,7 +103,9 @@ lookup:                            768 memory reads
 linear layer — which is why weight tying with the output projection is even coherent. (2) The
 gradient reaches <b>exactly one row</b> per token occurrence, because every other row was
 multiplied by zero. That sparsity is precisely the mechanism behind the under-trained "glitch
-tokens" of Chapter 3: a token seen once gets one gradient update, ever.</p>
+tokens" of Chapter 3: a token seen once gets one gradient, ever. (With AdamW its row keeps drifting for a few
+hundred steps on momentum, and weight decay shrinks it every step, so a rare token's row ends up somewhere
+between its random initialisation and zero: never trained, but not untouched either.)</p>
 </div>
 
 <p>The one-hot view is conceptually useful (it explains why an embedding layer <i>is</i> a linear layer, and
@@ -111,8 +113,8 @@ why gradients flow to exactly one row per token). The lookup view is what actual
 
 <div class="box math-note">
 <span class="t">Consequence: embeddings are sparse to train</span>
-<p style="margin-bottom:0">Each training step only updates the rows for tokens that actually appeared in the
-batch. A token appearing once in 10 billion gets one gradient update, ever — which is precisely the
+<p style="margin-bottom:0">Each training step only computes a <i>gradient</i> for the rows of tokens that
+actually appeared in the batch (the optimizer may still move other rows through momentum and weight decay). A token appearing once in 10 billion gets one gradient, ever — which is precisely the
 mechanism behind the under-trained "glitch tokens" from Chapter 3.</p>
 </div>
 
@@ -391,15 +393,15 @@ problem, and it's much more convincing than reading about it.</p>
 <li><a href="https://arxiv.org/abs/1512.03385">He et al. 2015 — Deep Residual Learning</a> — the original ResNet paper.</li>
 <li><a href="https://arxiv.org/abs/1608.05859">Press &amp; Wolf 2016 — Using the Output Embedding to Improve Language Models</a> — the weight-tying result.</li>
 <li><a href="https://www.lesswrong.com/posts/AcKRB8wDpdaN6v6ru/interpreting-gpt-the-logit-lens">nostalgebraist — the logit lens</a></li>
-<li>Companion notebook: <code>notebooks/04_embeddings.ipynb</code></li>
+<li>Companion notebook: not written yet (planned as <code class="planned">notebooks/04_embeddings.ipynb</code>)</li>
 </ul>
 
 </main>
 
-<script src="assets/chapters.js?v=24"></script>
-<script src="assets/course.js?v=24"></script>
-<script src="assets/viz.js?v=24"></script>
-<script src="assets/axes.js?v=24"></script>
+<script src="assets/chapters.js?v=26"></script>
+<script src="assets/course.js?v=26"></script>
+<script src="assets/viz.js?v=26"></script>
+<script src="assets/axes.js?v=26"></script>
 <script>initChapter("04");</script>
 </body>
 </html>

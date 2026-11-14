@@ -6,7 +6,7 @@
 <title>Ch 10 — The Backward Pass, Derived</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=24">
+<link rel="stylesheet" href="assets/style.css?v=26">
 </head>
 <body>
 <main>
@@ -18,7 +18,7 @@ a transformer by hand — softmax, cross-entropy, RMSNorm, attention — and che
 autograd. After this you can implement a backward pass, debug a wrong one, and read a CUDA kernel.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the forward attention you are about to differentiate<br><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; RMSNorm and the residual<br><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; where these gradients get used<div class="sep"></div><span class="k">Leads to</span><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; why the backward pass can recompute tiles<div class="sep"></div><span class="k">Why this chapter</span>The layer under "autograd handles it". Nothing here is optional if you want to work below the framework.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the forward attention you are about to differentiate<br><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; RMSNorm and the residual<div class="sep"></div><span class="k">Leads to</span><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; where these gradients get used<br><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; why the backward pass can recompute tiles<div class="sep"></div><span class="k">Why this chapter</span>The layer under "autograd handles it". Nothing here is optional if you want to work below the framework.</div>
 
 <div class="box intuition">
 <span class="t">The one idea in this chapter</span>
@@ -452,15 +452,15 @@ the difference between a number and <code>inf</code>.</li>
 <li><a href="https://www.youtube.com/watch?v=VMj-3S1tku0">Karpathy — building micrograd</a> — autograd from nothing, in 100 lines.</li>
 <li><a href="https://arxiv.org/abs/2205.14135">Dao et al. 2022 — FlashAttention</a>, Appendix B, for the tiled backward pass.</li>
 <li><a href="https://arxiv.org/abs/1502.01852">He et al. 2015</a> — where the variance argument behind initialisation is made.</li>
-<li>Companion notebook: <code>notebooks/10_backprop.ipynb</code></li>
+<li>Companion notebook: not written yet (planned as <code class="planned">notebooks/10_backprop.ipynb</code>)</li>
 </ul>
 
 </main>
 
-<script src="assets/chapters.js?v=24"></script>
-<script src="assets/course.js?v=24"></script>
-<script src="assets/viz.js?v=24"></script>
-<script src="assets/axes.js?v=24"></script>
+<script src="assets/chapters.js?v=26"></script>
+<script src="assets/course.js?v=26"></script>
+<script src="assets/viz.js?v=26"></script>
+<script src="assets/axes.js?v=26"></script>
 <script>initChapter("10");</script>
 </body>
 </html>

@@ -6,7 +6,7 @@
 <title>Ch 9 — Whole Architectures + End-to-End Shape Trace</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=24">
+<link rel="stylesheet" href="assets/style.css?v=26">
 </head>
 <body>
 <main>
@@ -94,7 +94,7 @@ d_model=512, n_head=8, d_head=64, d_ff=1376, n_layer=6</code>. Step through ever
 {"name":"MLP sublayer","shape":"(2,6,512) → (2,6,1376) → (2,6,512)","op":"SwiGLU: 3 × Linear","params":"2.11 M","why":"norm → expand to d_ff=1376 through gate and up → SiLU(gate) * up → project back down. Every token processed independently; no cross-token interaction here at all. Then residual add."},
 {"name":"× 6 layers","shape":"(2, 6, 512)","op":"repeat blocks 2..6","params":"~19 M total","why":"Identical shape at every layer. Depth is a LOOP over the same shape, not an axis of the tensor. Layer 6 reads everything layers 1–5 wrote."},
 {"name":"Final norm + LM head","shape":"(2, 6, 32000)","op":"RMSNorm → Linear(512, 32000)","params":"16.4 M","why":"Pre-LN means the stream was never normalised, so a final norm is REQUIRED. Then project to vocabulary: one score per possible next token, at every position. Note the tensor just got 62× bigger than the residual stream."},
-{"name":"Cross-entropy loss","shape":"() scalar","op":"F.cross_entropy(logits[:,:-1].reshape(-1,32000), targets[:,1:].reshape(-1))","why":"Flatten (B,T) into one big batch of 10 predictions (we drop the last position, which has no target). The result is one number — and every one of the ~53 M parameters gets a gradient from it."}
+{"name":"Cross-entropy loss","shape":"() scalar","op":"F.cross_entropy(logits[:,:-1].reshape(-1,32000), targets[:,1:].reshape(-1))","why":"Flatten (B,T) into one big batch of 10 predictions (we drop the last position, which has no target). The result is one number — and every one of the ~52 M parameters gets a gradient from it."}
 ]</script>
 </div>
 
@@ -240,7 +240,11 @@ with depth. That second detail is genuinely important and often omitted — see 
 
 # GPT-2 small: C=768, F=3072, L=12, V=50257, GELU MLP, tied
 count_params(Config(768, 3072, 12, 50257), tied=True, swiglu=False)
-# 124,439,808  ≈ the famous "124M"  ✓
+# 123,551,232. The famous 124,439,808 (exactly, to the parameter) adds three
+# things GPT-2 has and this modern recipe does not:
+#   learned position table 1024 × 768          =    786,432
+#   biases on qkv, proj, fc, fc-proj (× 12)     =     82,944
+#   LayerNorm biases (2 per block + final)       =     19,200
 </code></pre>
 
 <div class="box intuition">
@@ -338,7 +342,7 @@ per layer                                  = 218,112,000
 TOTAL                                      ≈ 8,030,261,248  ≈ 8.03 B   ✓</code></pre>
 <p style="margin-bottom:0">KV cache: <code>2 × 8 heads × 128 dim × 2 bytes = 4096 bytes per token per
 layer</code>, × 32 layers = <b>128 KB per token</b>. At 128k context that's <b>16 GB</b> for a single
-sequence — more than the 8B model's own weights.</p>
+sequence — as much memory as the 8B model's own weights in bf16.</p>
 </div></details>
 </div></div>
 
@@ -353,10 +357,10 @@ sequence — more than the 8B model's own weights.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=24"></script>
-<script src="assets/course.js?v=24"></script>
-<script src="assets/viz.js?v=24"></script>
-<script src="assets/axes.js?v=24"></script>
+<script src="assets/chapters.js?v=26"></script>
+<script src="assets/course.js?v=26"></script>
+<script src="assets/viz.js?v=26"></script>
+<script src="assets/axes.js?v=26"></script>
 <script>initChapter("09");</script>
 </body>
 </html>

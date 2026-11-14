@@ -312,6 +312,34 @@ for (const file of ["index.html", ...manifestFiles]) {
   dom.window.close();
 }
 
+/* ---- CONTENT INTEGRITY: the book must not promise what does not exist ----
+   13 chapters once pointed at companion notebooks that were never written, and
+   Ch 10 "built on" Ch 11. A reference to a repo file must resolve, unless it is
+   explicitly marked as planned (<code class="planned">). Links between pages
+   must resolve. "Builds on" may only point backwards. */
+{
+  console.log("\n=== CONTENT INTEGRITY ==============================");
+  const COURSE = ROOT, REPO = path.join(ROOT, "..");
+  const names = new Set(fs.readdirSync(COURSE).filter(f => f.endsWith(".html")));
+  const missing = [], broken = [], forward = [];
+  for (const f of [...names].sort()) {
+    const s = fs.readFileSync(path.join(COURSE, f), "utf8");
+    const unplanned = s.replace(/<code class="planned">[^<]*<\/code>/g, "");
+    for (const m of unplanned.matchAll(/(notebooks\/[\w\-.]+\.ipynb|tfs\/[\w\-.]+\.py|tests\/[\w\-.]+\.py)/g))
+      if (!fs.existsSync(path.join(REPO, m[1]))) missing.push(f + " -> " + m[1]);
+    for (const m of s.matchAll(/href="([^"#:]+\.html)/g))
+      if (!names.has(m[1])) broken.push(f + " -> " + m[1]);
+    const me = /^ch(\d\d)/.exec(f), b = /<span class="k">Builds on<\/span>([\s\S]*?)<div class="sep">/.exec(s);
+    if (me && b) for (const m of b[1].matchAll(/ch(\d\d)-/g))
+      if (+m[1] >= +me[1]) forward.push(f + " builds on ch" + m[1]);
+  }
+  ok(!missing.length, "every referenced repo file exists (or is marked planned)", missing.slice(0, 4).join(", "));
+  ok(!broken.length, "every link between pages resolves", broken.slice(0, 4).join(", "));
+  ok(!forward.length, "'Builds on' only points to earlier chapters", forward.join(", "));
+  const planned = [...names].filter(f => /class="planned"/.test(fs.readFileSync(path.join(COURSE, f), "utf8")));
+  console.log(`  note  ${planned.length} chapters still have a planned (unwritten) companion notebook`);
+}
+
 console.log(`\n${fail === 0 ? "ALL CHECKS PASSED" : fail + " CHECK(S) FAILED"}`);
 process.exit(fail ? 1 : 0);
 })();

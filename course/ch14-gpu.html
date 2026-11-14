@@ -6,7 +6,7 @@
 <title>Ch 14 — The GPU: Memory, Tensor Cores, and the Roofline</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=24">
+<link rel="stylesheet" href="assets/style.css?v=26">
 </head>
 <body>
 <main>
@@ -213,7 +213,7 @@ Hopper, the bf16/fp16 instruction has shape:</p>
 free, and cannot turn it off.</p>
 
 <p>Any dimension that is not a multiple of the tile is <b>padded to one</b>, and you pay full price for
-the padding. So <span class="math">d_{head}</span> should be a multiple of 16. But that alone would
+the padding. So <span class="math">d<sub>head</sub></span> should be a multiple of 16. But that alone would
 permit 48, 80, 96 — and you never see those. The sharper constraint is the memory system:</p>
 
 <div class="example">
@@ -225,7 +225,7 @@ less; a request for 1 byte still moves 32.
 </div></div>
 
 <div class="step"><div class="i">2</div><div>
-<b>One head's slice of a row is <span class="math">d_{head}</span> values &times; 2 bytes.</b> For that
+<b>One head's slice of a row is <span class="math">d<sub>head</sub></span> values &times; 2 bytes.</b> For that
 slice to sit in whole cache lines with no waste:
 <pre style="margin:.4rem 0"><code class="nohl">d_head    bytes    cache lines
    32        64      0.50   ragged - two heads share a line
@@ -239,7 +239,7 @@ slice to sit in whole cache lines with no waste:
 
 <div class="step"><div class="i">3</div><div>
 <b>Only multiples of 64 are clean</b>, and 64/128 are the two that also keep
-<span class="math">\sqrt{d_{head}}</span> in a sensible range for attention
+<span class="math">√d<sub>head</sub></span> in a sensible range for attention
 (<a href="ch05-attention.html">Ch&nbsp;05</a>). Hence: essentially every production model uses 64 or 128,
 and FlashAttention kernels are compiled as separate template instantiations for exactly those values.
 </div></div>
@@ -248,7 +248,7 @@ and FlashAttention kernels are compiled as separate template instantiations for 
 <div class="box math-note">
 <span class="t">A number you have seen before, now explained</span>
 <p style="margin-bottom:0">Whenever a config says <code>d_model=4096, n_head=32</code>, that is
-<span class="math">d_{head} = 128</span>. When it says <code>d_model=768, n_head=12</code>, that is
+<span class="math">d<sub>head</sub> = 128</span>. When it says <code>d_model=768, n_head=12</code>, that is
 <span class="math">64</span>. It looks like a modelling choice. It is a <b>cache-line choice</b> that has
 been stable since 2018 and will stay stable as long as the line is 128 bytes.</p>
 </div>
@@ -271,7 +271,7 @@ the hardware merges the 32 addresses into as few 128-byte transactions as it can
 <p style="margin-bottom:0">A strided access pattern moves the same <i>useful</i> bytes but consumes up to
 32× the bandwidth — and you already know bandwidth is the binding constraint. This is the real reason
 <code>.contiguous()</code> appears after transposes in attention code, and why the
-<a href="ch06-mha.html">reshape dance</a> is written to keep <span class="math">d_{head}</span> as the
+<a href="ch06-mha.html">reshape dance</a> is written to keep <span class="math">d<sub>head</sub></span> as the
 <b>last, fastest-varying axis</b>: so that threads reading across a head's features read consecutive
 addresses. <b>The axis order in your tensor is a bandwidth decision.</b></p>
 </div>
@@ -373,7 +373,7 @@ operations that do essentially no arithmetic?</p>
     # warm up first, then time several iterations
     achieved = 2 * n**3 / elapsed_seconds</code></pre>
 <p>The curve should rise and then flatten. <b>The knee is your machine's ridge point.</b> Compare where
-it lands to <span class="math">n = 3 \times \text{ridge}</span> predicted in §14.2. A CPU's ridge is far
+it lands to <span class="math">n = 3 × ridge</span> predicted in §14.2. A CPU's ridge is far
 lower than a GPU's — explain why in terms of the two numbers that define it.</p>
 </div></div>
 
@@ -384,7 +384,7 @@ lower than a GPU's — explain why in terms of the two numbers that define it.</
 <ol>
 <li>The decode batch size at which it becomes compute-bound.</li>
 <li>The KV cache size per sequence at 8192 context, with 8 KV heads and
-<span class="math">d_{head} = 128</span> (formula in <a href="ch15-kvcache.html">Ch&nbsp;15</a>).</li>
+<span class="math">d<sub>head</sub> = 128</span> (formula in <a href="ch15-kvcache.html">Ch&nbsp;15</a>).</li>
 <li>Whether the batch from (1) actually <i>fits</i> in the leftover HBM after 140 GB of weights.</li>
 </ol>
 <p>If it does not fit, you have just derived — from arithmetic alone — the reason GQA, MLA and
@@ -409,15 +409,15 @@ faster overall, and connect that to the coalescing table in §14.5.</p>
 <li><a href="https://docs.nvidia.com/cuda/parallel-thread-execution/">PTX ISA — <code>mma</code> instructions</a> — the actual tile shapes, if you want to confirm <code>m16n8k16</code> rather than take it on trust.</li>
 <li><a href="https://horace.io/brrr_intro.html">Horace He — Making Deep Learning Go Brrrr From First Principles</a> — the clearest short treatment of compute vs memory vs overhead.</li>
 <li><a href="https://arxiv.org/abs/2205.14135">Dao et al. 2022 — FlashAttention</a> — §2 is a worked example of reasoning at this level.</li>
-<li>Companion notebook: <code>notebooks/14_gpu.ipynb</code></li>
+<li>Companion notebook: not written yet (planned as <code class="planned">notebooks/14_gpu.ipynb</code>)</li>
 </ul>
 
 </main>
 
-<script src="assets/chapters.js?v=24"></script>
-<script src="assets/course.js?v=24"></script>
-<script src="assets/viz.js?v=24"></script>
-<script src="assets/axes.js?v=24"></script>
+<script src="assets/chapters.js?v=26"></script>
+<script src="assets/course.js?v=26"></script>
+<script src="assets/viz.js?v=26"></script>
+<script src="assets/axes.js?v=26"></script>
 <script>initChapter("14");</script>
 </body>
 </html>

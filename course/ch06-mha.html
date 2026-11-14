@@ -6,7 +6,7 @@
 <title>Ch 6 — Multi-Head Attention: The Reshape Dance</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=24">
+<link rel="stylesheet" href="assets/style.css?v=26">
 </head>
 <body>
 <main>
@@ -267,7 +267,7 @@ class MultiHeadAttention(nn.Module):
   </div>
   <div class="expl"><b>Same.</b> W_q is <code><span class="shp">(<b data-axis="feat">d_model</b>, <b data-axis="feat">d_model</b>)</span></code> either way — you're partitioning
   its output, not adding to it. The <code>T×T</code> score matrices total
-  <code>12 × T × 64</code> vs <code>1 × T × 768</code> of contraction work: identical. Multi-head attention
+  <code>12 × T² × 64</code> vs <code>1 × T² × 768</code> of contraction work: identical. Multi-head attention
   is free.</div>
 </div>
 <div class="qitem" data-answer="2">
@@ -412,10 +412,10 @@ importantly, a <b>4× reduction in KV cache</b>. Chapter 16.</li>
 
 </main>
 
-<script src="assets/chapters.js?v=24"></script>
-<script src="assets/course.js?v=24"></script>
-<script src="assets/viz.js?v=24"></script>
-<script src="assets/axes.js?v=24"></script>
+<script src="assets/chapters.js?v=26"></script>
+<script src="assets/course.js?v=26"></script>
+<script src="assets/viz.js?v=26"></script>
+<script src="assets/axes.js?v=26"></script>
 <script>initChapter("06");</script>
 </body>
 </html>

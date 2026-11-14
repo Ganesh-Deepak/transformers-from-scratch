@@ -1,0 +1,169 @@
+# Content audit — Transformers From Scratch (November 2026)
+
+Read as a book for a working AI engineer: does each chapter explain, in order, with
+every claim checkable, and is it complete and current? Each entry gives a verdict,
+what was **fixed in this pass**, and what is **missing**, ordered by value.
+
+Verdicts: **A** worth the read as is · **B** solid, needs the listed additions ·
+**C** too thin for its importance, needs a rewrite to the Ch 0 / Ch 20 standard.
+
+## Site-wide findings (fixed and now enforced by tests)
+
+| Finding | Fix | Now enforced by |
+|---|---|---|
+| 13 chapters promised a companion notebook that did not exist (03, 04, 07, 08, 10, 11, 13, 14, 18, 19, 21, 23, 25) | Marked as planned (`<code class="planned">`) until written | `check_ui.js` CONTENT INTEGRITY: every referenced repo file must exist or be marked planned |
+| Ch 10 "built on" Ch 11 | Moved to "Leads to" | `check_ui.js`: "Builds on" may only point backwards |
+| Ch 20 (MoE) quoted a nonexistent notebook and had a wrong aux-loss-free code sample | Chapter rewritten; `tfs/moe.py`, 9 tests, `notebooks/20_moe.ipynb` | `tests/test_tfs.py`, `tests/run_notebooks.py` |
+
+**The standard to hold every chapter to** (what Ch 0, Ch 12 and the new Ch 20 do):
+every number in the text is computed by code that is in the repo and asserted in a test or
+notebook; each chapter has a "whole chapter in N sentences" box, worked examples with every
+number shown, 3+ quiz questions per major section, and exercises that include at least one
+systems/cost estimate, one implementation and one "predict, then measure".
+
+## Chapter by chapter
+
+### Ch 00 · Numbers in a Machine — **A**
+Written to the standard in October 2026 (8.1k words, 12 exercises, numfmt-tested). No action.
+
+### Ch 01 · Tensors, Shapes — **A−**
+Excellent pacing; strides, view vs reshape, and the memory arithmetic are exactly right for
+the audience. Fact-checked: Llama-3-8B untied embeddings, memory sums.
+Missing, by value:
+1. `expand` vs `repeat` (stride-0 views): needed for GQA's `repeat_kv` in Ch 16 and a classic
+   silent memory blow-up.
+2. In-place ops and autograd ("a leaf Variable that requires grad is being used in an in-place
+   operation"), and why views make in-place dangerous.
+3. dtype promotion rules (`int + float`, `bf16 + fp32` → fp32) with the silent-upcast cost.
+4. A "read this real shape trace" exercise from an actual open model's forward pass.
+
+### Ch 02 · Matrix Multiplication — **A−**
+Fixed: the H100 estimate divided by peak FLOP/s while calling it "realistic utilisation"
+(said 10 days on 100 H100s; at ~45% MFU it is ~3 weeks). Clarified that `12·n_layer·d·T²`
+is a training-step figure.
+Missing:
+1. Tensor-core shape alignment (dimensions as multiples of 8/64/128 and why vocab sizes are
+   padded) — the first place a reader meets "shapes affect speed".
+2. Arithmetic intensity of a matmul in one paragraph, forward-linked to Ch 14.
+3. The FLOP count of a full transformer layer derived from its matmuls (2·12·d² per token
+   for attention + MLP projections), connecting 2.5 to Ch 9's parameter count.
+
+### Ch 20 · Mixture of Experts — rewritten, **A**
+2.1k → ~7.5k words. New: three router types and their equivalence, the top-1 zero-gradient
+trap, sorted dispatch / grouped GEMM, capacity and measured drop rates, aux loss derived,
+z-loss, global-batch balancing, DeepSeek-V3 bias rule (code corrected), expert choice and why
+it breaks causality, fine-grained and shared experts with combinatorics, expert parallelism and
+the all-to-all bill, node-limited routing, the serving fact that batched decode reads most
+experts, training stability, upcycling, a 7-model spec table with arithmetic cross-checks,
+8 quiz questions, 7 exercises. Every number from `tfs/moe.py` / `notebooks/20_moe.ipynb`.
+Next: an interactive router widget (tokens × experts, top-k, load bars, bias balancing).
+
+### Ch 03 · Tokenization — **B+**
+Clear BPE build-up; the hand-traced merges are verified (24 → 19 → 14 → 10 → 9 tokens).
+Fixed: Gemma 3's vocabulary is 262,144, not 256,000; the GPT-2 digit splits are now labelled
+illustrative (they were stated without a reproducible source).
+Missing, by value:
+1. **Streaming detokenization**: a token can end mid-way through a UTF-8 character, so a server
+   must buffer bytes before emitting text. Every inference engineer hits this.
+2. **Special-token injection**: user text containing `<|eot_id|>` must not be encoded as the
+   special id (`allowed_special`/`disallowed_special`); this is a security boundary.
+3. Modern pre-tokenization (GPT-4's `cl100k` pattern, digit groups `\p{N}{1,3}`), Unigram LM
+   vs BPE (SentencePiece), normalisation (NFKC) and why it is lossy.
+4. Vocabulary size as a scaling decision (Tao et al. 2024), with the parameter/sequence-length
+   trade computed rather than asserted; byte-level and tokenizer-free models (BLT, 2024).
+5. Token healing / prompt-boundary effects as a mechanism, not only the trailing-space anecdote.
+6. A measured multilingual fertility table produced by code in the repo.
+
+### Ch 04 · Embeddings and the Residual Stream — **B+**
+The residual-stream section is the best explanation in Part I. Fixed: "a token seen once gets one
+gradient update, ever" was wrong under AdamW (momentum keeps moving the row; weight decay shrinks
+every row every step), which also changes the explanation of glitch tokens.
+Missing:
+1. Embedding scale and initialisation (Gemma multiplies by √d_model; std choices; why the
+   residual stream's norm grows with depth and what pre-norm does about it).
+2. A real logit-lens run with output shown (the chapter promises one in a notebook that does
+   not exist yet), plus the tuned-lens caveat.
+3. Output-side details that matter in practice: final-logit soft-capping (Gemma 2), z-loss on
+   the output softmax, vocab padding to a multiple of 64/128 for tensor cores.
+4. Superposition deserves one worked toy example (Elhage et al. 2022), not one sentence.
+
+### Ch 05 · Attention From Scratch — **A−**
+The best chapter in Part II: the √dₖ derivation, a hand-worked causal pass whose every number
+checks, and four "bugs that don't crash". Fixed a self-contradiction: the complexity table used
+d = 64 for both attention and projections, which made attention 16× *larger* at 1k tokens while
+the text said projections dominate there. Rebuilt per layer for a 7B-class model (crossover at
+T = 6·d_model ≈ 25k). Exercise 5.4 compared training attention FLOPs (12·L·d·T²) with
+forward-only parameter FLOPs (2N·T) and got ~9k; like with like it is ~27k.
+Missing:
+1. Padding and batching: left- vs right-padding for batched generation, and the all-masked-row
+   NaN with a worked fix (the chapter mentions it in one clause).
+2. Modern attention details: QK-norm, logit soft-capping, attention sinks as a mechanism
+   (softmax must sum to 1), with the "off-by-one" softmax and sink tokens.
+3. Numerically stable softmax (subtract the row max) shown here, since Ch 17 depends on it.
+4. Multi-query/causal efficiency of training: one forward pass yields T predictions — derive
+   the cross-entropy over all positions here, not only state it.
+
+### Ch 06 · Multi-Head Attention — **A**
+The reshape-dance treatment (memory positions, the transpose-before-merge bug, the loop-vs-vectorised
+proof test) is excellent. Fixed a quiz explanation that wrote T×64 for T²×64. Small additions:
+per-head QK/OV circuit view (one paragraph), and the fused-QKV weight layout differences between
+codebases (a frequent checkpoint-conversion bug).
+
+### Ch 07 · Position — **A−**
+Clean derivation; the worked RoPE dot product (0.47775 at every offset 2) checks. Fixed exercise
+7.3: the longest wavelengths are 5.4×10⁴ / 2.6×10⁶ tokens (said 5.9×10⁴ / 3.0×10⁶) and 18 / 32
+pairs exceed 4096 tokens (said 21 / 30); added the closed form. Added Llama 4's interleaved NoPE
+global layers. Missing: partial RoPE (rotating only part of the head, used by DeepSeek's decoupled
+RoPE and others), multimodal RoPE (2D/3D, Qwen2-VL M-RoPE), and a measured length-extrapolation
+plot from the repo's own model.
+
+### Ch 08 · The Transformer Block — **A−**
+Checked: 11008 / 22016 / 28672 d_ff arithmetic, GPT-2 12·L·d² sanity check, Llama-2-7B MLP share
+(65%). Strong on norm placement and SwiGLU. Missing:
+1. QK-norm and sandwich norm get one paragraph each; they deserve the same derivation treatment
+   as pre- vs post-LN (logit growth → softmax saturation → loss spikes), with a measured plot.
+2. Parallel attention+MLP blocks (GPT-J, PaLM) and why they fell out of favour.
+3. A per-block FLOP and memory budget (activations saved for backward), linking to Ch 19's
+   activation checkpointing.
+
+### Ch 09 · Whole Architectures + Shape Trace — **A**
+The 20-step shape trace is the course's centrepiece. Fixed: `count_params` was claimed to return
+GPT-2's 124,439,808 but returns 123,551,232; the difference is GPT-2's learned position table
+(786,432), linear biases (82,944) and LayerNorm biases (19,200), now spelled out to the parameter.
+The trace model is ~52M parameters (said ~53M); the 128k-token KV cache of Llama-3-8B equals
+its bf16 weights (said "more than"). Missing: a decoder-only vs encoder-decoder FLOP comparison,
+and modern embedding/reranker models (they are still BERT-shaped; one paragraph on how they are
+trained, contrastively, would help engineers who build retrieval).
+
+### Ch 10 · The Backward Pass — **A**
+Every derivation checks numerically (softmax Jacobian at [1, 2, 0.5]; p − y at [2, 1, 0.1]; the
+RMSNorm correction term and its orthogonality to x; attention backward). Missing, by value:
+1. **Memory of the backward pass**: what is saved for backward per layer, activation memory in
+   bytes for a real config, and activation checkpointing derived here (Ch 11 only tabulates it).
+2. The vocabulary-sized logits: (B·T·V) in fp32 is often the largest tensor in training;
+   chunked / fused cross-entropy (Liger-style) as the fix, with numbers.
+3. Embedding backward as scatter-add, SwiGLU backward, and RoPE backward (the inverse rotation).
+4. Mixed-precision gradients: where bf16 gradients lose information and why reductions run in fp32.
+
+### Ch 11 · Training a Transformer — **A−**
+Real measured runs, the bits-per-byte lesson, and the double-shift case study are excellent.
+Fixed: GPT-3 175B's learning rate was 0.6e-4, not 1.5e-4. Missing, by value (this chapter is
+where a pretraining engineer's job actually lives):
+1. **Data**: deduplication (exact and MinHash), quality filtering (FineWeb-Edu-style classifiers),
+   mixture weights, and annealing on high-quality data at the end of a WSD run. Today the chapter's
+   only data section is packing.
+2. Batch size: critical batch size, why it grows during training, and batch-size warmup.
+3. Hyperparameter transfer (μP) and LR scaling with width, so the reader can pick an LR for a
+   model they cannot afford to sweep.
+4. Throughput: tokens/s and MFU measured on the repo's own model, and how to find the bottleneck.
+5. Loss spikes at scale: z-loss on the output, QK-norm, skipping batches, and restart policy.
+6. Checkpointing and exact resumption (data-loader state, RNG), which every long run needs.
+
+### Ch 13 · Decoding — **B+** (checked; sampler arithmetic correct)
+Missing: best-of-n / self-consistency, stop sequences, batch-dependent nondeterminism, grammar engines (XGrammar) and token-boundary issues in constrained decoding.
+
+### Ch 14 · The GPU — **A−**, one section wrong (NOT YET FIXED)
+Ridge points, decode ceilings and prefill/decode numbers check. **§14.4 is wrong**: it claims d_head is 64/128 because of 128-byte cache lines and that "you never see 48, 80, 96". Counterexamples: Phi-2 (80), Phi-3-mini and GPT-NeoX-20B (96), Gemma (256), DeepSeek-V3 (192 q/k). The real constraints are tensor-core multiples and which head sizes kernels ship tuned versions of. Rewrite §14.4 and its quiz. Fixed this pass: raw LaTeX (`d_{head}`, `\sqrt`) shown literally to readers in Ch 7, 14, 16, 19.
+
+### Not yet audited in this pass
+Ch 15–19, 21–26 (Ch 12 and Ch 0 were rewritten in October). Add a check_ui rule rejecting raw LaTeX outside code.

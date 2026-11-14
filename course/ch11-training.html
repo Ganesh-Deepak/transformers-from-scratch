@@ -6,7 +6,7 @@
 <title>Ch 11 — Training a Transformer</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=24">
+<link rel="stylesheet" href="assets/style.css?v=26">
 </head>
 <body>
 <main>
@@ -161,7 +161,7 @@ opt = torch.optim.AdamW(
 <table>
 <thead><tr><th>Hyperparameter</th><th>Typical LLM value</th><th>Note</th></tr></thead>
 <tbody>
-<tr><td><code>lr</code></td><td>1e-4 … 6e-4</td><td>scales down as models get bigger; ~6e-4 at 125M, ~1.5e-4 at 175B</td></tr>
+<tr><td><code>lr</code></td><td>6e-5 … 6e-4</td><td>scales down as models get bigger; 6e-4 at 125M, 0.6e-4 at 175B (GPT-3's own table)</td></tr>
 <tr><td><code>β₁</code></td><td>0.9</td><td>rarely changed</td></tr>
 <tr><td><code>β₂</code></td><td><b>0.95</b></td><td>lower than PyTorch's 0.999 default — LLM gradients are noisy and 0.999 adapts too slowly</td></tr>
 <tr><td><code>weight_decay</code></td><td>0.1</td><td>on 2-D weights only</td></tr>
@@ -561,15 +561,15 @@ Never trust a loss curve alone — always generate samples and always check loss
 <li><a href="https://github.com/google-research/tuning_playbook">Google — Deep Learning Tuning Playbook</a> — the best practical guide to hyperparameters that exists.</li>
 <li><a href="https://kellerjordan.github.io/posts/muon/">Keller Jordan — Muon optimizer</a></li>
 <li><a href="https://arxiv.org/abs/2404.06395">Hu et al. 2024 — MiniCPM</a> (the WSD schedule)</li>
-<li>Companion notebook: <code>notebooks/11_training.ipynb</code></li>
+<li>Companion notebook: not written yet (planned as <code class="planned">notebooks/11_training.ipynb</code>)</li>
 </ul>
 
 </main>
 
-<script src="assets/chapters.js?v=24"></script>
-<script src="assets/course.js?v=24"></script>
-<script src="assets/viz.js?v=24"></script>
-<script src="assets/axes.js?v=24"></script>
+<script src="assets/chapters.js?v=26"></script>
+<script src="assets/course.js?v=26"></script>
+<script src="assets/viz.js?v=26"></script>
+<script src="assets/axes.js?v=26"></script>
 <script>initChapter("11");</script>
 </body>
 </html>
