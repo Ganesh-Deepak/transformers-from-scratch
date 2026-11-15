@@ -13,30 +13,29 @@
 
 <h1>0 · Numbers in a Machine: int8 to fp32, bf16, fp8 and NVFP4</h1>
 <p class="lead">
-Every number in a neural network is a pattern of bits, and every format — <code>int8</code>,
-<code>fp32</code>, <code>bf16</code>, <code>fp8</code>, <code>NVFP4</code> — is just a different decision
-about what those patterns should mean. This chapter gives you one recipe that works for all of them: from
-nothing but the count of exponent and mantissa bits you will derive the largest value, the smallest value,
-and the precision of any format, including ones that have not been invented yet. Nothing here needs
-anything from later in the course.
+Every number in a neural network is a pattern of bits. The formats (<code>int8</code>,
+<code>fp32</code>, <code>bf16</code>, <code>fp8</code>, <code>NVFP4</code>) are different decisions
+about what those patterns mean. This chapter gives you one recipe for all of them: from the number of
+exponent bits and mantissa bits alone, you will work out the largest value, the smallest value and the
+precision of any format, including formats that do not exist yet. You do not need anything from later in the course.
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span>Nothing — this is the start.<div class="sep"></div><span class="k">Leads to</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; a tensor is a block of these numbers<br><a href="ch12-precision.html">Ch&nbsp;12</a> &mdash; what these formats do to a real training run<br><a href="ch14-gpu.html">Ch&nbsp;14</a> &mdash; why narrower is faster<br><a href="ch18-serving.html">Ch&nbsp;18</a> &mdash; quantization for inference<div class="sep"></div><span class="k">Why this chapter</span>"Which dtype?" is a question you will answer every week. After this you can answer it from first principles instead of from a table.</div>
 
 <div class="box intuition">
 <span class="t">The whole chapter in four sentences</span>
-<p style="margin-bottom:0"><b>N bits give you 2<sup>N</sup> patterns, and a format is a choice of which
-2<sup>N</sup> numbers they name.</b> Integers spread those numbers <i>evenly</i>. Floats spread them
-<i>logarithmically</i>: the <b>exponent picks a bucket</b> (a power of two) and the <b>mantissa picks a slot
-inside the bucket</b>. So exponent bits buy <b>range</b> and mantissa bits buy <b>precision</b>, and every
-format in AI is a different split of the same budget.</p>
+<p style="margin-bottom:0"><b>N bits give you 2<sup>N</sup> patterns, and a format decides which
+2<sup>N</sup> numbers they stand for.</b> Integers spread those numbers <i>evenly</i>. Floats spread them
+<i>logarithmically</i>: the exponent picks a bucket (a power of two) and the mantissa picks a slot
+inside the bucket. Exponent bits buy range and mantissa bits buy precision, and every format used in AI
+splits the same bit budget in a different way.</p>
 </div>
 
 <h2>0.1 · A number format is a budget of bits</h2>
 
-<p>Start with something you can hold in your head: three bits. There are exactly
-<span class="math">2<sup>3</sup> = 8</span> patterns, and that is all you will ever get. The <i>format</i>
-is the decision about what they mean. Here are two different decisions about the same eight patterns:</p>
+<p>Start with something small enough to hold in your head: three bits. That gives exactly
+<span class="math">2<sup>3</sup> = 8</span> patterns, and no more. The <i>format</i>
+decides what they mean. Here are two different decisions for the same eight patterns:</p>
 
 <pre><code class="nohl">pattern   as an unsigned integer     as the magnitude of an fp4 number
   000              0                          0
@@ -49,15 +48,15 @@ is the decision about what they mean. Here are two different decisions about the
   111              7                          6
                    evenly spaced              crowded near 0, sparse far away</code></pre>
 
-<p>Neither is "right". The integer reading has equal gaps of 1 everywhere. The float reading has gaps of
-0.5 near zero and a gap of 2 at the top — <b>small numbers get fine resolution, large numbers get coarse
-resolution</b>. That trade is the entire idea of floating point, and the right-hand column is a real format
-(<code>fp4 e2m1</code>, §0.6) that Blackwell GPUs run matrix multiplies in.</p>
+<p>Neither one is "right". The integer reading has a gap of 1 between every pair of neighbours. The float
+reading has gaps of 0.5 near zero and a gap of 2 at the top, so small numbers get fine resolution and large
+numbers get coarse resolution. That trade is the whole idea of floating point, and the right-hand column is a
+real format (<code>fp4 e2m1</code>, §0.6) that Blackwell GPUs use for matrix multiplies.</p>
 
 <h3>Integers: the easy case, done properly</h3>
 
-<p>An <b>unsigned</b> <span class="math">n</span>-bit integer is just binary: the patterns mean
-<span class="math">0</span> to <span class="math">2<sup>n</sup> &minus; 1</span>. A <b>signed</b>
+<p>An unsigned <span class="math">n</span>-bit integer is plain binary: the patterns mean
+<span class="math">0</span> to <span class="math">2<sup>n</sup> &minus; 1</span>. A signed
 integer uses <b>two's complement</b>: the top bit is worth <span class="math">&minus;2<sup>n&minus;1</sup></span>
 instead of <span class="math">+2<sup>n&minus;1</sup></span>, and every other bit keeps its usual value.</p>
 
@@ -65,8 +64,8 @@ instead of <span class="math">+2<sup>n&minus;1</sup></span>, and every other bit
 <span class="t">Worked example — read int8 patterns with one rule</span>
 
 <div class="step"><div class="i">1</div><div>
-<b>The bit weights of int8</b> are <span class="math">&minus;128, 64, 32, 16, 8, 4, 2, 1</span>. Add up the
-weights of the bits that are 1.
+The bit weights of int8 are <span class="math">&minus;128, 64, 32, 16, 8, 4, 2, 1</span>. To read a pattern,
+add up the weights of the bits that are 1.
 </div></div>
 
 <div class="step"><div class="i">2</div><div>
@@ -78,9 +77,9 @@ weights of the bits that are 1.
 </div></div>
 
 <div class="step"><div class="i">3</div><div>
-<b>So int8 is −128 … 127, not −127 … 127.</b> There are 256 patterns; one of them is zero, which leaves
-an odd 255 for the non-zero numbers, and two's complement gives the spare one to the negative side.
-Quantization schemes usually <i>throw away</i> −128 so the range is symmetric (§0.7).
+<b>So int8 covers −128 … 127, not −127 … 127.</b> There are 256 patterns. One of them is zero, which leaves
+an odd number, 255, for the non-zero values, and two's complement gives the extra one to the negative side.
+Quantization schemes usually <i>throw away</i> −128 so that the range is symmetric (§0.7).
 </div></div>
 </div>
 
@@ -95,11 +94,11 @@ Quantization schemes usually <i>throw away</i> −128 so the range is symmetric 
 
 <div class="box gotcha">
 <span class="t">Integer overflow wraps around, silently</span>
-<p style="margin-bottom:0">In int8, <code>100 + 100</code> is <b>−56</b> — measured with
-<code>torch.int8</code>. The true answer, 200, needs 9 bits; the 9th is dropped, and
+<p style="margin-bottom:0">In int8, <code>100 + 100</code> gives <b>−56</b> (measured with
+<code>torch.int8</code>). The true answer, 200, needs 9 bits; the 9th bit is dropped, and
 <span class="math">200 &minus; 256 = &minus;56</span>. No error is raised. This is why int8 matrix
-multiplies on GPUs accumulate into <b>int32</b>: a dot product of int8 values grows far past 127 long
-before it finishes.</p>
+multiplies on GPUs add their products into <b>int32</b>: a dot product of int8 values grows far past 127 long
+before it is finished.</p>
 </div>
 
 <div class="exercise">
@@ -110,42 +109,42 @@ before it finishes.</p>
 <p><b>P2.</b> How many bits do you need to store every integer from 0 to 1000?</p>
 <details class="reveal"><summary>Answer</summary><div><p><b>10.</b> 9 bits reach 511, 10 bits reach 1023. In general <span class="math">&lceil;log<sub>2</sub>(N+1)&rceil;</span>.</p></div></details>
 <p><b>P3.</b> Write −5 in int8 using the rule "invert every bit of +5, then add 1". Check it with the bit weights.</p>
-<details class="reveal"><summary>Answer</summary><div><p><code>+5 = 00000101</code> → invert → <code>11111010</code> → add 1 → <code>11111011</code>. Check: <span class="math">−128 + 64 + 32 + 16 + 8 + 2 + 1 = −5</span>. ✓ The invert-and-add-one rule and the bit-weight rule are the same thing seen two ways.</p></div></details>
+<details class="reveal"><summary>Answer</summary><div><p><code>+5 = 00000101</code> → invert → <code>11111010</code> → add 1 → <code>11111011</code>. Check: <span class="math">−128 + 64 + 32 + 16 + 8 + 2 + 1 = −5</span>. ✓ The invert-and-add-one rule and the bit-weight rule are the same rule written two ways.</p></div></details>
 <p><b>P4.</b> In int8, what is <code>127 + 1</code>?</p>
-<details class="reveal"><summary>Answer</summary><div><p><b>−128.</b> <code>01111111 + 1 = 10000000</code>, which is the pattern for −128. The number line is a circle.</p></div></details>
+<details class="reveal"><summary>Answer</summary><div><p><b>−128.</b> <code>01111111 + 1 = 10000000</code>, which is the pattern for −128. The integers wrap around like a clock.</p></div></details>
 </div></div>
 
 <h2>0.2 · Floats are scientific notation in binary</h2>
 
-<p>You already know floating point; you just know it in base 10. Avogadro's number is
-<span class="math">+6.022 &times; 10<sup>23</sup></span>: a <b>sign</b>, a <b>significand</b> (6.022) and an
-<b>exponent</b> (23). Change the exponent and the decimal point <i>floats</i> — hence the name. A float
-stores exactly those three things, in base 2:</p>
+<p>You already know floating point in base 10. Avogadro's number is
+<span class="math">+6.022 &times; 10<sup>23</sup></span>: a sign, a significand (6.022) and an
+exponent (23). Change the exponent and the decimal point moves, or <i>floats</i>, which is where the name
+comes from. A float stores exactly those three things, in base 2:</p>
 
 <div class="mathblock">
 value = (&minus;1)<sup><b>S</b></sup> &times; 1.<b>M</b><sub>2</sub> &times; 2<sup>(<b>E</b> &minus; bias)</sup>
 <span class="lbl">S is one bit · E is the exponent field read as an unsigned integer · M is the mantissa bits written after a binary point</span>
 </div>
 
-<p>Two details in that formula do all the work, and both are worth understanding rather than memorising.</p>
+<p>Two details in that formula do most of the work, and both are easier to understand than to memorise.</p>
 
 <h3>The hidden 1</h3>
 
 <p>In decimal you write <span class="math">6.022 &times; 10<sup>23</sup></span>, never
-<span class="math">0.6022 &times; 10<sup>24</sup></span>: you slide the point until exactly one non-zero digit is
-in front of it. In binary the only non-zero digit is <b>1</b>, so after sliding, the number <i>always</i>
-starts with <code>1.</code> — and anything that is always there does not need to be stored. Floats store only
-the digits <i>after</i> the point and assume the 1. That free bit is why fp16, with 10 stored mantissa bits,
-actually has 11 bits of precision.</p>
+<span class="math">0.6022 &times; 10<sup>24</sup></span>: you move the point until exactly one non-zero digit sits
+in front of it. In binary the only non-zero digit is 1, so after the move the number <i>always</i>
+starts with <code>1.</code>, and a digit that is always there does not need storing. Floats store only
+the digits <i>after</i> the point and assume the 1. That free bit is why fp16, which stores 10 mantissa bits,
+has 11 bits of precision.</p>
 
 <h3>The bias</h3>
 
-<p>The exponent has to be negative sometimes (for numbers below 1). Instead of a sign bit, the exponent
-field is stored as an unsigned integer with a fixed offset subtracted — the <b>bias</b>, always
-<span class="math">2<sup>E&minus;1</sup> &minus; 1</span>. For an 8-bit exponent the bias is 127, so the
-field 127 means <span class="math">2<sup>0</sup></span>, 128 means <span class="math">2<sup>1</sup></span>
-and 124 means <span class="math">2<sup>&minus;3</sup></span>. A side benefit: with the sign set aside,
-<b>larger floats have larger bit patterns</b>, so hardware can compare two positive floats as if they were
+<p>The exponent sometimes has to be negative (for numbers below 1). Instead of giving it a sign bit, the format
+stores the exponent as an unsigned integer and subtracts a fixed offset, the <b>bias</b>, which is always
+<span class="math">2<sup>E&minus;1</sup> &minus; 1</span>. For an 8-bit exponent the bias is 127, so a stored
+127 means <span class="math">2<sup>0</sup></span>, 128 means <span class="math">2<sup>1</sup></span>
+and 124 means <span class="math">2<sup>&minus;3</sup></span>. This has a useful side effect: ignoring the sign,
+larger floats have larger bit patterns, so hardware can compare two positive floats as if they were
 integers.</p>
 
 <div class="example">
@@ -192,8 +191,8 @@ is 2 and the stored mantissa is <code>101</code> followed by zeros.
 </div></div>
 </div>
 
-<p>Now do it yourself, with every field visible. Click bits to flip them; type a number to see where it
-lands; switch formats to see the same number squeezed into fewer bits. Try <code>0.1</code> in every format,
+<p>Now try it yourself, with every field visible. Click bits to flip them, type a number to see where it
+lands, and switch formats to see the same number squeezed into fewer bits. Try <code>0.1</code> in every format,
 then press <b>max</b> and <b>min subnormal</b>.</p>
 
 <div data-viz="float" data-format="fp32" data-value="0.1"></div>
@@ -201,7 +200,7 @@ then press <b>max</b> and <b>min subnormal</b>.</p>
 <div class="exercise">
 <div class="eh"><span class="n">0.B</span><span class="ti">Practice — decode and encode by hand</span><span class="lvl">practice</span></div>
 <div class="eb">
-<p>Do these on paper first, then check with the bit explorer. Biases: fp16 15, bf16 and fp32 127, fp8 e4m3 7, fp8 e5m2 15.</p>
+<p>Do these on paper first, then check them with the bit explorer. The biases are: fp16 15, bf16 and fp32 127, fp8 e4m3 7, fp8 e5m2 15.</p>
 <p><b>P1.</b> Decode the fp16 pattern <code>0 10000 1000000000</code>.</p>
 <details class="reveal"><summary>Working</summary><div><p>Exponent <code>10000</code> = 16, minus 15 = <b>1</b>. Significand <span class="math">1.1<sub>2</sub> = 1.5</span>. Value <span class="math">1.5 &times; 2<sup>1</sup> = </span><b>3.0</b>.</p></div></details>
 <p><b>P2.</b> Decode the bf16 pattern <code>1 10000010 0110000</code>.</p>
@@ -215,13 +214,13 @@ then press <b>max</b> and <b>min subnormal</b>.</p>
 <p><b>P6.</b> Encode 10 into fp8 e4m3.</p>
 <details class="reveal"><summary>Working</summary><div><p><span class="math">10 = 1010<sub>2</sub> = 1.010<sub>2</sub> &times; 2<sup>3</sup></span>. Field <span class="math">3 + 7 = 10 =</span> <code>1010</code>, mantissa <code>010</code>. Pattern <code>0 1010 010</code>.</p></div></details>
 <p><b>P7.</b> Why is the bf16 encoding of 0.75 identical to the first 16 bits of its fp32 encoding?</p>
-<details class="reveal"><summary>Answer</summary><div><p>Because bf16 <i>is</i> fp32 with the bottom 16 mantissa bits removed: same sign bit, same 8-bit exponent, same bias 127. When those removed bits are already zero, as they are for 0.75, conversion loses nothing. This is the single most important fact about bf16 and Chapter 12 is built on it.</p></div></details>
+<details class="reveal"><summary>Answer</summary><div><p>Because bf16 <i>is</i> fp32 with the bottom 16 mantissa bits removed: the same sign bit, the same 8-bit exponent and the same bias, 127. When those removed bits are already zero, as they are for 0.75, the conversion loses nothing. Chapter 12 is built on this fact.</p></div></details>
 </div></div>
 
 <h2>0.3 · The mental model: buckets and slots</h2>
 
-<p>This is the picture to keep. Forget the bits for a moment and look at <i>where</i> the representable
-numbers sit on the number line. Below is a toy format with a 2-bit mantissa, so each bucket holds
+<p>This is the picture to remember. Forget the bits for a moment and look at <i>where</i> the numbers a format can
+hold sit on the number line. Below is a toy format with a 2-bit mantissa, so each bucket holds
 <span class="math">2<sup>2</sup> = 4</span> slots:</p>
 
 <figure>
@@ -252,13 +251,13 @@ numbers sit on the number line. Below is a toy format with a 2-bit mantissa, so 
     <text x="40" y="178" fill="var(--ink-3,#775446)" font-size="11">every bucket has the same number of values, and every bucket is twice as wide as the last</text>
   </g>
 </svg>
-<figcaption>Absolute gaps double from bucket to bucket; the <i>relative</i> gap stays the same. That is what "floating point" buys.</figcaption>
+<figcaption>The gap between neighbours doubles from one bucket to the next, while the <i>relative</i> gap stays the same. That is what floating point buys you.</figcaption>
 </figure>
 
-<p>Read three things off that picture, because they are true of <i>every</i> float format:</p>
+<p>Three things can be read off that picture, and they hold for <i>every</i> float format:</p>
 
 <ol>
-<li><b>The exponent chooses a bucket</b> — the interval <span class="math">[2<sup>k</sup>, 2<sup>k+1</sup>)</span>.</li>
+<li><b>The exponent chooses a bucket</b>: the interval <span class="math">[2<sup>k</sup>, 2<sup>k+1</sup>)</span>.</li>
 <li><b>The mantissa cuts that bucket into <span class="math">2<sup>M</sup></span> equal slots.</b> So the gap between neighbours inside bucket <span class="math">k</span> is</li>
 </ol>
 
@@ -268,9 +267,9 @@ gap = 2<sup>k</sup> / 2<sup>M</sup> = 2<sup>k &minus; M</sup>
 </div>
 
 <ol start="3">
-<li><b>Relative precision is constant.</b> Every bucket gets the same number of slots, so the gap is always
-about <span class="math">2<sup>&minus;M</sup></span> of the value. A float is equally precise at 0.001 and at
-1000 <i>in relative terms</i> — and wildly different in absolute terms.</li>
+<li><b>Relative precision is constant.</b> Every bucket has the same number of slots, so the gap is always
+about <span class="math">2<sup>&minus;M</sup></span> of the value. A float is as precise at 0.001 as at
+1000 <i>in relative terms</i>, and very different in absolute terms.</li>
 </ol>
 
 <div class="example">
@@ -283,13 +282,13 @@ about <span class="math">2<sup>&minus;M</sup></span> of the value. A float is eq
 
 <div class="step"><div class="i">2</div><div>
 <b>Find the gap.</b> bf16 has <span class="math">M = 7</span>, so the gap is
-<span class="math">2<sup>8 &minus; 7</sup> = 2</span>. The representable numbers here are 256, 258, 260, …
-— <b>257 does not exist</b>.
+<span class="math">2<sup>8 &minus; 7</sup> = 2</span>. The numbers bf16 can hold here are 256, 258, 260, …,
+so 257 does not exist.
 </div></div>
 
 <div class="step"><div class="i">3</div><div>
-<b>Round.</b> 257 is exactly halfway between 256 and 258. The tie goes to the neighbour whose last mantissa
-bit is 0 (§0.8), which is 256. So <code>256 + 1 == 256</code> in bf16. Measured in PyTorch: ✓. And
+<b>Round.</b> 257 is exactly halfway between 256 and 258. A tie goes to the neighbour whose last mantissa
+bit is 0 (§0.8), which is 256. So <code>256 + 1 == 256</code> in bf16, as PyTorch confirms ✓. And
 <code>256 + 2 == 258</code>, because 2 is a full gap.
 </div></div>
 </div>
@@ -297,11 +296,11 @@ bit is 0 (§0.8), which is 256. So <code>256 + 1 == 256</code> in bf16. Measured
 <div class="box warn">
 <span class="t">A consequence that breaks real optimizers</span>
 <p style="margin-bottom:0">Adam keeps a running average with decay <span class="math">&beta;<sub>2</sub> = 0.999</span>.
-Just below 1 the bucket is <span class="math">[0.5, 1)</span> with bf16 gap
-<span class="math">2<sup>&minus;1&minus;7</sup> = 0.0039</span>, so the representable neighbours are
-<b>0.99609375 and 1.0</b> — and 0.999 is closer to 1.0. <b>In bf16, 0.999 is exactly 1.</b> Measured:
-decaying a bf16 value by 0.999 a thousand times leaves it at <b>1.0</b>, where the true answer is 0.368.
-The average never decays. That is one reason optimizer state lives in fp32
+Just below 1 the bucket is <span class="math">[0.5, 1)</span>, where the bf16 gap is
+<span class="math">2<sup>&minus;1&minus;7</sup> = 0.0039</span>, so the nearest numbers bf16 can hold are
+0.99609375 and 1.0, and 0.999 is closer to 1.0. <b>In bf16, 0.999 is exactly 1.</b> We measured it:
+multiplying a bf16 value by 0.999 a thousand times leaves it at 1.0, where the true answer is 0.368.
+The average never decays. That is one reason optimizer state is kept in fp32
 (<a href="ch12-precision.html">Ch&nbsp;12</a>).</p>
 </div>
 
@@ -316,37 +315,37 @@ The average never decays. That is one reason optimizer state lives in fp32
 fp32   24 bits  ≈ 7.2 digits      fp16   11 bits ≈ 3.3 digits
 bf16    8 bits  ≈ 2.4 digits      e4m3    4 bits ≈ 1.2 digits</code></pre>
 
-<p>And the largest integer below which <i>every</i> integer is exact is
-<span class="math">2<sup>M+1</sup></span> — after that the gap becomes 2. fp32: 16,777,216. fp16: 2,048.
-bf16: just <b>256</b>. Token counts, step counters and indices must never live in bf16.</p>
+<p>The largest integer below which <i>every</i> integer is exact is
+<span class="math">2<sup>M+1</sup></span>; above it the gap becomes 2. For fp32 that is 16,777,216, for fp16 2,048,
+and for bf16 only <b>256</b>. Token counts, step counters and indices must never be stored in bf16.</p>
 
 <div class="exercise">
 <div class="eh"><span class="n">0.C</span><span class="ti">Practice — buckets and gaps</span><span class="lvl">practice</span></div>
 <div class="eb">
 <p><b>P1.</b> What is the gap between neighbouring fp16 numbers near 1000? So what does fp16 store for 1000.3?</p>
-<details class="reveal"><summary>Working</summary><div><p>1000 is in <span class="math">[512, 1024)</span>, <span class="math">k = 9</span>, <span class="math">M = 10</span>: gap <span class="math">2<sup>9&minus;10</sup> = 0.5</span>. Neighbours are 1000 and 1000.5; 1000.3 is closer to <b>1000.5</b>. (Measured ✓.)</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p>1000 is in <span class="math">[512, 1024)</span>, so <span class="math">k = 9</span> and <span class="math">M = 10</span>, giving a gap of <span class="math">2<sup>9&minus;10</sup> = 0.5</span>. The neighbours are 1000 and 1000.5, and 1000.3 is closer to <b>1000.5</b> (measured ✓).</p></div></details>
 <p><b>P2.</b> The same question for bf16 near 100, storing 100.3.</p>
-<details class="reveal"><summary>Working</summary><div><p>100 is in <span class="math">[64, 128)</span>, <span class="math">k = 6</span>, <span class="math">M = 7</span>: gap <span class="math">2<sup>&minus;1</sup> = 0.5</span>. 100.3 → <b>100.5</b>. bf16 at 100 is exactly as coarse as fp16 at 1000: bf16 has three fewer mantissa bits, and the two buckets, <span class="math">[64, 128)</span> and <span class="math">[512, 1024)</span>, are exactly <span class="math">2<sup>3</sup></span> apart.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p>100 is in <span class="math">[64, 128)</span>, so <span class="math">k = 6</span> and <span class="math">M = 7</span>, giving a gap of <span class="math">2<sup>&minus;1</sup> = 0.5</span>. 100.3 → <b>100.5</b>. bf16 at 100 is exactly as coarse as fp16 at 1000: bf16 has three fewer mantissa bits, and the two buckets, <span class="math">[64, 128)</span> and <span class="math">[512, 1024)</span>, are exactly <span class="math">2<sup>3</sup></span> apart.</p></div></details>
 <p><b>P3.</b> In fp32, is <code>1e8 + 1 == 1e8</code>?</p>
-<details class="reveal"><summary>Working</summary><div><p><span class="math">10<sup>8</sup></span> is in <span class="math">[2<sup>26</sup>, 2<sup>27</sup>)</span> (2<sup>26</sup> ≈ 6.7e7). Gap <span class="math">2<sup>26&minus;23</sup> = 8</span>. Adding 1 moves less than half a gap, so <b>yes</b>, it is unchanged. fp32 is not "exact for integers".</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p><span class="math">10<sup>8</sup></span> is in <span class="math">[2<sup>26</sup>, 2<sup>27</sup>)</span> (2<sup>26</sup> ≈ 6.7e7), where the gap is <span class="math">2<sup>26&minus;23</sup> = 8</span>. Adding 1 moves the value by less than half a gap, so <b>yes</b>, it stays the same. fp32 is not exact for all integers.</p></div></details>
 <p><b>P4.</b> List every e4m3 value in <span class="math">[1, 2)</span>. What is the gap in <span class="math">[8, 16)</span>?</p>
-<details class="reveal"><summary>Working</summary><div><p><span class="math">M = 3</span> gives 8 slots: <b>1, 1.125, 1.25, 1.375, 1.5, 1.625, 1.75, 1.875</b>. In <span class="math">[8, 16)</span>, <span class="math">k = 3</span>: gap <span class="math">2<sup>3&minus;3</sup> = 1</span>, so 8, 9, …, 15. e4m3 cannot store 8.5.</p></div></details>
-<p><b>P5.</b> Which is more precise for the number 0.001 — fp16 or bf16? And for 1e-6?</p>
-<details class="reveal"><summary>Working</summary><div><p>For 0.001, fp16: both formats keep a full mantissa there, and fp16 has 10 bits to bf16's 7, so fp16's gap is 8× finer. For 1e-6 the answer flips in an interesting way: 1e-6 is below fp16's smallest <i>normal</i> number (6.1e-5), so fp16 stores it as a <b>subnormal</b> (§0.4) with only a few significant bits — measured, fp16 gives 1.0133e-6, a 1.3% error. bf16 still has its full 8 bits there.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p><span class="math">M = 3</span> gives 8 slots: <b>1, 1.125, 1.25, 1.375, 1.5, 1.625, 1.75, 1.875</b>. In <span class="math">[8, 16)</span>, <span class="math">k = 3</span>, so the gap is <span class="math">2<sup>3&minus;3</sup> = 1</span>: 8, 9, …, 15. e4m3 cannot store 8.5.</p></div></details>
+<p><b>P5.</b> Which is more precise for the number 0.001, fp16 or bf16? And for 1e-6?</p>
+<details class="reveal"><summary>Working</summary><div><p>For 0.001 it is fp16: both formats have a full mantissa there, and fp16 has 10 bits to bf16's 7, so fp16's gap is 8× finer. For 1e-6 the answer flips. 1e-6 is below fp16's smallest <i>normal</i> number (6.1e-5), so fp16 stores it as a <b>subnormal</b> (§0.4) with only a few significant bits. We measured it: fp16 gives 1.0133e-6, a 1.3% error. bf16 still has all 8 of its bits there.</p></div></details>
 <p><b>P6.</b> Why is "bf16 is less precise than fp16" true but incomplete?</p>
-<details class="reveal"><summary>Answer</summary><div><p>Inside fp16's range, fp16 is always 8× more precise. But fp16's range ends at 65504 and its normal range starts at 6.1e-5, while bf16 covers 1.2e-38 to 3.4e38. Precision is the gap <i>within</i> a bucket; range is <i>how many buckets</i> you have. They are bought with different bits.</p></div></details>
+<details class="reveal"><summary>Answer</summary><div><p>Within fp16's range, fp16 is always 8× more precise. But fp16's range ends at 65504 and its normal range starts at 6.1e-5, while bf16 covers 1.2e-38 to 3.4e38. Precision is the gap <i>within</i> a bucket; range is <i>how many buckets</i> a format has. Different bits pay for each.</p></div></details>
 </div></div>
 
 <div class="quiz" data-title="Checkpoint 1 — the mental model">
 <div class="qitem" data-answer="2">
-  <div class="qq">In a float format, what does adding one more <b>mantissa</b> bit do?</div>
+  <div class="qq">In a float format, what does one more <b>mantissa</b> bit do?</div>
   <div class="opts">
     <div class="opt">Doubles the largest representable value</div>
     <div class="opt">Adds one more power-of-two bucket at each end of the range</div>
     <div class="opt">Halves the gap between neighbouring values in every bucket</div>
     <div class="opt">Adds a second hidden bit</div>
   </div>
-  <div class="expl"><b>Halves every gap.</b> The gap is <span class="math">2<sup>k&minus;M</sup></span>, so <span class="math">M + 1</span> halves it everywhere — that is precision. Options A and B describe what an extra <i>exponent</i> bit buys: roughly squaring the range by doubling the number of buckets. The hidden bit is always exactly one.</div>
+  <div class="expl"><b>It halves every gap.</b> The gap is <span class="math">2<sup>k&minus;M</sup></span>, so <span class="math">M + 1</span> halves it everywhere, which is what precision means. Options A and B describe what one more <i>exponent</i> bit buys: about twice as many buckets, which roughly squares the range. The hidden bit is always exactly one.</div>
 </div>
 <div class="qitem" data-answer="1">
   <div class="qq">bf16 near 4096: what is the gap between neighbours?</div>
@@ -356,26 +355,26 @@ bf16: just <b>256</b>. Token counts, step counters and indices must never live i
     <div class="opt">0.0078</div>
     <div class="opt">4096 × 2<sup>−10</sup> = 4</div>
   </div>
-  <div class="expl"><b>32.</b> 4096 = 2<sup>12</sup>, so <span class="math">k = 12</span>, and bf16 has <span class="math">M = 7</span>: gap <span class="math">2<sup>12&minus;7</sup> = 32</span>. Option C is bf16's epsilon — the gap at 1, not at 4096. Option D used fp16's 10 mantissa bits.</div>
+  <div class="expl"><b>32.</b> 4096 = 2<sup>12</sup>, so <span class="math">k = 12</span>, and bf16 has <span class="math">M = 7</span>, giving a gap of <span class="math">2<sup>12&minus;7</sup> = 32</span>. Option C is bf16's epsilon, the gap at 1, not at 4096. Option D used fp16's 10 mantissa bits.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">A training script stores the global step count in a bf16 tensor. What happens around step 300?</div>
   <div class="opts">
-    <div class="opt">Nothing — bf16's range goes to 10<sup>38</sup></div>
+    <div class="opt">Nothing happens, because bf16's range goes to 10<sup>38</sup></div>
     <div class="opt">It overflows to infinity</div>
     <div class="opt">It becomes NaN</div>
     <div class="opt">Incrementing by 1 stops working: above 256 the gap is 2, so step + 1 rounds back</div>
   </div>
-  <div class="expl"><b>The counter freezes.</b> Range is not the issue; precision is. Above <span class="math">2<sup>M+1</sup> = 256</span> bf16's gap is 2, and 256 + 1 rounds to 256 forever. A learning-rate schedule driven by that counter would silently stop moving. Options A–C confuse range with precision.</div>
+  <div class="expl"><b>The counter freezes.</b> The problem is precision, not range. Above <span class="math">2<sup>M+1</sup> = 256</span> bf16's gap is 2, so 256 + 1 rounds to 256 forever. A learning-rate schedule driven by that counter would stop moving without any error. Options A to C mix up range and precision.</div>
 </div>
 </div>
 
 <h2>0.4 · Deriving any format's range yourself</h2>
 
-<p>Here is the promise of the chapter. Give me only <span class="math">E</span> (exponent bits) and
+<p>Here is what this chapter promised. Give me only <span class="math">E</span> (exponent bits) and
 <span class="math">M</span> (mantissa bits), and these five formulas produce everything that
-<code>torch.finfo</code> reports. They were checked against PyTorch for fp32, fp16, bf16, e4m3 and e5m2, and
-agree exactly.</p>
+<code>torch.finfo</code> reports. We checked them against PyTorch for fp32, fp16, bf16, e4m3 and e5m2, and
+they agree exactly.</p>
 
 <div class="mathblock">
 bias = 2<sup>E&minus;1</sup> &minus; 1 &nbsp;&nbsp;&nbsp;&nbsp;
@@ -386,13 +385,13 @@ eps = 2<sup>&minus;M</sup>
 <span class="lbl">e<sub>max</sub> = (largest usable exponent field) − bias · in IEEE formats the all-ones field is reserved, so the largest usable field is 2<sup>E</sup> − 2 and e<sub>max</sub> = bias</span>
 </div>
 
-<p>Where each one comes from, in one line each:</p>
+<p>Where each formula comes from:</p>
 
 <ul>
-<li><b>max</b> — the biggest bucket, with every mantissa bit set: <span class="math">1.111…1<sub>2</sub> = 2 &minus; 2<sup>&minus;M</sup></span>.</li>
-<li><b>min normal</b> — the smallest exponent field that still means a normal number is 1, so <span class="math">2<sup>1&minus;bias</sup></span>. (Field 0 is reserved — see below.)</li>
-<li><b>min subnormal</b> — one slot above zero in the bottom bucket: <span class="math">2<sup>1&minus;bias</sup></span> divided into <span class="math">2<sup>M</sup></span> slots.</li>
-<li><b>eps</b> — the gap at 1.0: bucket <span class="math">k = 0</span>, so <span class="math">2<sup>0&minus;M</sup></span>.</li>
+<li><b>max</b>: the largest bucket, with every mantissa bit set: <span class="math">1.111…1<sub>2</sub> = 2 &minus; 2<sup>&minus;M</sup></span>.</li>
+<li><b>min normal</b>: the smallest exponent field that still means a normal number is 1, which gives <span class="math">2<sup>1&minus;bias</sup></span>. (Field 0 is reserved; see below.)</li>
+<li><b>min subnormal</b>: one slot above zero in the bottom bucket, which is <span class="math">2<sup>1&minus;bias</sup></span> divided into <span class="math">2<sup>M</sup></span> slots.</li>
+<li><b>eps</b>: the gap at 1.0. That is bucket <span class="math">k = 0</span>, so <span class="math">2<sup>0&minus;M</sup></span>.</li>
 </ul>
 
 <div class="example">
@@ -404,7 +403,7 @@ eps = 2<sup>&minus;M</sup>
 </div></div>
 <div class="step"><div class="i">2</div><div>
 <b>Max:</b> <span class="math">(2 &minus; 2<sup>&minus;10</sup>) &times; 2<sup>15</sup> = 1.9990234375 &times; 32768 = </span><b>65504</b>.
-That famous, oddly small number is just this.
+That odd-looking limit everyone quotes for fp16 comes straight from this formula.
 </div></div>
 <div class="step"><div class="i">3</div><div>
 <b>Min normal:</b> <span class="math">2<sup>1&minus;15</sup> = 2<sup>&minus;14</sup> &asymp; 6.10 &times; 10<sup>&minus;5</sup></span>.
@@ -417,8 +416,8 @@ That famous, oddly small number is just this.
 <span class="t">Worked example — derive bf16 from (E = 8, M = 7), and see why it is "fp32's range"</span>
 
 <div class="step"><div class="i">1</div><div>
-<b>Bias</b> 127, <span class="math">e<sub>max</sub> = 254 &minus; 127 = 127</span> — identical to fp32, because the
-exponent field is identical.
+<b>Bias</b> 127, <span class="math">e<sub>max</sub> = 254 &minus; 127 = 127</span>, the same as fp32, because the
+exponent field is the same.
 </div></div>
 <div class="step"><div class="i">2</div><div>
 <b>Max:</b> <span class="math">(2 &minus; 2<sup>&minus;7</sup>) &times; 2<sup>127</sup> &asymp; 3.39 &times; 10<sup>38</sup></span>
@@ -426,14 +425,14 @@ exponent field is identical.
 <b>Min normal:</b> <span class="math">2<sup>&minus;126</sup> &asymp; 1.18 &times; 10<sup>&minus;38</sup></span>, the same as fp32.
 </div></div>
 <div class="step"><div class="i">3</div><div>
-<b>Eps:</b> <span class="math">2<sup>&minus;7</sup> = 0.0078125</span>. So bf16 has fp32's range and roughly two
-and a half decimal digits. That one sentence is the whole design.
+<b>Eps:</b> <span class="math">2<sup>&minus;7</sup> = 0.0078125</span>. So bf16 has fp32's range and about two
+and a half decimal digits of precision. That was the design goal.
 </div></div>
 </div>
 
 <h3>The special patterns: zero, subnormals, infinity, NaN</h3>
 
-<p>The two extreme exponent fields are not ordinary buckets. In an IEEE-style format:</p>
+<p>The two exponent fields at the ends are not ordinary buckets. In an IEEE-style format:</p>
 
 <div class="tw"><table>
 <thead><tr><th>exponent field</th><th>mantissa</th><th>meaning</th></tr></thead>
@@ -446,65 +445,65 @@ and a half decimal digits. That one sentence is the whole design.
 </tbody></table></div>
 
 <p><b>Subnormals</b> fill the gap between zero and the smallest normal number with evenly spaced values. They
-use exponent <span class="math">1 &minus; bias</span> rather than <span class="math">0 &minus; bias</span> so
+use the exponent <span class="math">1 &minus; bias</span> rather than <span class="math">0 &minus; bias</span> so
 that they continue smoothly from the bottom normal bucket with the same spacing. The cost is that they lose
-the hidden 1, so a subnormal has <i>fewer</i> significant bits the closer it gets to zero — "gradual
-underflow". Chapter 12 measures what that does to gradients.</p>
+the hidden 1, so a subnormal has <i>fewer</i> significant bits the closer it gets to zero. This is called
+gradual underflow, and Chapter 12 measures what it does to gradients.</p>
 
 <div class="box gotcha">
 <span class="t">Where exactly does a number become zero?</span>
-<p style="margin-bottom:0">Not at the minimum subnormal — at <b>half</b> of it, because rounding picks the
+<p style="margin-bottom:0">Not at the minimum subnormal, but at <b>half</b> of it, because rounding picks the
 nearest value. In fp16 the minimum subnormal is <span class="math">2<sup>&minus;24</sup> &asymp; 5.96 &times; 10<sup>&minus;8</sup></span>,
 so <code>3e-8</code> rounds <i>up</i> to <span class="math">5.96 &times; 10<sup>&minus;8</sup></span> and
-<code>2.5e-8</code> rounds to <b>0</b>. The true flush-to-zero threshold is
-<span class="math">2<sup>&minus;25</sup> &asymp; 2.98 &times; 10<sup>&minus;8</sup></span> (and exactly
-<span class="math">2<sup>&minus;25</sup></span>, a tie, goes to the even neighbour, 0). Both measured in PyTorch.</p>
+<code>2.5e-8</code> rounds to <b>0</b>. The real threshold for flushing to zero is
+<span class="math">2<sup>&minus;25</sup> &asymp; 2.98 &times; 10<sup>&minus;8</sup></span> (exactly
+<span class="math">2<sup>&minus;25</sup></span> is a tie and goes to the even neighbour, 0). Both were measured in PyTorch.</p>
 </div>
 
 <h3>tf32: the format you use without choosing it</h3>
 
-<p>Ampere and later NVIDIA tensor cores have a 19-bit internal format, <b>tf32</b>: 1 sign, 8 exponent, 10
-mantissa. Run it through the formulas — fp32's range (8 exponent bits), fp16's precision (10 mantissa
-bits). Your tensors stay fp32 in memory; the multiply rounds inputs to tf32 and accumulates in fp32. In
-PyTorch it is <b>off by default for matmuls</b>, and <code>torch.set_float32_matmul_precision("high")</code>
-turns it on — usually a large speed-up for an "fp32" model, with fp16-level input rounding.</p>
+<p>NVIDIA tensor cores from Ampere on have a 19-bit internal format, <b>tf32</b>: 1 sign bit, 8 exponent bits
+and 10 mantissa bits. The formulas give it fp32's range (8 exponent bits) and fp16's precision (10 mantissa
+bits). Your tensors stay fp32 in memory; the multiply rounds its inputs to tf32 and adds up the results in fp32.
+PyTorch leaves it <b>off by default for matmuls</b>, and <code>torch.set_float32_matmul_precision("high")</code>
+turns it on. That is usually a large speed-up for an "fp32" model, at the cost of rounding inputs as coarsely as fp16.</p>
 
 <div class="exercise">
 <div class="eh"><span class="n">0.D</span><span class="ti">Practice — derive the range yourself</span><span class="lvl">practice</span></div>
 <div class="eb">
 <p><b>P1.</b> Derive fp64 from <span class="math">E = 11, M = 52</span>: bias, max, min normal, eps.</p>
-<details class="reveal"><summary>Working</summary><div><p>Bias <span class="math">2<sup>10</sup>&minus;1 = 1023</span>. <span class="math">e<sub>max</sub> = 2046 &minus; 1023 = 1023</span>. Max <span class="math">(2&minus;2<sup>&minus;52</sup>)&times;2<sup>1023</sup> &asymp; </span><b>1.80e308</b>. Min normal <span class="math">2<sup>&minus;1022</sup> &asymp; 2.23e-308</span>. Eps <span class="math">2<sup>&minus;52</sup> &asymp; 2.22e-16</span> — matches <code>torch.finfo(torch.float64)</code>.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p>Bias <span class="math">2<sup>10</sup>&minus;1 = 1023</span>. <span class="math">e<sub>max</sub> = 2046 &minus; 1023 = 1023</span>. Max <span class="math">(2&minus;2<sup>&minus;52</sup>)&times;2<sup>1023</sup> &asymp; </span><b>1.80e308</b>. Min normal <span class="math">2<sup>&minus;1022</sup> &asymp; 2.23e-308</span>. Eps <span class="math">2<sup>&minus;52</sup> &asymp; 2.22e-16</span>. All match <code>torch.finfo(torch.float64)</code>.</p></div></details>
 <p><b>P2.</b> Derive fp8 e5m2 from <span class="math">E = 5, M = 2</span> with IEEE rules.</p>
-<details class="reveal"><summary>Working</summary><div><p>Bias 15, <span class="math">e<sub>max</sub> = 30 &minus; 15 = 15</span>. Max <span class="math">(2 &minus; 0.25) &times; 2<sup>15</sup> = 1.75 &times; 32768 = </span><b>57344</b>. Min normal <span class="math">2<sup>&minus;14</sup></span> — the <i>same</i> as fp16, because e5m2 is literally fp16 with 8 mantissa bits removed. Min subnormal <span class="math">2<sup>&minus;16</sup> &asymp; 1.53e-5</span>. Eps 0.25.</p></div></details>
-<p><b>P3.</b> tf32 is <span class="math">E = 8, M = 10</span>. Derive its max and eps. A GPU spec sheet quotes huge "TF32" throughput for fp32 models — what precision are your fp32 inputs actually multiplied at?</p>
-<details class="reveal"><summary>Working</summary><div><p>Max <span class="math">(2&minus;2<sup>&minus;10</sup>)&times;2<sup>127</sup> &asymp; 3.40e38</span> (fp32's range); eps <span class="math">2<sup>&minus;10</sup> &asymp; 9.8e-4</span> (fp16's precision). So the inputs are rounded to about 3.3 decimal digits before the multiply, even though they are stored as fp32 and the result accumulates in fp32. Always ask a "fast fp32" claim which <i>format</i> the multiply actually rounds to.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p>Bias 15, <span class="math">e<sub>max</sub> = 30 &minus; 15 = 15</span>. Max <span class="math">(2 &minus; 0.25) &times; 2<sup>15</sup> = 1.75 &times; 32768 = </span><b>57344</b>. Min normal <span class="math">2<sup>&minus;14</sup></span>, the <i>same</i> as fp16, because e5m2 is fp16 with 8 mantissa bits removed. Min subnormal <span class="math">2<sup>&minus;16</sup> &asymp; 1.53e-5</span>. Eps 0.25.</p></div></details>
+<p><b>P3.</b> tf32 is <span class="math">E = 8, M = 10</span>. Work out its max and eps. A GPU spec sheet quotes huge "TF32" throughput for fp32 models. At what precision are your fp32 inputs actually multiplied?</p>
+<details class="reveal"><summary>Working</summary><div><p>Max <span class="math">(2&minus;2<sup>&minus;10</sup>)&times;2<sup>127</sup> &asymp; 3.40e38</span> (fp32's range); eps <span class="math">2<sup>&minus;10</sup> &asymp; 9.8e-4</span> (fp16's precision). So the inputs are rounded to about 3.3 decimal digits before the multiply, even though they are stored as fp32 and the result is added up in fp32. When someone claims "fast fp32", ask which <i>format</i> the multiply really rounds to.</p></div></details>
 <p><b>P4.</b> What is the smallest positive number that does <i>not</i> become zero in bf16?</p>
-<details class="reveal"><summary>Working</summary><div><p>Min subnormal <span class="math">2<sup>1&minus;127&minus;7</sup> = 2<sup>&minus;133</sup> &asymp; 9.18e-41</span>, so anything above half of that, <span class="math">2<sup>&minus;134</sup> &asymp; 4.6e-41</span>, survives. Compare fp16's <span class="math">2.98 &times; 10<sup>&minus;8</sup></span>: thirty-three orders of magnitude apart.</p></div></details>
-<p><b>P5.</b> Invent a format: 1 sign, 6 exponent, 9 mantissa (16 bits). Derive its max and eps. Is it better than bf16 for gradients?</p>
-<details class="reveal"><summary>Working</summary><div><p>Bias 31, <span class="math">e<sub>max</sub> = 62 &minus; 31 = 31</span>, max <span class="math">&asymp; 2 &times; 2<sup>31</sup> &asymp; 4.3e9</span>, min normal <span class="math">2<sup>&minus;30</sup> &asymp; 9.3e-10</span>, eps <span class="math">2<sup>&minus;9</sup></span>. More precise than bf16 but its floor, 9e-10, is far above the 1e-20-scale gradients deep networks can produce. This is exactly the space of trade-offs the designers of bf16 searched — and they chose range.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p>The minimum subnormal is <span class="math">2<sup>1&minus;127&minus;7</sup> = 2<sup>&minus;133</sup> &asymp; 9.18e-41</span>, so anything above half of that, <span class="math">2<sup>&minus;134</sup> &asymp; 4.6e-41</span>, survives. fp16's floor is <span class="math">2.98 &times; 10<sup>&minus;8</sup></span>: thirty-three orders of magnitude higher.</p></div></details>
+<p><b>P5.</b> Invent a format: 1 sign bit, 6 exponent bits, 9 mantissa bits (16 bits in all). Work out its max and eps. Is it better than bf16 for gradients?</p>
+<details class="reveal"><summary>Working</summary><div><p>Bias 31, <span class="math">e<sub>max</sub> = 62 &minus; 31 = 31</span>, max <span class="math">&asymp; 2 &times; 2<sup>31</sup> &asymp; 4.3e9</span>, min normal <span class="math">2<sup>&minus;30</sup> &asymp; 9.3e-10</span>, eps <span class="math">2<sup>&minus;9</sup></span>. It is more precise than bf16, but its floor, 9e-10, is far above the 1e-20-scale gradients that deep networks can produce. The designers of bf16 weighed exactly these trade-offs, and they chose range.</p></div></details>
 </div></div>
 
 <h2>0.5 · Eight-bit floats: e4m3 and e5m2</h2>
 
-<p>With only 7 bits after the sign, the budget is brutal, so there are two fp8 formats and they split it
-differently. Hopper (H100), Ada and Blackwell GPUs run both natively. Derive them; one of them contains the
-best trick in this chapter.</p>
+<p>With only 7 bits after the sign there is very little to share out, so there are two fp8 formats that split it
+differently. Hopper (H100), Ada and Blackwell GPUs run both in hardware. Work them out; one of them uses a clever
+trick to gain range.</p>
 
 
-<p><b>e5m2</b> (5 exponent, 2 mantissa) follows the IEEE rules, as you derived in practice 0.D: max
-<b>57,344</b>, eps 0.25. It is fp16 with the low 8 mantissa bits deleted, so it inherits fp16's range.</p>
+<p><b>e5m2</b> (5 exponent bits, 2 mantissa bits) follows the IEEE rules, as you worked out in practice 0.D: max
+<b>57,344</b>, eps 0.25. It is fp16 with the low 8 mantissa bits deleted, so it has fp16's range.</p>
 
-<p><b>e4m3</b> (4 exponent, 3 mantissa) is more interesting. Apply the IEEE rules and you get:</p>
+<p><b>e4m3</b> (4 exponent bits, 3 mantissa bits) is more interesting. The IEEE rules give:</p>
 
 <pre><code class="nohl">bias = 2^3 - 1 = 7
 IEEE: largest usable field = 2^4 - 2 = 14  ->  emax = 14 - 7 = 7
       max = (2 - 2^-3) * 2^7 = 1.875 * 128 = 240</code></pre>
 
-<p>But the real e4m3 maxes out at <b>448</b>. The trick: with so few patterns, spending a whole exponent
-field on infinity and NaN is a waste — that is 16 of the 256 codes, one in sixteen. The OCP fp8 standard's e4m3 (PyTorch's
-<code>float8_e4m3fn</code>, "fn" for <i>finite</i>) has <b>no infinity at all</b> and keeps only one NaN
-pattern per sign, <code>S 1111 111</code>. Everything else in the top exponent field becomes ordinary
-numbers:</p>
+<p>But the real e4m3 tops out at <b>448</b>. With so few patterns, spending a whole exponent field on infinity
+and NaN wastes 16 of the 256 codes, one in sixteen. The OCP fp8 standard's e4m3 (PyTorch's
+<code>float8_e4m3fn</code>, where "fn" means <i>finite</i>) has <b>no infinity at all</b> and keeps only one NaN
+pattern per sign, <code>S 1111 111</code>. Every other pattern in the top exponent field becomes an ordinary
+number:</p>
 
 <pre><code class="nohl">e4m3fn: the top field 1111 is usable, except mantissa 111 (that is NaN)
         max = 1.110_2 * 2^(15 - 7) = 1.75 * 256 = 448
@@ -512,16 +511,16 @@ numbers:</p>
 
 <div class="box math-note">
 <span class="t">You just derived a non-IEEE format from first principles</span>
-<p style="margin-bottom:0">The five formulas still hold; only the rule for "largest usable field and mantissa"
-changed. Every new format you meet will be (E, M) plus a statement about which patterns are reserved. That
-is all you need to ask. (AMD's MI300 uses yet another variant, <code>e4m3fnuz</code>: bias 8, no negative
-zero, NaN at <code>1 0000 000</code>, max 240 — measured with <code>torch.float8_e4m3fnuz</code>.)</p>
+<p style="margin-bottom:0">The five formulas still hold; only the rule for the largest usable field and mantissa has
+changed. Every new format you meet will be (E, M) plus a statement of which patterns are reserved, and that
+is all you need to ask about it. (AMD's MI300 uses yet another variant, <code>e4m3fnuz</code>: bias 8, no negative
+zero, NaN at <code>1 0000 000</code>, max 240, measured with <code>torch.float8_e4m3fnuz</code>.)</p>
 </div>
 
-<p>With no infinity, what happens to a number that is too large? It has to go somewhere. PyTorch's cast,
-measured, <b>saturates</b>: <code>500 → 448</code>. Hardware conversion instructions offer both saturating and
-NaN-producing modes, and frameworks choose saturation for fp8 training because one huge activation becoming NaN
-would poison everything downstream.</p>
+<p>With no infinity, a number that is too large has to go somewhere. PyTorch's cast <b>saturates</b>: we measured
+<code>500 → 448</code>. Hardware conversion instructions offer both a saturating mode and a NaN-producing mode, and
+frameworks choose saturation for fp8 training, because a single huge activation turning into NaN would
+spread NaN through everything after it.</p>
 
 <div class="tw"><table>
 <thead><tr><th></th><th>e4m3</th><th>e5m2</th></tr></thead>
@@ -536,26 +535,26 @@ would poison everything downstream.</p>
 <div class="box sota">
 <span class="t">Which one, where — and how that changed</span>
 <p style="margin-bottom:0">The original recipe (Micikevicius et al. 2022, NVIDIA Transformer Engine) is
-<b>hybrid</b>: e4m3 for the forward pass, which wants precision, and e5m2 for gradients, which want range.
-DeepSeek-V3 (2024) instead used <b>e4m3 for all tensors</b>, made possible by scaling at much finer
-granularity — one scale per 1×128 tile of activations and per 128×128 block of weights — so that each small
-block only needs e4m3's narrow range. Finer scaling bought back the range, and the extra mantissa bit won.
-That idea, scales on small blocks, is the subject of the next section.</p>
+<b>hybrid</b>: e4m3 for the forward pass, which needs precision, and e5m2 for gradients, which need range.
+DeepSeek-V3 (2024) instead used <b>e4m3 for all tensors</b>. It could do that because it scaled much more
+finely, with one scale per 1×128 tile of activations and per 128×128 block of weights, so each small
+block only needed e4m3's narrow range. The finer scaling gave back the range, and the extra mantissa bit improved accuracy.
+That idea, a separate scale for each small block, is the subject of the next section.</p>
 </div>
 
 <div class="exercise">
 <div class="eh"><span class="n">0.E</span><span class="ti">Practice — fp8</span><span class="lvl">practice</span></div>
 <div class="eb">
 <p><b>P1.</b> Decode the e4m3 pattern <code>0 0000 011</code>.</p>
-<details class="reveal"><summary>Working</summary><div><p>Exponent field 0 → subnormal. <span class="math">0.011<sub>2</sub> = 0.375</span>, times <span class="math">2<sup>1&minus;7</sup> = 1/64</span>: <b>0.005859375</b>.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p>Exponent field 0 means a subnormal. <span class="math">0.011<sub>2</sub> = 0.375</span>, times <span class="math">2<sup>1&minus;7</sup> = 1/64</span>, gives <b>0.005859375</b>.</p></div></details>
 <p><b>P2.</b> What does e4m3 store for 300? For 17? For −2.6?</p>
-<details class="reveal"><summary>Working</summary><div><p><b>300</b>: bucket <span class="math">[256, 512)</span>, gap <span class="math">2<sup>8&minus;3</sup> = 32</span> → 256, 288, 320; 300 is nearest <b>288</b>. <b>17</b>: bucket <span class="math">[16, 32)</span>, gap 2 → 16 or 18; a tie, goes to the even mantissa, <b>16</b>. <b>−2.6</b>: bucket <span class="math">[2, 4)</span>, gap 0.25 → 2.5 or 2.75; <b>−2.5</b>. All three measured ✓. e4m3 is coarse: 300 is off by 4%.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p><b>300</b>: bucket <span class="math">[256, 512)</span>, gap <span class="math">2<sup>8&minus;3</sup> = 32</span>, so the choices are 256, 288, 320, and 300 is nearest <b>288</b>. <b>17</b>: bucket <span class="math">[16, 32)</span>, gap 2, so 16 or 18; it is a tie, which goes to the even mantissa, <b>16</b>. <b>−2.6</b>: bucket <span class="math">[2, 4)</span>, gap 0.25, so 2.5 or 2.75; the answer is <b>−2.5</b>. All three measured ✓. e4m3 is coarse: 300 is off by 4%.</p></div></details>
 <p><b>P3.</b> Decode the e5m2 pattern <code>0 11111 00</code>. Why could that pattern not exist in e4m3fn?</p>
-<details class="reveal"><summary>Working</summary><div><p>All-ones exponent, zero mantissa: <b>+infinity</b>. e4m3fn has no infinity — in it, <code>0 1111 000</code> is the ordinary number <span class="math">1.0 &times; 2<sup>8</sup> = 256</span>.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p>All-ones exponent with a zero mantissa means <b>+infinity</b>. e4m3fn has no infinity: in that format, <code>0 1111 000</code> is the ordinary number <span class="math">1.0 &times; 2<sup>8</sup> = 256</span>.</p></div></details>
 <p><b>P4.</b> An activation tensor has values up to 2000. What happens if you cast it straight to e4m3? What is the fix?</p>
-<details class="reveal"><summary>Answer</summary><div><p>Everything above 448 saturates to 448 — the large values, often the most important ones, are clipped. The fix is to <b>scale</b>: divide the tensor by <span class="math">s = 2000/448</span> before the cast, store <span class="math">s</span> alongside, and multiply back after. That is exactly what fp8 training does, per tensor or per block.</p></div></details>
+<details class="reveal"><summary>Answer</summary><div><p>Everything above 448 saturates to 448, so the large values, often the most important ones, are clipped. The fix is to <b>scale</b>: divide the tensor by <span class="math">s = 2000/448</span> before the cast, store <span class="math">s</span> next to it, and multiply back afterwards. fp8 training does exactly this, per tensor or per block.</p></div></details>
 <p><b>P5.</b> How many distinct finite values does e4m3fn have?</p>
-<details class="reveal"><summary>Working</summary><div><p>256 patterns, minus 2 NaNs (<code>S 1111 111</code> for each sign) = 254 patterns. Two of those are +0 and −0, the same value, so <b>253 distinct finite values</b>. That is the entire vocabulary an fp8 matmul has to work with.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p>256 patterns, minus 2 NaNs (<code>S 1111 111</code> for each sign), leaves 254 patterns. Two of those are +0 and −0, which are the same value, so there are <b>253 distinct finite values</b>. That is every value an fp8 matmul can work with.</p></div></details>
 </div></div>
 
 <div class="quiz" data-title="Checkpoint 2 — derivations and fp8">
@@ -567,7 +566,7 @@ That idea, scales on small blocks, is the subject of the next section.</p>
     <div class="opt">It has a hidden second exponent bit</div>
     <div class="opt">It is stored with an implicit scale factor of 2</div>
   </div>
-  <div class="expl"><b>Reclaimed special values.</b> With IEEE rules the field 1111 is entirely reserved, so the top usable field is 1110 and max = 1.875 × 2<sup>7</sup> = 240. Making 1111 usable (except mantissa 111) gives 1.75 × 2<sup>8</sup> = 448. Option B describes e4m3<i>fnuz</i>, whose max is actually 240.</div>
+  <div class="expl"><b>It reclaims the special values.</b> Under IEEE rules the field 1111 is reserved entirely, so the top usable field is 1110 and max = 1.875 × 2<sup>7</sup> = 240. Making 1111 usable (except for mantissa 111) gives 1.75 × 2<sup>8</sup> = 448. Option B describes e4m3<i>fnuz</i>, whose max is actually 240.</div>
 </div>
 <div class="qitem" data-answer="2">
   <div class="qq">fp16 stores 2.5e-8 as what?</div>
@@ -577,7 +576,7 @@ That idea, scales on small blocks, is the subject of the next section.</p>
     <div class="opt">0</div>
     <div class="opt">6.1e-5, the minimum normal</div>
   </div>
-  <div class="expl"><b>Zero.</b> The minimum subnormal is 2<sup>−24</sup> ≈ 5.96e-8, and the rounding threshold is half of that, ≈ 2.98e-8. 2.5e-8 is below it, so it rounds to 0. But 3e-8 would round <i>up</i> to 5.96e-8 — option B is right for a slightly larger number, which is the common misreading of "smallest representable".</div>
+  <div class="expl"><b>Zero.</b> The minimum subnormal is 2<sup>−24</sup> ≈ 5.96e-8, and the rounding threshold is half of that, ≈ 2.98e-8. 2.5e-8 is below it, so it rounds to 0. But 3e-8 would round <i>up</i> to 5.96e-8, so option B is right for a slightly larger number. That is the usual misreading of "smallest representable".</div>
 </div>
 <div class="qitem" data-answer="1">
   <div class="qq">Using only E = 3, M = 2 and "no infinity, no NaN", what is the max of fp6 e3m2?</div>
@@ -593,8 +592,8 @@ That idea, scales on small blocks, is the subject of the next section.</p>
 
 <h2>0.6 · Four-bit floats and why they need a scale: MX and NVFP4</h2>
 
-<p>The smallest float in production, <b>fp4 e2m1</b>, has 1 sign, 2 exponent and 1 mantissa bit, and no
-special values. That is few enough to write out <i>every</i> number it can hold:</p>
+<p>The smallest float used in production, <b>fp4 e2m1</b>, has 1 sign bit, 2 exponent bits and 1 mantissa bit, and no
+special values. That is few enough to list <i>every</i> number it can hold:</p>
 
 <pre><code class="nohl">  S E  M   value          bias = 2^1 - 1 = 1
   0 00 0   0              E = 00: subnormal, 0.M x 2^(1-1)
@@ -607,11 +606,11 @@ special values. That is few enough to write out <i>every</i> number it can hold:
   0 11 1   6.0            max = 1.5 x 4 = 6
   ...and the same eight with S = 1, negative.</code></pre>
 
-<p>Fifteen distinct values from −6 to 6. Look at what is missing: there is nothing between 0 and 0.5. A
+<p>There are fifteen distinct values from −6 to 6, and nothing at all between 0 and 0.5. A
 weight matrix full of values around 0.01 would become <b>entirely zero</b>. So fp4 is never used alone. It
-is always paired with a <b>scale factor</b>: store <span class="math">x / s</span> in fp4 and keep
-<span class="math">s</span> somewhere else, so that the block's values land in the part of the number line fp4
-actually covers.</p>
+always comes with a <b>scale factor</b>: store <span class="math">x / s</span> in fp4 and keep
+<span class="math">s</span> elsewhere, so that the block's values land in the part of the number line fp4
+covers.</p>
 
 <h3>Per tensor or per block? The outlier problem</h3>
 
@@ -623,32 +622,32 @@ per-block  scale, blocks of 8:
    block 1 (no outlier): scale 0.0171  ->  0.1029 -0.0686 0.0343 0.0857 -0.1200 ...  all kept
    block 2 (outlier)   : scale 1.143   ->  8.0000 0 0 0 0 0 0 0                     still lost</code></pre>
 
-<p>Blocks <b>contain the damage</b>: an outlier only wrecks its own block. The smaller the block, the less
-collateral damage, and the more scales you have to store. That trade defines every modern low-bit format.</p>
+<p>Blocks limit the damage: an outlier only wrecks its own block. The smaller the block, the fewer values an
+outlier hurts, and the more scales you have to store. Every modern low-bit format is a choice along that trade.</p>
 
 <h3>MX: the industry standard (OCP, 2023)</h3>
 
 <p>The Open Compute Project's <b>Microscaling (MX)</b> specification fixes the block at <b>32 elements</b> and
-the scale at one byte in <b>E8M0</b> — an 8-bit exponent with no sign and no mantissa, so every scale is an
+the scale at one byte in <b>E8M0</b>: an 8-bit exponent with no sign and no mantissa, so every scale is an
 exact power of two, from <span class="math">2<sup>&minus;127</sup></span> to
-<span class="math">2<sup>127</sup></span> (the pattern <code>11111111</code> is NaN). The element can be
-<b>MXFP8</b> (e4m3 or e5m2), <b>MXFP6</b> (e2m3 or e3m2), <b>MXFP4</b> (e2m1) or <b>MXINT8</b>.</p>
+<span class="math">2<sup>127</sup></span> (the pattern <code>11111111</code> is NaN). The elements can be
+MXFP8 (e4m3 or e5m2), MXFP6 (e2m3 or e3m2), MXFP4 (e2m1) or MXINT8.</p>
 
 <div class="mathblock">
 bits per value = element bits + 8 / 32 &nbsp;&nbsp;&nbsp;&nbsp; MXFP4 = 4.25 &nbsp;&nbsp; MXFP6 = 6.25 &nbsp;&nbsp; MXFP8 = 8.25
 </div>
 
-<p>The scale is chosen so the block's largest magnitude lands in the top bucket of the element format:
+<p>The scale is chosen so that the block's largest magnitude lands in the top bucket of the element format:
 <span class="math">X = 2<sup>&lfloor;log<sub>2</sub>(amax)&rfloor; &minus; e<sub>max</sub></sup></span>, where
 <span class="math">e<sub>max</sub> = 2</span> for e2m1 (its top bucket is <span class="math">[4, 8)</span>).
 Values that still land above 6 saturate.</p>
 
 <h3>NVFP4: NVIDIA's refinement (Blackwell)</h3>
 
-<p><b>NVFP4</b> keeps e2m1 elements but changes the scaling in two ways: blocks of <b>16</b> instead of 32,
-and a block scale stored in <b>fp8 e4m3</b> rather than E8M0 — so the scale can be any e4m3 value, not just a
-power of two. Because e4m3's own range is narrow, there is a second level: one <b>fp32 scale per
-tensor</b> maps the whole tensor into range first.</p>
+<p><b>NVFP4</b> keeps e2m1 elements but scales them differently in two ways: blocks of <b>16</b> instead of 32,
+and a block scale stored in <b>fp8 e4m3</b> instead of E8M0, so the scale can be any e4m3 value, not only a
+power of two. Because e4m3's own range is narrow, NVFP4 adds a second level: one <b>fp32 scale per
+tensor</b> first moves the whole tensor into range.</p>
 
 <div class="mathblock">
 x &asymp; s<sub>tensor</sub> &times; s<sub>block</sub> &times; fp4 &nbsp;&nbsp;&nbsp;&nbsp; bits per value = 4 + 8 / 16 = 4.5
@@ -684,31 +683,31 @@ That, plus halving the block size, is why NVIDIA reports NVFP4 matching fp8 more
 
 <div class="box sota">
 <span class="t">Where 4-bit actually runs today</span>
-<p style="margin-bottom:0"><b>Inference</b> first: OpenAI's gpt-oss (2025) shipped its MoE weights in
-<b>MXFP4</b> — 4.25 bits per weight — which is what lets the 117B-parameter model fit on a single 80 GB GPU.
-<b>Training</b> is newer: NVIDIA's report <i>Pretraining Large Language Models with NVFP4</i> (2025) trained a
-12B model on 10 trillion tokens in NVFP4 with loss and downstream accuracy close to an fp8 baseline, using
-stochastic rounding for gradients (§0.8) and keeping a minority of layers in bf16. Blackwell tensor cores
-execute both MXFP4 and NVFP4 natively.</p>
+<p style="margin-bottom:0"><b>Inference</b> came first: OpenAI's gpt-oss (2025) shipped its MoE weights in
+<b>MXFP4</b>, at 4.25 bits per weight, which is what lets the 117B-parameter model fit on a single 80 GB GPU.
+<b>Training</b> is newer. NVIDIA's report <i>Pretraining Large Language Models with NVFP4</i> (2025) trained a
+12B model on 10 trillion tokens in NVFP4, with loss and downstream accuracy close to an fp8 baseline. It
+used stochastic rounding for gradients (§0.8) and kept a minority of layers in bf16. Blackwell tensor cores
+run both MXFP4 and NVFP4 in hardware.</p>
 </div>
 
 <div class="exercise">
 <div class="eh"><span class="n">0.F</span><span class="ti">Practice — 4-bit and block scaling</span><span class="lvl">practice</span></div>
 <div class="eb">
 <p><b>P1.</b> What does fp4 e2m1 store for 2.4? For 5? For 0.2?</p>
-<details class="reveal"><summary>Working</summary><div><p><b>2.4</b>: between 2 and 3 → <b>2</b>. <b>5</b>: between 4 and 6, a tie → the even mantissa, <b>4</b> (<code>0 11 0</code>). <b>0.2</b>: between 0 and 0.5, below the 0.25 midpoint → <b>0</b>.</p></div></details>
-<p><b>P2.</b> A 4096 × 4096 weight matrix in NVFP4. How many bytes, counting block scales (ignore the one fp32 tensor scale)? How does it compare to bf16?</p>
-<details class="reveal"><summary>Working</summary><div><p>16.8M values × 4.5 bits = 75.5M bits = <b>9.44 MB</b> (8.39 MB of values + 1.05 MB of scales). bf16 is 2 bytes each = 33.6 MB, so NVFP4 is <b>3.56× smaller</b>, not 4× — the scales cost 12.5%.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p><b>2.4</b> lies between 2 and 3, so <b>2</b>. <b>5</b> lies between 4 and 6, a tie, which goes to the even mantissa: <b>4</b> (<code>0 11 0</code>). <b>0.2</b> lies between 0 and 0.5, below the 0.25 midpoint, so <b>0</b>.</p></div></details>
+<p><b>P2.</b> A 4096 × 4096 weight matrix in NVFP4. How many bytes does it take, counting block scales (ignore the one fp32 tensor scale)? How does that compare with bf16?</p>
+<details class="reveal"><summary>Working</summary><div><p>16.8M values × 4.5 bits = 75.5M bits = <b>9.44 MB</b> (8.39 MB of values plus 1.05 MB of scales). bf16 takes 2 bytes each, 33.6 MB, so NVFP4 is <b>3.56× smaller</b>, not 4×: the scales cost 12.5%.</p></div></details>
 <p><b>P3.</b> An MX block has amax = 0.09. What E8M0 scale does the rule pick for MXFP4, and what does the block max become?</p>
-<details class="reveal"><summary>Working</summary><div><p><span class="math">log<sub>2</sub> 0.09 &asymp; &minus;3.47</span>, floor −4, so <span class="math">X = 2<sup>&minus;4&minus;2</sup> = 2<sup>&minus;6</sup> = 1/64</span>. Then <span class="math">0.09 &times; 64 = 5.76</span> → fp4 6 → <span class="math">6/64 = </span><b>0.09375</b>, a 4% error on the largest value.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p><span class="math">log<sub>2</sub> 0.09 &asymp; &minus;3.47</span>, which rounds down to −4, so <span class="math">X = 2<sup>&minus;4&minus;2</sup> = 2<sup>&minus;6</sup> = 1/64</span>. Then <span class="math">0.09 &times; 64 = 5.76</span> → fp4 6 → <span class="math">6/64 = </span><b>0.09375</b>, a 4% error on the largest value.</p></div></details>
 <p><b>P4.</b> Why is E8M0 a sensible format for a scale but a useless format for data?</p>
-<details class="reveal"><summary>Answer</summary><div><p>A scale only needs to say "how many buckets to shift", and multiplying by a power of two is exact and nearly free in hardware — it just adds to the exponent. As data it would hold only powers of two: 3 would have to be 2 or 4. NVFP4's choice of an e4m3 scale is precisely the decision to pay for a mantissa in the scale.</p></div></details>
+<details class="reveal"><summary>Answer</summary><div><p>A scale only has to say how many buckets to shift, and multiplying by a power of two is exact and almost free in hardware: it just adds to the exponent. As data, E8M0 could hold only powers of two, so 3 would have to become 2 or 4. NVFP4's e4m3 scale is a decision to pay for a mantissa in the scale.</p></div></details>
 </div></div>
 
 <h2>0.7 · Integers for inference: scale and zero-point</h2>
 
-<p>Integer formats need a scale for the same reason fp4 does — int8 knows only whole numbers from −128 to
-127 — but the scale does more work, because integers have no exponent at all. The standard mapping is
+<p>Integer formats need a scale for the same reason fp4 does (int8 holds only the whole numbers from −128 to
+127), but here the scale does more work, because integers have no exponent at all. The standard mapping is
 <b>affine</b>:</p>
 
 <div class="mathblock">
@@ -721,7 +720,7 @@ q = clamp(round(x / s) + z, q<sub>min</sub>, q<sub>max</sub>) &nbsp;&nbsp;&nbsp;
 
 <div class="step"><div class="i">1</div><div>
 <b>Weights</b> <code>[0.12, −0.5, 0.33, 0.04]</code>. Symmetric means <span class="math">z = 0</span> and the
-range −127 … 127 (−128 dropped so the grid is symmetric about zero).
+range −127 … 127 (−128 is dropped so that the grid is symmetric about zero).
 <span class="math">s = </span>amax / 127 <span class="math">= 0.5 / 127 = 0.003937</span>.
 </div></div>
 <div class="step"><div class="i">2</div><div>
@@ -735,10 +734,10 @@ x_hat     0.1181   -0.5  0.3307  0.0394      max error 0.00189  (bound s/2 = 0.0
 <span class="t">Worked example — asymmetric uint8, for values that are not centred on zero</span>
 
 <div class="step"><div class="i">1</div><div>
-<b>Activations</b> spanning <span class="math">[&minus;1, 6]</span>. A symmetric scheme would need
-<span class="math">s = 6/127</span> and waste the whole range below −1. Instead use uint8 0 … 255:
+<b>Activations</b> between <span class="math">[&minus;1, 6]</span>. A symmetric scheme would need
+<span class="math">s = 6/127</span> and would waste the whole range below −1. Use uint8 0 … 255 instead:
 <span class="math">s = (6 &minus; (&minus;1)) / 255 = 0.02745</span> and
-<span class="math">z = round(1 / s) = 36</span>, the integer that represents 0.0.
+<span class="math">z = round(1 / s) = 36</span>, the integer that stands for 0.0.
 </div></div>
 <div class="step"><div class="i">2</div><div>
 <pre style="margin:.4rem 0"><code class="nohl">x          -1      0     2.7     6
@@ -749,23 +748,23 @@ should stay that way.
 </div></div>
 </div>
 
-<p>Granularity matters here exactly as in §0.6. <b>Per-tensor</b> int8 is common for activations;
-<b>per-channel</b> (one scale per output row) for int8 weights; and 4-bit weight-only schemes such as GPTQ and
-AWQ use <b>groups of 64 or 128</b> weights per scale. Integer and fp4 grids differ in shape, too: int4's 16
-levels are evenly spaced, while fp4's crowd near zero — a better match for weights, which are roughly
-bell-shaped around zero.</p>
+<p>Granularity matters here just as in §0.6. Per-tensor int8 is common for activations,
+per-channel int8 (one scale per output row) for weights, and 4-bit weight-only schemes such as GPTQ and
+AWQ use groups of 64 or 128 weights per scale. Integer and fp4 grids also differ in shape: int4's 16
+levels are evenly spaced, while fp4's crowd near zero. That suits weights better, because their values are
+roughly bell-shaped around zero.</p>
 
 <div class="exercise">
 <div class="eh"><span class="n">0.G</span><span class="ti">Practice — integer quantization</span><span class="lvl">practice</span></div>
 <div class="eb">
 <p><b>P1.</b> Symmetric int8 with amax = 2.54. What is the scale, and what does 1.0 quantize to?</p>
-<details class="reveal"><summary>Working</summary><div><p><span class="math">s = 2.54/127 = 0.02</span>. <span class="math">1.0/0.02 = 50</span> → q = 50 → <span class="math">x&#770; = 1.0</span>. Worst-case error anywhere in range: <span class="math">s/2 = 0.01</span>.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p><span class="math">s = 2.54/127 = 0.02</span>. <span class="math">1.0/0.02 = 50</span> → q = 50 → <span class="math">x&#770; = 1.0</span>. The largest possible error anywhere in range is <span class="math">s/2 = 0.01</span>.</p></div></details>
 <p><b>P2.</b> Same scale. What happens to 3.0?</p>
-<details class="reveal"><summary>Working</summary><div><p><span class="math">3.0/0.02 = 150</span>, clamped to 127 → <span class="math">x&#770; = 2.54</span>. Clipping error 0.46, 46× the rounding bound. Choosing the scale is choosing what to clip.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p><span class="math">3.0/0.02 = 150</span>, which is clamped to 127 → <span class="math">x&#770; = 2.54</span>. The clipping error is 0.46, 46× the rounding bound. Choosing the scale means choosing what to clip.</p></div></details>
 <p><b>P3.</b> Why does an int8 GEMM accumulate in int32 instead of int16?</p>
-<details class="reveal"><summary>Working</summary><div><p>Each product is up to <span class="math">127 &times; 127 = 16,129</span>, already near int16's 32,767. A dot product over 4096 elements can reach <span class="math">4096 &times; 16129 &asymp; 6.6 &times; 10<sup>7</sup></span> — far beyond int16, comfortably inside int32's 2.1 × 10<sup>9</sup>. Same lesson as fp32 accumulators for bf16.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p>Each product can be as large as <span class="math">127 &times; 127 = 16,129</span>, already close to int16's 32,767. A dot product over 4096 elements can reach <span class="math">4096 &times; 16129 &asymp; 6.6 &times; 10<sup>7</sup></span>, far beyond int16 and well inside int32's 2.1 × 10<sup>9</sup>. It is the same reason bf16 products are added up in fp32.</p></div></details>
 <p><b>P4.</b> You quantize ReLU activations (all ≥ 0, max 6) with symmetric int8. What fraction of the 255 levels are ever used?</p>
-<details class="reveal"><summary>Working</summary><div><p>Only q = 0 … 127, so 128 of 255 — about half. The step is <span class="math">6/127 &asymp; 0.047</span>; asymmetric uint8 would give <span class="math">6/255 &asymp; 0.024</span>, half the error, from the same 8 bits.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p>Only q = 0 … 127 are used, so 128 of 255 levels, about half. The step is <span class="math">6/127 &asymp; 0.047</span>; asymmetric uint8 would give <span class="math">6/255 &asymp; 0.024</span>, half the error, from the same 8 bits.</p></div></details>
 </div></div>
 
 <div class="quiz" data-title="Checkpoint 3 — scales">
@@ -777,7 +776,7 @@ bell-shaped around zero.</p>
     <div class="opt">fp4 needs fp32 to represent zero</div>
     <div class="opt">It replaces the hidden bit</div>
   </div>
-  <div class="expl"><b>Two-level scaling.</b> MX's E8M0 scales span 2<sup>−127</sup>…2<sup>127</sup>, so one level suffices. NVFP4 trades that range for a mantissa in the scale; the fp32 tensor scale moves the whole tensor into the window e4m3 block scales can then fine-tune.</div>
+  <div class="expl"><b>Two levels of scaling.</b> MX's E8M0 scales span 2<sup>−127</sup>…2<sup>127</sup>, so one level is enough. NVFP4 gives up that range to get a mantissa in the scale; the fp32 tensor scale moves the whole tensor into the window that the e4m3 block scales can then fine-tune.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">MXFP4 stores 4.25 bits per value. Where does the 0.25 come from?</div>
@@ -787,7 +786,7 @@ bell-shaped around zero.</p>
     <div class="opt">A per-tensor fp32 scale amortised over a large tensor</div>
     <div class="opt">One 8-bit E8M0 scale per block of 32: 8 / 32 = 0.25</div>
   </div>
-  <div class="expl"><b>The block scale.</b> 8 bits shared by 32 values. NVFP4's 8-bit scale over 16 values costs 0.5, hence 4.5 bits. Option C is NVFP4's second level, which is negligible per value.</div>
+  <div class="expl"><b>The block scale.</b> 8 bits are shared by 32 values. NVFP4's 8-bit scale covers 16 values and costs 0.5, hence 4.5 bits. Option C is NVFP4's second level, which costs almost nothing per value.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">A tensor has one huge outlier. Which change most directly protects the other values?</div>
@@ -797,14 +796,14 @@ bell-shaped around zero.</p>
     <div class="opt">Use round-to-nearest-even instead of truncation</div>
     <div class="opt">Increase the per-tensor scale</div>
   </div>
-  <div class="expl"><b>Smaller blocks contain the damage.</b> The outlier sets the scale only for its own block; everything else gets a scale fitted to itself. Increasing the per-tensor scale is the cause of the problem, not the fix.</div>
+  <div class="expl"><b>Smaller blocks limit the damage.</b> The outlier sets the scale only for its own block, and every other block gets a scale fitted to its own values. A larger per-tensor scale causes the problem; it does not fix it.</div>
 </div>
 </div>
 
 <h2>0.8 · Rounding: how a real number lands on the grid</h2>
 
-<p>Every operation produces a real result that usually falls <i>between</i> two representable numbers. The
-rule for choosing one is part of the format, and it has measurable consequences.</p>
+<p>Almost every operation produces a real result that falls <i>between</i> two numbers the format can hold. The
+rule for choosing one of them is part of the format, and it has effects you can measure.</p>
 
 <p><b>Round to nearest, ties to even</b> is the default everywhere. Pick the closer neighbour; on an exact tie,
 pick the one whose last mantissa bit is 0. Measured in bf16, where the gap at 256 is 2:</p>
@@ -814,44 +813,44 @@ pick the one whose last mantissa bit is 0. Measured in bf16, where the gap at 25
 259 -> 260     tie between 258 (...001) and 260 (...010): even wins
 261 -> 260     tie between 260 (...010) and 262 (...011): even wins</code></pre>
 
-<p>Why ties-to-even rather than ties-up? Half the ties go up and half go down, so rounding errors do not
-drift in one direction over millions of operations. But it is still <b>deterministic</b>, and that has a
-blind spot:</p>
+<p>Why ties to even and not ties up? Half the ties go up and half go down, so rounding errors do not
+drift in one direction over millions of operations. But it is still <b>deterministic</b>, and that leaves one
+weakness:</p>
 
 <div class="example">
 <span class="t">Measurement — adding 1 to 256, a thousand times, in bf16</span>
 <div class="step"><div class="i">1</div><div>
 <b>Round to nearest:</b> every <span class="math">256 + 1</span> rounds back to 256. After 1000 additions the
-total is <b>256</b>; the exact answer is 1256. A thousand updates, each individually too small to register,
-are all lost. This is precisely what happens to a small gradient update added to a large weight.
+total is <b>256</b>, while the exact answer is 1256. A thousand updates, each too small to register on its own,
+are all lost. This is exactly what happens when a small gradient update is added to a large weight.
 </div></div>
 <div class="step"><div class="i">2</div><div>
-<b>Stochastic rounding:</b> round up with probability equal to how far the value is towards the upper
-neighbour. 257 is halfway, so it becomes 258 half the time. Each rounding is now noisy but <b>unbiased in
-expectation</b>. Measured over 2000 runs: mean <b>1255.8</b> (exact 1256), with each single run scattered by
+<b>Stochastic rounding:</b> round up with a probability equal to how far the value is towards the upper
+neighbour. 257 is halfway, so it becomes 258 half the time. Each rounding is now noisy but <b>unbiased on
+average</b>. Measured over 2000 runs: mean <b>1255.8</b> (exact 1256), with each single run off by
 about ±58.
 </div></div>
 </div>
 
-<p>Stochastic rounding turns a systematic loss into noise, and gradient descent tolerates noise far better
-than systematic loss. That is why the NVFP4 pretraining recipe uses it for gradients — and why it is a
-hardware feature on recent accelerators rather than something done in software.</p>
+<p>Stochastic rounding turns a steady loss into noise, and gradient descent copes with noise far better
+than with a steady loss. That is why the NVFP4 pretraining recipe uses it for gradients, and why recent
+accelerators build it into the hardware instead of leaving it to software.</p>
 
 <div class="exercise">
 <div class="eh"><span class="n">0.H</span><span class="ti">Practice — rounding</span><span class="lvl">practice</span></div>
 <div class="eb">
 <p><b>P1.</b> fp16 near 4096 has a gap of 4. What do 4097, 4098 and 4099 round to?</p>
-<details class="reveal"><summary>Working</summary><div><p>Neighbours 4096 and 4100. <b>4097 → 4096</b> (nearer). <b>4098 → 4096</b>: an exact tie, and 4096's mantissa ends in 0 while 4100's ends in 1. <b>4099 → 4100</b> (nearer). All measured ✓.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p>The neighbours are 4096 and 4100. <b>4097 → 4096</b> (nearer). <b>4098 → 4096</b>: an exact tie, and 4096's mantissa ends in 0 while 4100's ends in 1. <b>4099 → 4100</b> (nearer). All measured ✓.</p></div></details>
 <p><b>P2.</b> Under stochastic rounding in bf16, what is the probability that 256.5 is stored as 258?</p>
-<details class="reveal"><summary>Working</summary><div><p>It sits 0.5 of the way across a gap of 2, so <span class="math">0.5/2 = </span><b>25%</b>; 75% of the time it becomes 256. Expected value <span class="math">0.25 &times; 258 + 0.75 &times; 256 = 256.5</span> — exactly the input, which is what "unbiased" means.</p></div></details>
+<details class="reveal"><summary>Working</summary><div><p>It sits 0.5 of the way across a gap of 2, so the probability is <span class="math">0.5/2 = </span><b>25%</b>; the other 75% of the time it becomes 256. The expected value is <span class="math">0.25 &times; 258 + 0.75 &times; 256 = 256.5</span>, exactly the input, which is what "unbiased" means.</p></div></details>
 <p><b>P3.</b> Why don't we use stochastic rounding for the forward pass?</p>
-<details class="reveal"><summary>Answer</summary><div><p>It adds noise to every value for no benefit: a single forward pass is not a long accumulation, so there is no systematic drift to remove — only fresh error, and run-to-run nondeterminism. Its value is specifically in <i>repeated accumulation of small updates</i>, which is the gradient and weight-update path.</p></div></details>
+<details class="reveal"><summary>Answer</summary><div><p>It would add noise to every value and gain nothing. A single forward pass is not a long chain of additions, so there is no steady drift to remove, only new error and runs that differ from each other. Stochastic rounding helps specifically when many small updates are <i>added up repeatedly</i>, which is the gradient and weight-update path.</p></div></details>
 </div></div>
 
 <h2>0.9 · The whole family on one page</h2>
 
-<p>Every row below follows from the formulas in §0.4 and the special-value rule in the last column. The
-float rows were checked against <code>torch.finfo</code> where PyTorch implements the type.</p>
+<p>Every row below follows from the formulas in §0.4 and the rule for special values in the last column. The
+float rows were checked against <code>torch.finfo</code> wherever PyTorch implements the type.</p>
 
 <div class="tw"><table>
 <thead><tr><th>format</th><th>S·E·M</th><th>bias</th><th class="num">max</th><th class="num">min normal</th><th class="num">eps</th><th>specials</th></tr></thead>
@@ -886,11 +885,11 @@ float rows were checked against <code>torch.finfo</code> where PyTorch implement
 
 <div class="box intuition">
 <span class="t">How to read any format you have never seen</span>
-<p style="margin-bottom:0">Ask four questions. <b>How many exponent bits?</b> — that is the range, via the
-bias. <b>How many mantissa bits?</b> — that is the gap, <span class="math">2<sup>k&minus;M</sup></span>.
-<b>Which patterns are reserved?</b> — that sets the max. <b>What scale travels with it, over how many
-values?</b> — for anything under 8 bits, that is where the real dynamic range comes from. Those four answers
-are the whole format.</p>
+<p style="margin-bottom:0">Ask four questions. How many exponent bits? That sets the range, through the
+bias. How many mantissa bits? That sets the gap, <span class="math">2<sup>k&minus;M</sup></span>.
+Which patterns are reserved? That sets the max. What scale travels with the values, and over how many
+of them? For anything under 8 bits, that is where most of the usable range comes from. Those four answers
+describe the whole format.</p>
 </div>
 
 <h2>0.10 · Exercises</h2>
@@ -898,8 +897,8 @@ are the whole format.</p>
 <div class="exercise">
 <div class="eh"><span class="n">0.1</span><span class="ti">Write a decoder for every format at once</span><span class="lvl">essential</span></div>
 <div class="eb">
-<p>Write one function that decodes a bit pattern for any (E, M, flavour), then check it exhaustively
-against PyTorch's real fp8 types:</p>
+<p>Write one function that decodes a bit pattern for any (E, M, flavour), then check it against every pattern
+of PyTorch's real fp8 types:</p>
 <pre><code>import torch
 
 def decode(bits, E, M, flavour="ieee"):
@@ -921,8 +920,8 @@ ref = torch.arange(256, dtype=torch.uint8).view(torch.float8_e4m3fn).float()</co
 <p>Compare all 256 patterns for <code>float8_e4m3fn</code> (flavour "fn") and <code>float8_e5m2</code>
 (flavour "ieee"). Then use your decoder to list every fp4 value.</p>
 <details class="reveal"><summary>What you should find</summary><div>
-<p style="margin-bottom:0">All 256 patterns match for both formats — this course's own engine passes the
-same check in <code>tests/check_numfmt.js</code>. Be careful comparing NaNs: <code>nan == nan</code> is
+<p style="margin-bottom:0">All 256 patterns match for both formats; this course's own engine passes the
+same check in <code>tests/check_numfmt.js</code>. Be careful when comparing NaNs: <code>nan == nan</code> is
 False, so test them with <code>math.isnan</code>. fp4 gives 0, 0.5, 1, 1.5, 2, 3, 4, 6 and their negatives.</p>
 </div></details>
 </div></div>
@@ -938,10 +937,10 @@ for dt in (torch.float16, torch.bfloat16):
     v = x.to(dt)
     gap = torch.nextafter(v, torch.full_like(v, float("inf"))) - v</code></pre>
 <details class="reveal"><summary>What you should see</summary><div>
-<p style="margin-bottom:0">A staircase: the gap is constant within each bucket and doubles at every power
-of two, so on log-log axes it is a straight line of slope 1 — <i>constant relative precision</i>. fp16's line
+<p style="margin-bottom:0">You get a staircase. The gap is constant within each bucket and doubles at every power
+of two, so on log-log axes it follows a straight line of slope 1, which means <i>constant relative precision</i>. fp16's line
 sits 8× below bf16's. Below 6.1e-5 fp16's line goes <b>flat</b>: that is the subnormal region, where the gap
-stops shrinking and relative precision collapses. bf16's line stays straight all the way down.</p>
+stops shrinking and relative precision falls apart. bf16's line stays straight all the way down.</p>
 </div></details>
 </div></div>
 
@@ -965,13 +964,13 @@ def mxfp4(x, B=32):
 def nvfp4(x, B=16):
     ...                              # scale = amax / 6, rounded to e4m3; your turn</code></pre>
 <details class="reveal"><summary>What to look for</summary><div>
-<p>NVFP4 should have lower error on both, for two separable reasons you can measure by changing one thing
-at a time: block size 16 versus 32 (fewer values share each scale), and a fractional e4m3 scale versus a
-power of two (the block max lands on 6 instead of somewhere in <span class="math">[4, 8)</span>). Try
-NVFP4 with B = 32 to split the effect.</p>
+<p>NVFP4 should have lower error on both, for two separate reasons that you can measure by changing one thing
+at a time: block size 16 against 32 (fewer values share each scale), and a fractional e4m3 scale against a
+power of two (the block max lands on 6 instead of anywhere in <span class="math">[4, 8)</span>). Try
+NVFP4 with B = 32 to separate the two effects.</p>
 <p style="margin-bottom:0">Note that <code>argmin</code> breaks ties toward the lower index, not toward the
-even mantissa — exact ties are rare on Gaussian data, but the course's <code>numfmt.js</code> handles them
-properly, and that difference is a nice thing to find.</p>
+even mantissa. Exact ties are rare on Gaussian data, but the course's <code>numfmt.js</code> handles them
+properly, and spotting that difference is a good exercise.</p>
 </div></details>
 </div></div>
 
@@ -989,27 +988,27 @@ properly, and that difference is a nice thing to find.</p>
 0.999   bf16     1.0                1.0       (never moves)
 0.99    bf16     0.98828125         5.3e-6    (8x too small)   4.3e-5
 0.95    fp16     0.95019531         5.96e-7   (stuck)          5.3e-23</code></pre>
-<p style="margin-bottom:0">Three different failures from one line of code. bf16 at 0.999 cannot represent
-the decay at all. bf16 at 0.99 represents a <i>different</i> decay, 0.98828, and compounds the difference.
+<p style="margin-bottom:0">One line of code fails in three different ways. bf16 at 0.999 cannot represent
+the decay at all. bf16 at 0.99 represents a <i>different</i> decay, 0.98828, and the difference compounds.
 fp16 at 0.95 decays correctly until it reaches the minimum subnormal, 5.96e-7, where
 <span class="math">5.96 &times; 10<sup>&minus;7</sup> &times; 0.95</span> rounds back to itself and it
-<b>stalls</b>. The general rule: a factor <span class="math">1 &minus; &delta;</span> only behaves if
-<span class="math">&delta;</span> is comfortably larger than the gap just below 1,
-<span class="math">2<sup>&minus;(M+1)</sup></span> — and the value must stay well above the format's floor.</p>
+<b>stalls</b>. The general rule: a factor <span class="math">1 &minus; &delta;</span> only works if
+<span class="math">&delta;</span> is clearly larger than the gap just below 1,
+<span class="math">2<sup>&minus;(M+1)</sup></span>, and the value stays well above the format's floor.</p>
 </div></details>
 </div></div>
 
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
-<li><a href="https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html">Goldberg 1991 — What Every Computer Scientist Should Know About Floating-Point Arithmetic</a> — the classic, including why ties-to-even and why subnormals.</li>
-<li><a href="https://arxiv.org/abs/2209.05433">Micikevicius et al. 2022 — FP8 Formats for Deep Learning</a> — e4m3 and e5m2, and the argument for reclaiming e4m3's special values.</li>
-<li><a href="https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf">OCP Microscaling Formats (MX) v1.0 Specification</a> — MXFP8/6/4, MXINT8 and the E8M0 scale; and <a href="https://arxiv.org/abs/2310.10537">Rouhani et al. 2023 — Microscaling Data Formats for Deep Learning</a>.</li>
-<li><a href="https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/">NVIDIA — Introducing NVFP4</a> — the 16-element block, e4m3 block scale and fp32 tensor scale.</li>
-<li><a href="https://arxiv.org/abs/2509.25149">NVIDIA 2025 — Pretraining Large Language Models with NVFP4</a> — 12B parameters, 10T tokens, stochastic rounding for gradients.</li>
-<li><a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 Technical Report</a> — §3.3: e4m3 on all tensors with 1×128 and 128×128 scaling.</li>
-<li><a href="https://arxiv.org/abs/2508.10925">OpenAI 2025 — gpt-oss-120b &amp; gpt-oss-20b Model Card</a> — MXFP4 MoE weights.</li>
-<li><a href="https://docs.pytorch.org/docs/stable/type_info.html">PyTorch — torch.finfo</a> — check any derivation in one line.</li>
-<li>Companion notebook: <code>notebooks/00_number_formats.ipynb</code> — every number in this chapter, recomputed.</li>
+<li><a href="https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html">Goldberg 1991, What Every Computer Scientist Should Know About Floating-Point Arithmetic</a>: the classic, including why ties go to even and why subnormals exist.</li>
+<li><a href="https://arxiv.org/abs/2209.05433">Micikevicius et al. 2022, FP8 Formats for Deep Learning</a>: e4m3 and e5m2, and the case for reclaiming e4m3's special values.</li>
+<li><a href="https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf">OCP Microscaling Formats (MX) v1.0 Specification</a>: MXFP8/6/4, MXINT8 and the E8M0 scale; and <a href="https://arxiv.org/abs/2310.10537">Rouhani et al. 2023, Microscaling Data Formats for Deep Learning</a>.</li>
+<li><a href="https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/">NVIDIA, Introducing NVFP4</a>: the 16-element block, the e4m3 block scale and the fp32 tensor scale.</li>
+<li><a href="https://arxiv.org/abs/2509.25149">NVIDIA 2025, Pretraining Large Language Models with NVFP4</a>: 12B parameters, 10T tokens, stochastic rounding for gradients.</li>
+<li><a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 Technical Report</a>, §3.3: e4m3 on all tensors with 1×128 and 128×128 scaling.</li>
+<li><a href="https://arxiv.org/abs/2508.10925">OpenAI 2025, gpt-oss-120b &amp; gpt-oss-20b Model Card</a>: MXFP4 MoE weights.</li>
+<li><a href="https://docs.pytorch.org/docs/stable/type_info.html">PyTorch, torch.finfo</a>: check any derivation in one line.</li>
+<li>Companion notebook: <code>notebooks/00_number_formats.ipynb</code>, every number in this chapter recomputed.</li>
 </ul>
 
 </main>
