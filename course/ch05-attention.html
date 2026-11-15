@@ -13,28 +13,28 @@
 
 <h1>5 · Attention From Scratch</h1>
 <p class="lead">
-This is the chapter. Everything before it was preparation; everything after it is refinement. We will derive
-attention rather than assert it — including <em>why</em> that <span class="math">√d<sub>k</sub></span> is
-there, which most tutorials skip.
+This is the central chapter of the course. The chapters before it prepare for it, and the chapters after it
+build on it. We will derive attention step by step, including <em>why</em> the <span class="math">√d<sub>k</sub></span>
+is there, which most tutorials skip.
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; q @ k.T is a batched matmul<br><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; attention reads from the residual stream<div class="sep"></div><span class="k">Leads to</span><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; one head becomes many<br><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; the T x T matrix is what FlashAttention refuses to write down<div class="sep"></div><span class="k">Why this chapter</span>The core mechanism, derived rather than asserted.</div>
 <div class="box intuition">
 <span class="t">The whole chapter in five sentences</span>
 <p style="margin-bottom:0"><b>Attention is a soft dictionary lookup</b>: each query scores every key, a
-softmax turns the scores into weights, and the output is the weighted average of the values. <b>The scores are
-divided by √d<sub>k</sub></b> so their variance does not grow with the head width and saturate the softmax.
-<b>Masks are applied before the softmax</b>, and the softmax itself is computed after subtracting the row maximum,
-or it overflows. <b>A causal mask turns one forward pass into T next-token predictions</b>, which is why
-training is efficient, and padding a batch adds the edge case of rows with nothing to attend to. <b>The cost is
-quadratic in sequence length</b>, and modern models add QK-norm, soft-capping and sinks to keep the scores
-well behaved at scale.</p>
+softmax turns the scores into weights, and the output is the weighted average of the values. The scores are
+divided by √d<sub>k</sub> so that their variance does not grow with the head width and saturate the softmax.
+Masks are applied before the softmax, and the softmax itself subtracts the row maximum first, or it overflows.
+A causal mask turns one forward pass into T next-token predictions, which is why training is efficient, and
+padding a batch adds the special case of rows with nothing to attend to. The cost grows with the square of the
+sequence length, and modern models add QK-norm, soft-capping and sinks to keep the scores
+under control at scale.</p>
 </div>
 
 <h2>5.1 · The problem attention was invented to solve</h2>
 
-<p>Before 2014, translation worked like this: an RNN encoder read the source sentence one word at a time,
-squeezing it into a single fixed-size vector; an RNN decoder then unrolled that vector into the target
+<p>Before 2014, translation worked like this. An RNN encoder read the source sentence one word at a time and
+squeezed it into a single vector of fixed size. An RNN decoder then unrolled that vector into the target
 sentence.</p>
 
 <figure>
@@ -72,42 +72,42 @@ sentence.</p>
     <path d="M322 57 H360 M412 57 H422 M474 57 H484 M536 57 H546" stroke="var(--dim-3,#B815B0)" stroke-width="1.5"/>
   </g>
 </svg>
-<figcaption>Every word of the source has to fit through one vector. Translation quality collapsed on long sentences.</figcaption>
+<figcaption>Every word of the source has to pass through one vector, so translation quality fell apart on long sentences.</figcaption>
 </figure>
 
-<p>Bahdanau, Cho and Bengio's fix (2014) was: <b>don't compress. Keep all the encoder states, and let the
-decoder look back at whichever ones it needs, at every step.</b> "Which ones it needs" is computed by a
-small learned scoring function whose output is softmaxed into weights. That is attention.</p>
+<p>Bahdanau, Cho and Bengio's fix (2014) was to <b>skip the compression: keep all the encoder states, and let the
+decoder look back at whichever ones it needs, at every step.</b> A small learned scoring function decides which
+ones it needs, and its output goes through a softmax to become weights. That is attention.</p>
 
-<p>Vaswani et al. (2017) then asked the aggressive question: <i>if attention is doing all the work, do we need
-the RNN at all?</i> The answer was no — and the title <i>Attention Is All You Need</i> is not hyperbole,
-it's a literal description of the ablation.</p>
+<p>Vaswani et al. (2017) then asked a bolder question: <i>if attention is doing all the work, do we need
+the RNN at all?</i> They found that we do not. The title <i>Attention Is All You Need</i> describes
+that experiment literally.</p>
 
 <div class="box math-note">
 <span class="t">Why removing the RNN mattered so much</span>
-<p style="margin-bottom:0">An RNN must process token <code>t</code> before token <code>t+1</code> — it is
-<b>inherently sequential</b>, so training cannot be parallelised across the time axis. Attention computes all
-positions <b>simultaneously</b> as one big matmul. That is the entire reason transformers scaled and RNNs
-didn't: not that attention is smarter, but that it saturates a GPU.</p>
+<p style="margin-bottom:0">An RNN has to process token <code>t</code> before token <code>t+1</code>. It is
+<b>sequential by nature</b>, so training cannot run in parallel along the time axis. Attention computes all
+positions <b>at the same time</b>, as one big matmul. That is the main reason transformers scaled and RNNs
+did not: attention keeps a GPU fully busy.</p>
 </div>
 
 <h2>5.2 · The intuition: a soft dictionary lookup</h2>
 
-<p>Start with something you already know — a Python dict:</p>
+<p>Start with something you already know, a Python dict:</p>
 
 <pre><code>d = {"cat": [1, 0, 0], "dog": [0, 1, 0], "bird": [0, 0, 1]}
 d["cat"]        # exact match on the key → return that one value
 </code></pre>
 
-<p>A dictionary lookup is: compare my <b>query</b> against every <b>key</b>; where it matches, return the
-<b>value</b>. The match is hard — 100% on one key, 0% on the rest.</p>
+<p>A dictionary lookup compares my <b>query</b> with every <b>key</b> and returns the
+<b>value</b> where they match. The match is all or nothing: 100% on one key and 0% on the rest.</p>
 
 <div class="box intuition">
 <span class="t">Attention is the same operation, made soft and differentiable</span>
 <ul style="margin-bottom:0">
-<li>Compare the query to <b>every</b> key, getting a <b>similarity score</b> instead of a boolean.</li>
-<li>Softmax those scores into weights that sum to 1.</li>
-<li>Return a <b>weighted average of all the values</b> instead of just one.</li>
+<li>Compare the query with <b>every</b> key, and get a <b>similarity score</b> instead of true or false.</li>
+<li>Turn those scores into weights that sum to 1, using a softmax.</li>
+<li>Return a <b>weighted average of all the values</b> instead of a single one.</li>
 </ul>
 </div>
 
@@ -124,15 +124,15 @@ d["cat"]        # exact match on the key → return that one value
 </table>
 </div>
 
-<p>Concretely, in <i>"The animal didn't cross the street because <b>it</b> was too tired"</i>: when processing
-<b>it</b>, the query encodes something like <i>"I am a pronoun and I need my referent"</i>. The keys of
+<p>For example, in <i>"The animal didn't cross the street because <b>it</b> was too tired"</i>: when the model processes
+<b>it</b>, the query encodes something like <i>"I am a pronoun and I need the word I refer to"</i>. The keys of
 <i>animal</i> and <i>street</i> encode <i>"I am a noun that can be referred to"</i>. <i>animal</i> scores
-higher (it can be tired), so most of the weight lands there, and <b>it</b>'s output vector becomes heavily
-mixed with <i>animal</i>'s value.</p>
+higher (an animal can be tired), so most of the weight lands there, and the output vector for <b>it</b> ends up
+mostly made of <i>animal</i>'s value.</p>
 
 <h2>5.3 · Where Q, K, and V come from</h2>
 
-<p>Crucially, they are all <b>projections of the same input</b>. This is what "self-attention" means.</p>
+<p>All three are <b>projections of the same input</b>. That is what "self-attention" means.</p>
 
 <pre><code>x = ...                      # (B, T, C)   the residual stream
 
@@ -148,10 +148,10 @@ v = W_v(x)                   # (B, T, C)   "what do I pass on if selected?"
 <div class="box intuition">
 <span class="t">Why three different projections of the same thing?</span>
 <p style="margin-bottom:0">Because <b>asking</b> and <b>being asked about</b> are different roles. The word
-<i>"it"</i> should be a strong <i>query</i> for referents but a weak <i>key</i> — nothing wants to attend to
-<i>"it"</i>. One shared projection couldn't express that asymmetry. Splitting Q from K lets the score matrix
-be <b>non-symmetric</b>: <code>score(i→j) ≠ score(j→i)</code>. And separating V lets "how relevant am I"
-be decoupled from "what do I actually contribute".</p>
+<i>"it"</i> should be a strong <i>query</i> for the word it refers to, but a weak <i>key</i>, because nothing needs to
+attend to <i>"it"</i>. One shared projection could not express that difference. Splitting Q from K lets the score matrix
+be <b>non-symmetric</b>: <code>score(i→j) ≠ score(j→i)</code>. Separating V as well lets "how relevant am I"
+differ from "what do I contribute".</p>
 </div>
 
 <h2>5.4 · The formula, derived</h2>
@@ -161,15 +161,15 @@ Attention(Q, K, V) = softmax<big>(</big><span class="frac"><span class="n">Q K<s
 <span class="lbl">Vaswani et al., 2017 — "Scaled Dot-Product Attention"</span>
 </div>
 
-<p>Four steps. Let's take them one at a time, with shapes, for a single sequence
+<p>There are four steps. Here they are one at a time, with shapes, for a single sequence
 (<code>T</code> tokens, <code>d_k</code> features).</p>
 
 <h3>Step 1 — score every query against every key</h3>
 <pre><code>scores = q @ k.transpose(-2, -1)        # (T, d_k) @ (d_k, T) → (T, T)
 </code></pre>
-<p><code>scores[i, j]</code> = how much token <code>i</code> should attend to token <code>j</code>.
-The <code>d_k</code> axis is consumed — that's the dot product. Output is <b>T×T</b>, and that quadratic
-term is the source of every efficiency problem in Part IV.</p>
+<p><code>scores[i, j]</code> is how much token <code>i</code> should attend to token <code>j</code>.
+The <code>d_k</code> axis is consumed, which is the dot product. The output is <b>T×T</b>, and that square
+term causes every efficiency problem in Part IV.</p>
 
 <h3>Step 2 — scale by <span class="math">√d<sub>k</sub></span></h3>
 <pre><code>scores = scores / math.sqrt(d_k)
@@ -180,20 +180,20 @@ term is the source of every efficiency problem in Part IV.</p>
 <p>Assume the components of <span class="math">q</span> and <span class="math">k</span> are independent with
 mean 0 and variance 1. Their dot product is</p>
 <div class="mathblock" style="margin:.8em 0">q · k = <span class="op">Σ</span><sub>i=1</sub><sup>d<sub>k</sub></sup> q<sub>i</sub> k<sub>i</sub></div>
-<p>Each term <span class="math">q<sub>i</sub>k<sub>i</sub></span> has mean 0 and variance 1 (product of
-independent unit-variance variables). Summing <span class="math">d<sub>k</sub></span> independent terms
-<b>adds the variances</b>:</p>
+<p>Each term <span class="math">q<sub>i</sub>k<sub>i</sub></span> has mean 0 and variance 1 (the product of
+independent variables with unit variance). Adding <span class="math">d<sub>k</sub></span> independent terms
+<b>adds their variances</b>:</p>
 <div class="mathblock" style="margin:.8em 0">
 Var(q · k) = d<sub>k</sub> &nbsp;&nbsp;⟹&nbsp;&nbsp; std(q · k) = √d<sub>k</sub>
 </div>
 <p style="margin-bottom:0">So with <span class="math">d<sub>k</sub></span> = 64, typical scores are around
-±8; with <span class="math">d<sub>k</sub></span> = 128, around ±11. Feed ±11 into a softmax and it saturates —
-one weight goes to ~1.0, the rest to ~0, and <b>the gradient of softmax at saturation is essentially zero</b>.
-Training stalls. Dividing by <span class="math">√d<sub>k</sub></span> restores unit variance regardless of
-head size, keeping softmax in its responsive region.</p>
+±8, and with <span class="math">d<sub>k</sub></span> = 128, around ±11. Feed ±11 into a softmax and it saturates:
+one weight goes to ~1.0 and the rest to ~0, and <b>the gradient of a saturated softmax is almost zero</b>.
+Training stalls. Dividing by <span class="math">√d<sub>k</sub></span> restores unit variance whatever the
+head size, which keeps the softmax in the range where it responds to its inputs.</p>
 </div>
 
-<p>Turn off the "divide by √d_k" toggle below and push <code>d_k</code> up. Watch the weights collapse onto
+<p>Turn off the "divide by √d_k" toggle below and push <code>d_k</code> up. Watch the weights pile onto
 a single cell:</p>
 
 <div data-viz="attention" data-t="7" data-tokens="The cat sat on the warm mat"></div>
@@ -207,24 +207,24 @@ attn   = scores.softmax(dim=-1)                          # (T, T), each ROW sums
 <span class="t">The mask must be applied before the softmax, with −∞ not 0</span>
 <p style="margin-bottom:0">Setting masked scores to <code>-inf</code> makes <code>exp(-inf) = 0</code>, so
 they contribute nothing <i>and the remaining weights still sum to exactly 1</i>. Zeroing the weights
-<i>after</i> softmax would leave the row summing to less than 1 — a systematic, silent shrinkage of the
-output. In practice use a large negative number like <code>-1e9</code> for fp32 or
-<code>torch.finfo(dtype).min</code> for fp16/bf16, because <code>-inf</code> can produce <code>NaN</code>
-if an entire row is masked (which happens with padding).</p>
+<i>after</i> the softmax would leave the row summing to less than 1, which shrinks the output
+in a steady, silent way. In practice, use a large negative number such as <code>-1e9</code> for fp32 or
+<code>torch.finfo(dtype).min</code> for fp16 and bf16, because <code>-inf</code> can produce <code>NaN</code>
+when a whole row is masked (which happens with padding).</p>
 </div>
 
-<p>Note <code>dim=-1</code>: we normalise across <b>keys</b>, so each query distributes 100% of its attention
-across the things it can see. Using <code>dim=-2</code> normalises across queries — a real bug that
+<p>Note the <code>dim=-1</code>: we normalise across <b>keys</b>, so each query shares out 100% of its attention
+over the things it can see. <code>dim=-2</code> normalises across queries instead, a real bug that
 still trains, badly.</p>
 
 <h3>Computing the softmax without overflowing</h3>
 
 <p>The formula <code>softmax(x)<sub>i</sub> = e<sup>x<sub>i</sub></sup> / Σ<sub>j</sub> e<sup>x<sub>j</sub></sup></code>
 cannot be computed as written. <code>e<sup>x</sup></code> overflows fp32 once <code>x &gt; ln(3.4×10<sup>38</sup>)
-= 88.72</code>, and fp16 once <code>x &gt; 11.09</code> (bf16 has fp32's range, so 88.72 again). Scores of
-that size are routine in a trained model. The fix uses the one symmetry the softmax has: adding a constant to
-every input changes nothing, because it multiplies numerator and denominator by the same
-<code>e<sup>c</sup></code>. Choose <code>c = −max(x)</code>:</p>
+= 88.72</code>, and fp16 once <code>x &gt; 11.09</code> (bf16 has fp32's range, so 88.72 again). Scores that large
+are normal in a trained model. The fix uses the softmax's one symmetry: adding a constant to every input changes
+nothing, because it multiplies the numerator and the denominator by the same <code>e<sup>c</sup></code>.
+Choose <code>c = −max(x)</code>:</p>
 
 <div class="mathblock">
 softmax(x)<sub>i</sub> = e<sup>x<sub>i</sub> − m</sup> / <span class="op">Σ</span><sub>j</sub> e<sup>x<sub>j</sub> − m</sup> &nbsp;&nbsp;&nbsp; m = max<sub>j</sub> x<sub>j</sub>
@@ -240,34 +240,34 @@ and <code>inf / inf</code> is <code>NaN</code>. Output: <code>[nan, nan, nan]</c
 <b>Subtract the max</b>: the scores become <code>[0, −1, −2]</code>, the exponentials
 <code>[1, 0.3679, 0.1353]</code>, their sum 1.5032.</div></div>
 <div class="step"><div class="i">3</div><div>
-<b>Divide</b>: <code>[0.6652, 0.2447, 0.0900]</code> (<code>stable_softmax</code>). Exactly what the formula
-means, with no intermediate above 1.</div></div>
+<b>Divide</b>: <code>[0.6652, 0.2447, 0.0900]</code> (<code>stable_softmax</code>). This is exactly what the formula
+means, and no intermediate value is above 1.</div></div>
 </div>
 
-<p>Every library softmax does this internally, so you rarely write it. You need it in your head for two
-reasons. The cross-entropy loss uses the same trick as <code>log Σ e<sup>x</sup> = m + log Σ e<sup>x−m</sup></code>
+<p>Every library softmax does this for you, so you rarely write it. You need to understand it for two
+reasons. The cross-entropy loss uses the same trick in the form <code>log Σ e<sup>x</sup> = m + log Σ e<sup>x−m</sup></code>
 (the <i>log-sum-exp</i>), which is why you should pass logits, not probabilities, to
 <code>F.cross_entropy</code>. And FlashAttention (Chapter 17) computes the softmax in tiles without ever seeing
-the whole row, so it does not know <code>m</code> in advance; its "online softmax" keeps a running max and
-rescales what it has summed so far each time the max grows. That algorithm is this one, made incremental.</p>
+the whole row, so it does not know <code>m</code> in advance. Its "online softmax" keeps a running maximum and
+rescales the sum so far each time the maximum grows. It is the same algorithm, done one piece at a time.</p>
 
 <h3>Step 4 — weighted sum of values</h3>
 <pre><code>out = attn @ v                          # (T, T) @ (T, d_v) → (T, d_v)
 </code></pre>
-<p>Row <code>i</code> of the output is <code>Σ_j attn[i,j] · v[j]</code> — a convex combination of every
-value vector. The <code>T</code> axis is consumed this time. The output has the same shape as the input,
-which is what lets you stack these forever.</p>
+<p>Row <code>i</code> of the output is <code>Σ_j attn[i,j] · v[j]</code>, a weighted average of every
+value vector. This time the <code>T</code> axis is consumed. The output has the same shape as the input,
+which is what lets you stack these layers as deep as you like.</p>
 
 <h2>5.5 · One complete pass, by hand, with real numbers</h2>
 
-<p>Formulas are easy to nod along to. Here is attention computed end to end on three tokens with
+<p>It is easy to nod along to formulas. Here is attention computed end to end on three tokens with
 <span class="math">d<sub>k</sub></span> = 2, small enough to check every number with a calculator.
-Do check them — that is the exercise.</p>
+Do check them; that is the exercise.</p>
 
 <div class="mn">
-  <span class="k">Why so tiny</span>
+  <span class="k">Why so small</span>
   Real models use <span class="math">d<sub>k</sub></span> = 64 or 128 and thousands of tokens. The
-  arithmetic is identical; only the size of the loops changes.
+  arithmetic is the same; only the size of the loops changes.
 </div>
 
 <div class="example">
@@ -330,9 +330,9 @@ That is what lets you stack these forever.
 </div></div>
 
 <p style="margin-bottom:0"><b>Read the result.</b> Token 0 can only see itself, so its output <i>is</i> its
-own value. Token 1 blends itself with token 0, leaning towards its own. Token 2 sees everything and lands
-in the middle. <b>Every output is a weighted average of value vectors</b> — attention never invents a
-direction, it only mixes existing ones.</p>
+own value. Token 1 blends itself with token 0, leaning towards itself. Token 2 sees everything and lands
+in the middle. <b>Every output is a weighted average of value vectors</b>: attention only mixes existing
+directions and never creates a new one.</p>
 </div>
 
 <pre><code># Verify all of the above:
@@ -351,9 +351,9 @@ assert torch.allclose(attn.sum(-1), torch.ones(3))     # every row sums to 1</co
 
 <div class="box intuition">
 <span class="t">The one thing to carry forward</span>
-<p style="margin-bottom:0">Attention output is <b>always a convex combination of value vectors</b> —
-weights that are non-negative and sum to 1. It cannot amplify beyond the range of its inputs and it
-cannot invent a new direction. Everything a transformer "does" comes from choosing <i>which</i> values
+<p style="margin-bottom:0">Attention's output is <b>always a weighted average of value vectors</b>, with
+weights that are non-negative and sum to 1. It cannot go beyond the range of its inputs, and it
+cannot create a new direction. Everything a transformer does comes from choosing <i>which</i> values
 to mix, and from the MLP that follows.</p>
 </div>
 
@@ -394,9 +394,9 @@ w[0, 3]              # row 3: nonzero for j<=3, exactly 0 for j>3
 <div class="box intuition">
 <span class="t">In production, call the fused kernel</span>
 <pre style="margin:.6em 0 0"><code>out = F.scaled_dot_product_attention(q, k, v, is_causal=True)</code></pre>
-<p style="margin-bottom:0">PyTorch dispatches this to FlashAttention when it can. It is <i>numerically
-identical</i> to the code above but never materialises the <code>(T,T)</code> matrix — the subject of
-Chapter 17. Write the loop version once to understand it; call the fused one forever after.</p>
+<p style="margin-bottom:0">PyTorch sends this to FlashAttention when it can. The result is <i>numerically
+identical</i> to the code above, but the <code>(T,T)</code> matrix is never built, which is the subject of
+Chapter 17. Write the loop version once to understand it, then use the fused one from then on.</p>
 </div>
 
 <div class="quiz" data-title="Checkpoint 1 — the mechanism">
@@ -404,27 +404,27 @@ Chapter 17. Write the loop version once to understand it; call the fused one for
   <div class="qq">Why divide by <span class="math">√d<sub>k</sub></span> rather than <span class="math">d<sub>k</sub></span>?</div>
   <div class="opts">
     <div class="opt">√d_k is faster to compute</div>
-    <div class="opt">Dividing by d_k would make scores too large</div>
+    <div class="opt">Dividing by d_k would make the scores too large</div>
     <div class="opt">The <i>standard deviation</i> of the dot product grows like √d_k, so √d_k is exactly what restores unit variance</div>
-    <div class="opt">It's an empirical constant with no derivation</div>
+    <div class="opt">It is an empirical constant with no derivation</div>
   </div>
-  <div class="expl"><b>Variance adds; standard deviation is its square root.</b> Var(q·k) = d_k, so
-  std = √d_k. Dividing by d_k would over-correct, shrinking scores toward zero and making the softmax
-  nearly uniform — attention would stop discriminating.</div>
+  <div class="expl"><b>Variances add, and the standard deviation is the square root of the variance.</b> Var(q·k) = d_k, so
+  std = √d_k. Dividing by d_k would overcorrect: it would shrink the scores toward zero and make the softmax
+  nearly uniform, so attention would stop telling keys apart.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">You apply the causal mask <i>after</i> the softmax by multiplying the weights by a 0/1
   triangular matrix. What goes wrong?</div>
   <div class="opts">
     <div class="opt">Rows no longer sum to 1, so early tokens' outputs get systematically shrunk</div>
-    <div class="opt">Nothing — it's equivalent</div>
+    <div class="opt">Nothing; the two are equivalent</div>
     <div class="opt">The model can still see the future</div>
     <div class="opt">It produces NaN</div>
   </div>
-  <div class="expl"><b>Broken normalisation.</b> Token 0 should attend 100% to itself. Post-masking, its row
-  sums to whatever fraction happened to land on position 0 before masking — maybe 0.1. Its output vector is
-  then scaled down 10×, and that scaling varies by position. The model can't see the future either way, but
-  it now has a position-dependent magnitude artifact it must waste capacity correcting.</div>
+  <div class="expl"><b>Broken normalisation.</b> Token 0 should attend 100% to itself. With the mask applied afterwards, its row
+  sums to whatever share happened to land on position 0 before masking, maybe 0.1. Its output vector is
+  then 10× too small, and the shrinkage differs by position. The model cannot see the future either way, but
+  it now has a size distortion that depends on position, and it has to spend capacity correcting it.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq"><code>q</code> is <code>(B, T_q, d)</code> and <code>k</code>,<code>v</code> are
@@ -435,10 +435,10 @@ Chapter 17. Write the loop version once to understand it; call the fused one for
     <div class="opt">(B, T_k, T_q)</div>
     <div class="opt">(B, T_q, d)</div>
   </div>
-  <div class="expl"><b>(B, T_q, d).</b> The scores are <code>(B, T_q, T_k)</code>, then
+  <div class="expl"><b>(B, T_q, d).</b> The scores are <code>(B, T_q, T_k)</code>, and
   <code>(B,T_q,T_k) @ (B,T_k,d)</code> consumes <code>T_k</code>, leaving <code>(B, T_q, d)</code>.
-  <b>The output always has one vector per query</b>, regardless of how many keys there were. That's what
-  makes cross-attention work in encoder–decoder models: the decoder keeps its own length while reading an
+  <b>The output always has one vector per query</b>, however many keys there were. That is what
+  makes cross-attention work in encoder-decoder models: the decoder keeps its own length while reading an
   encoder of any length.</div>
 </div>
 </div>
@@ -457,16 +457,16 @@ Chapter 17. Write the loop version once to understand it; call the fused one for
 </div>
 
 <p>The causal mask is what makes autoregressive training efficient. Because position <code>i</code> can only
-see <code>≤ i</code>, a single forward pass over a length-<code>T</code> sequence gives you <code>T</code>
-independent next-token predictions <i>at once</i>. Without the mask you'd need <code>T</code> separate forward
-passes. This is the trick that makes pretraining tractable.</p>
+see positions <code>≤ i</code>, a single forward pass over a sequence of length <code>T</code> gives you <code>T</code>
+separate next-token predictions <i>at once</i>. Without the mask you would need <code>T</code> separate forward
+passes. This is what makes pretraining affordable.</p>
 
 <h3>One pass, T losses: the cross-entropy over every position</h3>
 
-<p>Make that precise, because the training loss of every LLM is this one line. A sequence of token ids
+<p>Here is the precise version, because the training loss of every LLM is this one line. A sequence of token IDs
 <code>x<sub>0</sub> … x<sub>T−1</sub></code> goes in. The output at position <i>t</i> is a vector of
-<code>V</code> logits, <code>z<sub>t</sub></code>, and because of the causal mask it is a function of
-<code>x<sub>0</sub> … x<sub>t</sub></code> only. So it is a legitimate prediction of the <i>next</i> token
+<code>V</code> logits, <code>z<sub>t</sub></code>, and because of the causal mask it depends only on
+<code>x<sub>0</sub> … x<sub>t</sub></code>. So it is a fair prediction of the <i>next</i> token
 <code>x<sub>t+1</sub></code>, and the model's probability for the true next token is
 <code>p<sub>t</sub> = softmax(z<sub>t</sub>)[x<sub>t+1</sub>]</code>. The loss is the average negative
 log-probability over the <code>T − 1</code> positions that have a next token:</p>
@@ -476,14 +476,14 @@ log-probability over the <code>T − 1</code> positions that have a next token:<
 <span class="lbl">in code: F.cross_entropy(logits[:, :-1].reshape(-1, V), ids[:, 1:].reshape(-1)) — shift by one, flatten batch and time</span>
 </div>
 
-<p>The claim hidden in "at once" is that this equals running the model <code>T − 1</code> times on growing
+<p>"At once" hides a claim: that this equals running the model <code>T − 1</code> times on growing
 prefixes and scoring only the last position each time. That is true only if no position can see its future, and
 it is cheap to check. <code>tfs.foundations.all_position_loss_check</code> builds a 2-layer
 <code>tfs.model.Model</code>, computes the loss of a 12-token sequence in one forward pass, then recomputes all
-11 terms one prefix at a time: both give <b>3.96008</b>, equal to 10<sup>−5</sup>. If the mask leaked, the
+11 terms one prefix at a time. Both give <b>3.96008</b>, equal to within 10<sup>−5</sup>. If the mask leaked, the
 one-pass loss would be lower than the prefix-by-prefix one, because each position could read the answer. That
-gap is the signature of the "double shift" and "missing mask" bugs of Chapter 11, and the one-pass number
-looking <i>too good</i> is how you notice them.</p>
+gap is the sign of the "double shift" and "missing mask" bugs of Chapter 11, and a one-pass loss that looks
+<i>too good</i> is how you notice them.</p>
 
 <h2>5.8 · Complexity — the number that shapes everything after this</h2>
 
@@ -498,35 +498,35 @@ looking <i>too good</i> is how you notice them.</p>
 </table>
 </div>
 
-<p>Two lessons:</p>
+<p>Two lessons follow:</p>
 <ul>
-<li><b>Attention is quadratic in sequence length.</b> Doubling context quadruples attention cost.</li>
-<li><b>At short context, the weight matmuls dominate; at long context, attention dominates.</b> Per layer
-the two are equal when <code>4·T²·d = 24·T·d²</code>, i.e. at <b>T = 6·d_model</b>: about 25k tokens
-for d_model = 4096. At 1k tokens the weights cost 24× more than attention; at 128k attention costs 5× more.
-This is why "attention is O(T²)" only became an emergency once people wanted 128k contexts.</li>
+<li><b>Attention cost grows with the square of sequence length.</b> Doubling the context quadruples it.</li>
+<li><b>At short context the weight matmuls cost most; at long context attention does.</b> Per layer
+the two are equal when <code>4·T²·d = 24·T·d²</code>, that is at <b>T = 6·d_model</b>: about 25k tokens
+for d_model = 4096. At 1k tokens the weights cost 24× more than attention; at 128k, attention costs 5× more.
+That is why "attention is O(T²)" only became urgent once people wanted 128k contexts.</li>
 </ul>
 
-<p>The 1.1 TB figure is not a typo, and it explains FlashAttention's existence: naive attention at long context
-doesn't fit in memory <i>at all</i>, even though the final output is tiny.</p>
+<p>The 1.1 TB figure is correct, and it is why FlashAttention exists: naive attention at long context
+does not fit in memory <i>at all</i>, even though the final output is small.</p>
 
 <h2>5.9 · Batches, padding, and the all-masked row</h2>
 
 <p>Sequences in a batch have different lengths, and a tensor must be rectangular, so the short ones are
-<b>padded</b> to the longest. Padding needs a second mask, the <b>key-padding mask</b>: no query may attend to a
-pad. It is combined with the causal mask by AND. Where the pads go matters.</p>
+<b>padded</b> to the length of the longest. Padding needs a second mask, the <b>key-padding mask</b>: no query may attend
+to a pad. It is combined with the causal mask by AND. Where the pads go matters.</p>
 
 <p><b>Right padding</b> (pads after the text) is natural for training: every sequence starts at position 0 and
-the loss simply ignores pad targets (<code>ignore_index</code>). <b>Left padding</b> (pads before the text) is
-what batched <i>generation</i> needs. Generation appends one token per step to every row, at the same column.
-With right padding, a short row's last real token is in the middle of the tensor, and the new token would be
-appended after its pads. With left padding, every row's last real token is in the last column, so
-<code>logits[:, -1]</code> is the right prediction for every row and the next token goes in the next column for
+the loss just ignores pad targets (<code>ignore_index</code>). <b>Left padding</b> (pads before the text) is
+what batched <i>generation</i> needs. Generation adds one token per step to every row, in the same column.
+With right padding, a short row's last real token sits in the middle of the tensor, and the new token would be
+added after its pads. With left padding, every row's last real token is in the last column, so
+<code>logits[:, -1]</code> is the right prediction for every row, and the next token goes in the next column for
 all of them.</p>
 
-<p>Left padding has one obligation: <b>positions</b>. A row padded by two has its first real token in column 2,
-but it must get position 0, or RoPE (Chapter 7) rotates it as if two tokens came before. Position ids are
-computed from the padding mask, <code>pos = cumsum(mask) − 1</code>, rather than from the column index; the
+<p>Left padding brings one obligation: <b>positions</b>. A row padded by two has its first real token in column 2,
+but that token must get position 0, or RoPE (Chapter 7) rotates it as if two tokens came before it. Position IDs are
+computed from the padding mask, <code>pos = cumsum(mask) − 1</code>, instead of from the column index. The
 Hugging Face generation code does exactly this.</p>
 
 <div class="example">
@@ -543,74 +543,74 @@ query 2:  0 0 1 0 0
 query 3:  0 0 1 1 0
 query 4:  0 0 1 1 1</code></pre></div></div>
 <div class="step"><div class="i">3</div><div>
-<b>The first two rows have nothing to attend to.</b> With <code>−inf</code> fill, their softmax is
+<b>The first two rows have nothing to attend to.</b> With a <code>−inf</code> fill, their softmax is
 <code>e<sup>−inf</sup> / Σ e<sup>−inf</sup> = 0/0 = NaN</code>. Run <code>masked_attention</code> and the outputs
-for queries 0 and 1 are <code>NaN</code>, while queries 2–4 are fine. The NaN is harmless only if nothing ever
-reads it, and something always does: the next layer's matmul mixes it into every feature of that row, a
-reduction over the batch (a norm statistic, the loss before masking) spreads it further, and one NaN in the
-backward pass poisons every weight.</div></div>
+for queries 0 and 1 are <code>NaN</code>, while queries 2 to 4 are fine. The NaN would be harmless only if nothing ever
+read it, and something always does. The next layer's matmul mixes it into every feature of that row, a
+reduction over the batch (a norm statistic, or the loss before masking) spreads it further, and a single NaN in the
+backward pass ruins every weight.</div></div>
 </div>
 
-<p>Three fixes, in increasing order of correctness. Fill with <code>torch.finfo(dtype).min</code> instead of
-<code>−inf</code> (what §5.6's code does): the softmax of an all-masked row becomes uniform over the masked keys,
-finite but meaningless. Better, make the empty rows output zeros explicitly:
+<p>There are three fixes, from least to most correct. Fill with <code>torch.finfo(dtype).min</code> instead of
+<code>−inf</code> (as the code in §5.6 does): the softmax of a fully masked row becomes uniform over the masked keys,
+which is finite but meaningless. Better, make empty rows output zeros explicitly:
 <code>masked_attention_safe</code> multiplies the weights by <code>mask.any(-1)</code>, so queries 0 and 1 return
-exactly 0 and queries 2–4 are unchanged. Best, also exclude pad positions from the loss and from every
+exactly 0 and queries 2 to 4 are unchanged. Best, also leave pad positions out of the loss and every
 statistic, so their values never matter. Fused kernels (<code>scaled_dot_product_attention</code>, FlashAttention)
-handle fully masked rows internally; the bug appears in hand-written attention and in custom mask functions.</p>
+handle fully masked rows themselves; the bug appears in hand-written attention and in custom mask functions.</p>
 
 <h2>5.10 · Modern attention details: QK-norm, soft-capping, sinks</h2>
 
-<p>The mechanism above is the 2017 one. Production models since 2023 add three small changes, each aimed at a
-specific failure of the softmax at scale.</p>
+<p>Everything above is the 2017 mechanism. Production models since 2023 add three small changes, each aimed at a
+specific way the softmax fails at scale.</p>
 
 <h3>QK-norm: bound the logits</h3>
-<p>The √d<sub>k</sub> argument assumes q and k have unit-variance entries. Nothing keeps them that way in
-training: as the projection weights grow, the logits grow with the <i>product</i> of two weight norms, the
+<p>The √d<sub>k</sub> argument assumes that q and k have entries with unit variance. Nothing keeps them that way during
+training. As the projection weights grow, the logits grow with the <i>product</i> of two weight norms, the
 softmax saturates onto one key, and its gradient vanishes (Chapter 8 measures this). <b>QK-norm</b> applies an
-RMSNorm (with learned gain) to each head's q and k after projection, before RoPE. A vector after RMSNorm has
-length √d times its gain, so with gains near 1 the scaled logit obeys</p>
+RMSNorm (with a learned gain) to each head's q and k after the projection, before RoPE. A vector after RMSNorm has
+length √d times its gain, so with gains near 1 the scaled logit is bounded:</p>
 <div class="mathblock">
 | q̂ · k̂ | / √d<sub>k</sub> ≤ √d<sub>k</sub> · g<sub>q</sub> g<sub>k</sub>
 <span class="lbl">d<sub>k</sub> = 128, unit gains: at most 11.31, whatever the projection weights do (<code>qk_norm_logit_bound</code>)</span>
 </div>
-<p>Now only the gains can sharpen attention, and they are a few parameters the optimiser moves slowly. Used by
-OLMo 2, Gemma 3, Qwen3 and many others (Chapter 8 tells the instability story it fixes).</p>
+<p>Now only the gains can make attention sharper, and they are a few parameters the optimizer moves slowly. OLMo 2,
+Gemma 3, Qwen3 and many others use it (Chapter 8 describes the instability it fixes).</p>
 
 <h3>Logit soft-capping</h3>
-<p>The older alternative bounds the scores after the fact: <code>scores ← cap · tanh(scores / cap)</code>,
+<p>The older alternative limits the scores after the fact: <code>scores ← cap · tanh(scores / cap)</code>,
 with cap = 50 for Gemma 2's attention (the same function Chapter 4 applies to the output logits with cap 30).
-It works, but it adds an elementwise op inside the attention kernel that fused kernels must support, and
+It works, but it adds an elementwise step inside the attention kernel that fused kernels have to support, and
 Gemma 3 replaced it with QK-norm.</p>
 
 <h3>Attention sinks and the off-by-one softmax</h3>
-<p>The softmax forces every row to sum to 1. A head that has nothing to contribute at a position cannot output
-zero; it must spend its weight somewhere. Trained models solve this by making one position a dumping ground:
-<b>the first token</b> gets a large share of attention in most heads regardless of its content, and its value
-vector learns to be nearly harmless. Xiao et al. (2023) named this the <b>attention sink</b> and showed its
-consequence for inference: a sliding-window KV cache that evicts the first token makes the model collapse, while
+<p>The softmax forces every row to sum to 1. A head that has nothing to contribute at some position cannot output
+zero; it has to put its weight somewhere. Trained models solve this by using one position as a dumping ground.
+<b>The first token</b> gets a large share of attention in most heads, whatever its content, and its value
+vector learns to be nearly harmless. Xiao et al. (2023) called this the <b>attention sink</b> and showed what it
+means for inference: a sliding-window KV cache that evicts the first token makes the model collapse, while
 keeping just the first 4 tokens plus the window (StreamingLLM) works.</p>
 <p>The fix is to give the softmax a way out. Add one extra logit <i>s</i> that has no value vector. With
 <i>s</i> = 0 this is the "off-by-one" softmax <code>e<sup>x<sub>i</sub></sup> / (1 + Σ<sub>j</sub> e<sup>x<sub>j</sub></sup>)</code>;
-gpt-oss learns <i>s</i> per head (Chapter 22). On scores <code>[2.0, 1.0, 0.5]</code>
+gpt-oss learns <i>s</i> for each head (Chapter 22). On the scores <code>[2.0, 1.0, 0.5]</code>
 (<code>softmax_with_sink</code>):</p>
 <pre><code class="nohl">no sink (s = −∞):  0.6285 0.2312 0.1402    sum 1.0000   must attend somewhere
 s = 0:             0.5793 0.2131 0.1293    sum 0.9216
 s = 4:             0.1114 0.0410 0.0248    sum 0.1772   mostly switched off</code></pre>
-<p>A head can now abstain by raising <i>s</i> relative to its scores, and it no longer needs a junk token.
+<p>A head can now abstain by raising <i>s</i> above its scores, so it no longer needs a junk token.
 Qwen's gated attention (a sigmoid gate on the head's output) reaches the same goal from the other side.</p>
 
 <div class="quiz" data-title="Checkpoint 2 — numerics and batching">
 <div class="qitem" data-answer="1">
   <div class="qq">A hand-written fp16 softmax returns NaN for scores of about 12. Why, and what fixes it?</div>
   <div class="opts">
-    <div class="opt">fp16 cannot represent 12; use bf16</div>
-    <div class="opt">e<sup>12</sup> ≈ 1.6×10<sup>5</sup> exceeds fp16's maximum (65,504), so the exponentials overflow to inf and inf/inf is NaN; subtract the row max before exponentiating</div>
+    <div class="opt">fp16 cannot represent 12, so use bf16</div>
+    <div class="opt">e<sup>12</sup> ≈ 1.6×10<sup>5</sup> is above fp16's maximum (65,504), so the exponentials overflow to inf and inf/inf is NaN; subtract the row max before exponentiating</div>
     <div class="opt">The scores need to be divided by √d<sub>k</sub> again</div>
     <div class="opt">The mask was applied after the softmax</div>
   </div>
   <div class="expl"><b>fp16 overflows at e<sup>11.09</sup>.</b> Subtracting the max makes the largest exponent
-  e<sup>0</sup> and leaves the result mathematically unchanged. Switching to bf16 would also avoid this overflow,
+  e<sup>0</sup> and leaves the result mathematically the same. Switching to bf16 would also avoid this overflow,
   but the stable form is correct in every dtype.</div>
 </div>
 <div class="qitem" data-answer="3">
@@ -619,22 +619,22 @@ Qwen's gated attention (a sigmoid gate on the head's output) reaches the same go
     <div class="opt">Left padding uses less memory</div>
     <div class="opt">The causal mask only works with left padding</div>
     <div class="opt">Pads on the right would be attended to</div>
-    <div class="opt">So every row's last real token is in the last column: <code>logits[:, -1]</code> is the next-token prediction for all rows, and new tokens append in the same column</div>
+    <div class="opt">So that every row's last real token is in the last column: <code>logits[:, -1]</code> is the next-token prediction for every row, and new tokens go in the same column</div>
   </div>
-  <div class="expl"><b>Generation appends at a common column.</b> Either side works with a correct key-padding
-  mask; only left padding lines up every row's frontier. Remember the position ids: a left-padded row's first
+  <div class="expl"><b>Generation adds tokens in a shared column.</b> Either side works with a correct key-padding
+  mask, but only left padding lines up the end of every row. Remember the position IDs: a left-padded row's first
   real token must still get position 0.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">With left padding and a causal mask filled with <code>−inf</code>, which rows produce NaN?</div>
   <div class="opts">
-    <div class="opt">The pad query rows: each may only see keys at or before itself, and all of those are pads</div>
+    <div class="opt">The pad query rows: each may only see keys at or before its own position, and all of those are pads</div>
     <div class="opt">The last row</div>
     <div class="opt">Every row, because pads are present</div>
-    <div class="opt">None: the softmax handles −inf</div>
+    <div class="opt">None, because the softmax handles −inf</div>
   </div>
-  <div class="expl"><b>Empty rows give 0/0.</b> Queries 2–4 in the worked example see at least one real key and
-  are fine. The cure is to make empty rows output zero (or use a finite fill value) and keep pad positions out of
+  <div class="expl"><b>Empty rows give 0/0.</b> Queries 2 to 4 in the worked example see at least one real key, so they
+  are fine. The cure is to make empty rows output zero (or use a finite fill value) and to keep pad positions out of
   the loss and every statistic.</div>
 </div>
 <div class="qitem" data-answer="2">
@@ -642,11 +642,11 @@ Qwen's gated attention (a sigmoid gate on the head's output) reaches the same go
   <div class="opts">
     <div class="opt">The first token holds the positional encoding for the whole sequence</div>
     <div class="opt">The first token's value vector contains the system prompt</div>
-    <div class="opt">Many heads park their unused attention on it (an attention sink); without it, that weight is forced onto real tokens and corrupts the outputs</div>
+    <div class="opt">Many heads park their unused attention on it (an attention sink); without it, that weight is forced onto real tokens and distorts the outputs</div>
     <div class="opt">RoPE requires position 0 to exist</div>
   </div>
-  <div class="expl"><b>Softmax must sum to 1.</b> The sink is how heads approximate "attend to nothing". Keep a
-  few initial tokens in the cache (StreamingLLM), or give the softmax an explicit sink logit (gpt-oss) so no
+  <div class="expl"><b>The softmax must sum to 1.</b> The sink is how heads approximate "attend to nothing". Keep a
+  few initial tokens in the cache (StreamingLLM), or give the softmax an explicit sink logit (gpt-oss), so that no
   token has to play that role.</div>
 </div>
 </div>
@@ -656,28 +656,28 @@ Qwen's gated attention (a sigmoid gate on the head's output) reaches the same go
 <div class="exercise">
 <div class="eh"><span class="n">5.1</span><span class="ti">Implement and verify against PyTorch</span><span class="lvl">essential</span></div>
 <div class="eb">
-<p>Write <code>attention(q, k, v, causal)</code> from scratch. Verify it matches
+<p>Write <code>attention(q, k, v, causal)</code> from scratch. Check that it matches
 <code>F.scaled_dot_product_attention(q, k, v, is_causal=True)</code> to within <code>1e-5</code> for
-random inputs of shape <code>(2, 4, 16, 64)</code>. Then <b>deliberately introduce each of these bugs</b>
+random inputs of shape <code>(2, 4, 16, 64)</code>. Then <b>add each of these bugs on purpose</b>
 and describe what changes in the output:</p>
 <ol>
 <li>Forget the <code>/√d_k</code></li>
 <li>Use <code>softmax(dim=-2)</code></li>
-<li>Use <code>k @ q.transpose(-2,-1)</code> instead</li>
-<li>Apply the mask after softmax</li>
+<li>Use <code>k @ q.transpose(-2,-1)</code> instead of q times k transposed</li>
+<li>Apply the mask after the softmax</li>
 </ol>
 <details class="reveal"><summary>What each bug does</summary><div>
 <ol>
-<li>Weights become near-one-hot; the output nearly equals a single value vector. Gradients through softmax
+<li>The weights become nearly one-hot, and the output is almost a single value vector. Gradients through the softmax
 shrink toward zero.</li>
-<li>Columns sum to 1 instead of rows. The output is no longer a convex combination of values — magnitudes
-vary wildly by position. Trains, badly.</li>
-<li>You get the <i>transpose</i> of the score matrix: token i's row now contains "how much everyone attends to
-i". With a causal mask this is catastrophic — it inverts the direction of information flow.</li>
-<li>Rows sum to &lt;1, position-dependent output shrinkage (see Checkpoint 1).</li>
+<li>Columns sum to 1 instead of rows. The output is no longer a weighted average of values, and its size
+varies wildly by position. It trains, badly.</li>
+<li>You get the <i>transpose</i> of the score matrix: token i's row now holds how much everyone attends to
+i. With a causal mask this is disastrous, because it reverses the direction in which information flows.</li>
+<li>Rows sum to &lt;1, so outputs shrink by different amounts at different positions (see Checkpoint 1).</li>
 </ol>
-<p style="margin-bottom:0"><b>The point of this exercise:</b> none of these four bugs raises an exception.
-Three of them still train to a plausible-looking loss curve. This is why you verify against a reference
+<p style="margin-bottom:0"><b>The point of this exercise:</b> none of these four bugs raises an exception,
+and three of them still train to a loss curve that looks plausible. That is why you check against a reference
 implementation.</p>
 </div></details>
 </div></div>
@@ -685,15 +685,15 @@ implementation.</p>
 <div class="exercise">
 <div class="eh"><span class="n">5.2</span><span class="ti">Measure the √d_k effect</span><span class="lvl">code</span></div>
 <div class="eb">
-<p>For <code>d_k in [4, 16, 64, 256, 1024]</code>, sample <code>q, k ~ N(0,1)</code> of shape
-<code>(1000, d_k)</code>, compute <code>(q*k).sum(-1)</code>, and report the empirical standard deviation.
-Confirm it equals <span class="math">√d<sub>k</sub></span>. Then compute the entropy of
+<p>For <code>d_k in [4, 16, 64, 256, 1024]</code>, sample <code>q, k ~ N(0,1)</code> with shape
+<code>(1000, d_k)</code>, compute <code>(q*k).sum(-1)</code>, and report the measured standard deviation.
+Confirm that it equals <span class="math">√d<sub>k</sub></span>. Then compute the entropy of
 <code>softmax(scores)</code> with and without scaling, and plot it against <code>d_k</code>.</p>
 <details class="reveal"><summary>What you'll see</summary><div>
-<p style="margin-bottom:0">Empirical std tracks √d_k almost exactly. Unscaled entropy falls toward 0 as d_k
-grows (the distribution collapses to one-hot); scaled entropy stays roughly constant. That constant-entropy
-property across head sizes is exactly what the scaling factor buys you, and it's why the same architecture
-works at d_head=64 and d_head=256.</p>
+<p style="margin-bottom:0">The measured std follows √d_k almost exactly. The unscaled entropy falls toward 0 as d_k
+grows (the distribution collapses to one-hot), while the scaled entropy stays roughly constant. Keeping the entropy
+the same across head sizes is what the scaling factor gives you, and it is why the same architecture
+works at d_head=64 and at d_head=256.</p>
 </div></details>
 </div></div>
 
@@ -705,17 +705,17 @@ works at d_head=64 and d_head=256.</p>
 several (layer, head) pairs.</p>
 <ol>
 <li>Find a head where <i>"it"</i> attends strongly to <i>"animal"</i>.</li>
-<li>Find a "previous token" head — one whose matrix is a clean sub-diagonal.</li>
-<li>Find an "attention sink" — a head where most positions dump weight on token 0.</li>
+<li>Find a "previous token" head: one whose matrix is a clean line just below the diagonal.</li>
+<li>Find an "attention sink": a head where most positions put their weight on token 0.</li>
 </ol>
 <details class="reveal"><summary>Notes on what you'll find</summary><div>
 <p>All three exist in GPT-2. Previous-token heads are common in early layers. The <b>attention sink</b> is
-the interesting one: the first token (often BOS) receives large attention from many heads for reasons
-unrelated to its content — it acts as a "null option" when a head has nothing it wants to attend to, because
-softmax forces every row to sum to 1 whether or not anything is relevant.</p>
-<p style="margin-bottom:0">This is not a curiosity. Attention sinks are why naive sliding-window KV eviction
-breaks models, and the <a href="https://arxiv.org/abs/2309.17453">StreamingLLM</a> paper's fix — always keep
-the first few tokens in the cache — comes directly from this observation. We return to it in Chapter 21.</p>
+the most interesting one: the first token (often BOS) receives a lot of attention from many heads, for reasons
+that have nothing to do with its content. It works as a "none of the above" option for a head that has nothing
+it wants to attend to, because the softmax forces every row to sum to 1 whether or not anything is relevant.</p>
+<p style="margin-bottom:0">This has practical consequences. Attention sinks are why naive sliding-window KV eviction
+breaks models, and the <a href="https://arxiv.org/abs/2309.17453">StreamingLLM</a> paper's fix, always keeping
+the first few tokens in the cache, comes straight from this observation. We come back to it in Chapter 21.</p>
 </div></details>
 </div></div>
 
@@ -725,22 +725,22 @@ the first few tokens in the cache — comes directly from this observation. We r
 <p>A model has <code>n_layer=32</code>, <code>n_head=32</code>, <code>d_head=128</code>, <code>B=1</code>.</p>
 <ol>
 <li>How much memory does the full set of attention score matrices take in bf16 at <code>T=4096</code>?
-At <code>T=32768</code>?</li>
+And at <code>T=32768</code>?</li>
 <li>At what <code>T</code> do attention FLOPs (<code>~12·n_layer·d_model·T²</code>) exceed the
 parameter FLOPs (<code>~6N·T</code>, also for a training step) for a 7B model?</li>
 </ol>
 <details class="reveal"><summary>Answers</summary><div>
 <ol>
-<li>One layer's scores: <code>n_head × T² × 2 bytes</code>. At T=4096: 32 × 16.8M × 2 = <b>1.07 GB per
-layer</b>. All 32 layers at once would be 34 GB — though in practice you only hold one or two at a time.
-At T=32768 it's <b>68.7 GB for a single layer</b>. This is why FlashAttention isn't an optimisation, it's a
-prerequisite.</li>
+<li>One layer's scores take <code>n_head × T² × 2 bytes</code>. At T=4096: 32 × 16.8M × 2 = <b>1.07 GB per
+layer</b>. All 32 layers at once would take 34 GB, though in practice you only hold one or two at a time.
+At T=32768 it is <b>68.7 GB for a single layer</b>. At that length FlashAttention is a requirement, not an
+optimisation.</li>
 <li>Compare like with like. For a training step, attention costs <code>12·L·d·T²</code> per sequence
 (4 for the two matmuls, × 3 for forward and backward) and the weights cost <code>6·N·T</code>. Setting them
-equal: <code>T = N / (2·L·d) = 7e9 / (2·32·4096) ≈ 27k</code> tokens. (A common slip is to compare the
+equal gives <code>T = N / (2·L·d) = 7e9 / (2·32·4096) ≈ 27k</code> tokens. (A common slip is to compare the
 training attention figure with the <i>forward-only</i> <code>2N·T</code>, which gives a wrong ~9k.) A causal
-kernel that skips the masked half roughly doubles the crossover. Either way it sits inside the context lengths
-people now train at, which is why this stopped being a theoretical concern around 2023.</li>
+kernel that skips the masked half roughly doubles the crossover. Either way it falls inside the context lengths
+people now train at, which is why it stopped being a theoretical concern around 2023.</li>
 </ol>
 </div></details>
 </div></div>
@@ -749,21 +749,21 @@ people now train at, which is why this stopped being a theoretical concern aroun
 <div class="eh"><span class="n">5.5</span><span class="ti">Batched generation that matches unbatched</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>Using <code>tfs.model.Model</code> (or your own), implement greedy generation for a batch of prompts of
-different lengths with left padding. You need a key-padding mask in attention and position ids from
+different lengths with left padding. You need a key-padding mask in attention and position IDs from
 <code>cumsum(mask) − 1</code>.</p>
 <ol>
-<li>Generate 20 tokens for each prompt alone, then for all of them in one batch. Assert the outputs are
+<li>Generate 20 tokens for each prompt on its own, then for all of them in one batch. Assert that the outputs are
 identical.</li>
-<li>Break it on purpose: use the column index as the position. Which prompts change, and why do the longest
-ones not?</li>
-<li>Break it again: right-pad and read <code>logits[:, -1]</code>. What does each short prompt generate?</li>
+<li>Break it on purpose by using the column index as the position. Which prompts change, and why do the longest
+ones not change?</li>
+<li>Break it again: pad on the right and read <code>logits[:, -1]</code>. What does each short prompt generate?</li>
 </ol>
 <details class="reveal"><summary>What you should see</summary><div>
 <p style="margin-bottom:0">With correct masks and positions the outputs match token for token (in fp32; in bf16,
-batch-dependent kernel choices can flip near-ties, which is the nondeterminism Chapter 13 discusses). With column
+kernel choices that depend on the batch can flip near-ties, which is the nondeterminism Chapter 13 discusses). With column
 positions, every padded prompt is rotated as if it started later, so its outputs drift, while the longest prompt
-has no padding and is unaffected. With right padding, short prompts are continued from a pad token's logits:
-fluent-looking nonsense, which is why this bug survives casual testing.</p>
+has no padding and is unaffected. With right padding, short prompts are continued from a pad token's logits.
+The result is fluent-looking nonsense, which is why this bug survives casual testing.</p>
 </div></details>
 </div></div>
 
@@ -778,10 +778,10 @@ Then measure it. Then predict and measure what <code>torch.softmax</code> return
 <pre><code class="nohl">overflow of exp:  fp32 ln(3.40e38) = 88.72    fp16 ln(65504) = 11.09
                   bf16: ln(3.39e38) = 88.72, but measured inputs overflow from 88.75 up
 softmax([1000, 999]):  fp32 [0.7311, 0.2689]   fp16 [0.7310, 0.2690]   bf16 [0.5000, 0.5000]</code></pre>
-<p style="margin-bottom:0">The library softmax subtracts the max internally, so it never overflows; only your own
-<code>exp</code> does. The two bf16 surprises are the same effect: bf16 has 8 bits of precision, so near 88 its
-representable numbers are 0.5 apart (an input of 88.75 or more rounds up to 89, whose exponential overflows), and
-near 1000 they are 8 apart, so 999 <i>is</i> 1000 in bf16 and the two scores are equal before the softmax ever
+<p style="margin-bottom:0">The library softmax subtracts the max for you, so it never overflows; only your own
+<code>exp</code> does. The two bf16 surprises have the same cause. bf16 has 8 bits of precision, so near 88 the numbers
+it can hold are 0.5 apart (an input of 88.75 or more rounds up to 89, whose exponential overflows), and
+near 1000 they are 8 apart, so 999 <i>is</i> 1000 in bf16 and the two scores are equal before the softmax even
 runs. Range is not the only thing that can break attention scores; precision can too, which is why attention
 kernels keep scores in fp32.</p>
 </div></details>
@@ -789,13 +789,13 @@ kernels keep scores in fp32.</p>
 
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
-<li><a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017 — Attention Is All You Need</a> — read §3.2 alongside this chapter.</li>
-<li><a href="https://arxiv.org/abs/1409.0473">Bahdanau et al. 2014</a> — the original attention mechanism.</li>
-<li><a href="https://jalammar.github.io/illustrated-transformer/">Jay Alammar — The Illustrated Transformer</a> — the classic visual companion.</li>
-<li><a href="https://nlp.seas.harvard.edu/annotated-transformer/">The Annotated Transformer</a> (Harvard NLP) — the paper, line by line, as runnable code.</li>
-<li><a href="https://www.youtube.com/watch?v=kCc8FmEb1nY">Karpathy — Let's build GPT from scratch</a> — 2 hours, builds exactly this.</li>
-<li><a href="https://arxiv.org/abs/2309.17453">Xiao et al. 2023 — Efficient Streaming Language Models with Attention Sinks</a> · <a href="https://www.evanmiller.org/attention-is-off-by-one.html">Miller 2023 — Attention Is Off By One</a></li>
-<li><a href="https://arxiv.org/abs/2302.05442">Dehghani et al. 2023 — Scaling Vision Transformers to 22B Parameters</a> (QK-norm) · <a href="https://arxiv.org/abs/2408.00118">Gemma 2</a> (attention soft-capping at 50)</li>
+<li><a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017, Attention Is All You Need</a>: read §3.2 alongside this chapter.</li>
+<li><a href="https://arxiv.org/abs/1409.0473">Bahdanau et al. 2014</a>: the original attention mechanism.</li>
+<li><a href="https://jalammar.github.io/illustrated-transformer/">Jay Alammar, The Illustrated Transformer</a>: the classic visual companion.</li>
+<li><a href="https://nlp.seas.harvard.edu/annotated-transformer/">The Annotated Transformer</a> (Harvard NLP): the paper, line by line, as code you can run.</li>
+<li><a href="https://www.youtube.com/watch?v=kCc8FmEb1nY">Karpathy, Let's build GPT from scratch</a>: 2 hours, and it builds exactly this.</li>
+<li><a href="https://arxiv.org/abs/2309.17453">Xiao et al. 2023, Efficient Streaming Language Models with Attention Sinks</a> · <a href="https://www.evanmiller.org/attention-is-off-by-one.html">Miller 2023, Attention Is Off By One</a></li>
+<li><a href="https://arxiv.org/abs/2302.05442">Dehghani et al. 2023, Scaling Vision Transformers to 22B Parameters</a> (QK-norm) · <a href="https://arxiv.org/abs/2408.00118">Gemma 2</a> (attention soft-capping at 50)</li>
 <li>Reference code: <code>tfs/foundations.py</code> (Ch 5 section) · tests: <code>tests/test_foundations.py</code></li>
 <li>Companion notebook: <code>notebooks/05_attention.ipynb</code></li>
 </ul>

@@ -95,4 +95,19 @@ The user asked for the Transformers prose to read less like AI and more simply, 
 github.com/blader/humanizer (`SKILL.md`: 26 patterns; strongest are "not X but Y", one-line
 closers, sayings that sound deep, staged run-ups, arguing with no one, forced triads, dashes,
 stock AI words, bold as decoration). Tooling and progress for that pass are in
-`tests/humanize/` and `docs/HUMANIZE-REPORT.md`.
+`tests/humanize/` and `docs/HUMANIZE-REPORT.md` (one row per finished chapter).
+
+Per chapter (from `D:\ai-llms`):
+
+1. `python tests/humanize/seg.py dump course/chNN-x.html` writes `tests/humanize/work/chNN.seg.txt`
+   (every prose segment, numbered). `python tests/humanize/scan.py --detail course/chNN-x.html` lists tells.
+2. Write `tests/humanize/work/chNN.new.txt` with `@@ <id>` blocks holding the new inner HTML of the
+   segments that change (draft). Plain words, shorter sentences, no dashes, bold only on real key terms,
+   no "not X but Y", no closers or staged lines. Keep every number, `<code>`, link, `<sub>/<sup>`, span.math.
+   To delete an unsupported claim's number on purpose: `@@ 0 !drop:70`.
+3. `python tests/humanize/seg.py check ...chNN-x.html tests/humanize/work/chNN.new.txt`; fix every REFUSED line.
+4. `cp course/chNN-x.html tests/humanize/work/chNN.orig.html`, then `seg.py apply ...`, then `scan.py --detail`
+   (remaining hits are usually titles such as "Let's build…", or the literal word "underscore").
+5. Every few chapters: `node tests/check_ui.js` (from tests/), `python tests/humanize/report.py`, commit.
+
+Done so far: see the rows in `docs/HUMANIZE-REPORT.md`.

@@ -13,9 +13,9 @@
 
 <h1>6 · Multi-Head Attention: The Reshape Dance</h1>
 <p class="lead">
-Single-head attention computes one weighted average per token. That's one relationship at a time — but a word
-relates to its subject, its object, its adjective and its clause simultaneously. Multi-head attention runs
-several attention operations in parallel, and the only genuinely tricky part is the tensor gymnastics.
+Single-head attention computes one weighted average per token, so it tracks one relationship at a time. But a word
+relates to its subject, its object, its adjective and its clause all at once. Multi-head attention runs
+several attention operations in parallel, and the only tricky part is the reshaping of tensors.
 This chapter draws every step.
 </p>
 
@@ -23,32 +23,32 @@ This chapter draws every step.
 <div class="box intuition">
 <span class="t">The whole chapter in five sentences</span>
 <p style="margin-bottom:0"><b>Multi-head attention splits the feature axis into n_head groups</b> and runs
-Chapter 5's attention on each group independently, at the same parameter count and FLOPs as one wide head.
-<b>The split is a reshape and a transpose</b>: <code>(B, T, C) → (B, T, nh, hd) → (B, nh, T, hd)</code>, and
-undoing it in the wrong order scrambles heads silently. <b>Each head is two low-rank circuits</b>: a QK
-circuit that decides where to look and an OV circuit that decides what to copy. <b>Real checkpoints store
-Q, K and V fused in different layouts</b>, and loading one layout as another is the most common
-conversion bug. <b>d_head stays at 64 or 128 while models grow</b>; what scales is the number of heads.</p>
+Chapter 5's attention on each group separately, with the same parameter count and FLOPs as one wide head.
+The split is a reshape and a transpose: <code>(B, T, C) → (B, T, nh, hd) → (B, nh, T, hd)</code>, and
+undoing it in the wrong order scrambles the heads without any error. Each head is two low-rank circuits: a QK
+circuit that decides where to look and an OV circuit that decides what to copy. Real checkpoints store
+Q, K and V fused together in different layouts, and loading one layout as another is the most common
+conversion bug. d_head stays at 64 or 128 as models grow; what grows is the number of heads.</p>
 </div>
 
 <h2>6.1 · Why more than one head</h2>
 
-<p>A softmax row sums to 1. That is a <b>budget</b>: if a head spends 0.8 of its attention on the subject, it
-has 0.2 left for everything else. One head cannot simultaneously do "find my grammatical subject" and "find
-the previous mention of this entity" — those want different weight distributions.</p>
+<p>A softmax row sums to 1, so a head has a fixed <b>budget</b> of attention. If it spends 0.8 on the subject, it
+has 0.2 left for everything else. One head cannot both find the grammatical subject and find
+the previous mention of the same entity, because those need different weight distributions.</p>
 
 <div class="box intuition">
 <span class="t">The core trade</span>
 <p style="margin-bottom:0">Instead of <b>one</b> attention over <code>d_model=512</code> features, do
-<b>8</b> attentions over <code>d_head=64</code> features each. <b>Same parameter count, same FLOPs</b>
-— you've spent <i>representational width</i> to buy <i>relational diversity</i>. Each head is dumber, but you
-get eight of them, and empirically that is a very good trade.</p>
+<b>8</b> attentions over <code>d_head=64</code> features each. <b>The parameter count and FLOPs stay the same.</b>
+You give up <i>width per head</i> to get <i>more kinds of relationship</i>. Each head is less capable, but you
+get eight of them, and in practice that is a very good trade.</p>
 </div>
 
-<p>Interpretability work has found heads that specialise cleanly: previous-token heads, duplicate-token heads,
+<p>Interpretability research has found heads that specialise cleanly: previous-token heads, duplicate-token heads,
 induction heads (which implement "I saw <code>A B</code> earlier, I just saw <code>A</code>, so predict
-<code>B</code>" — the mechanism behind in-context learning), and syntactic heads that track
-subject–verb agreement.</p>
+<code>B</code>", the mechanism behind in-context learning), and syntactic heads that track
+subject-verb agreement.</p>
 
 <h2>6.2 · The reshape dance, drawn</h2>
 
@@ -59,16 +59,16 @@ subject–verb agreement.</p>
 
 <div class="box intuition">
 <span class="t">Nothing is computed here</span>
-<p style="margin-bottom:0"><code>view</code> and <code>transpose</code> move zero data (Chapter 1). The
-"dance" is purely about <b>which numbers are adjacent</b> so that a batched matmul treats each head as an
-independent problem. That's all multi-head attention is: a reshape that turns one big matmul into
+<p style="margin-bottom:0"><code>view</code> and <code>transpose</code> move no data (Chapter 1). The
+whole reshape exists to control <b>which numbers sit next to each other</b>, so that a batched matmul treats each head as a
+separate problem. That is all multi-head attention is: a reshape that turns one big matmul into
 <code>n_head</code> small parallel ones.</p>
 </div>
 
 <div class="example">
 <span class="t">Worked example — watch 12 numbers get partitioned into 3 heads</span>
-<p>One token, <code>d_model = 12</code>, <code>n_head = 3</code>, so <code>d_head = 4</code>.
-Small enough to track every value.</p>
+<p>One token, <code>d_model = 12</code> and <code>n_head = 3</code>, so <code>d_head = 4</code>.
+It is small enough to track every value.</p>
 
 <div class="step"><div class="i">1</div><div>
 <b>After <code>W_q</code>, one token is a flat vector of 12.</b>
@@ -88,8 +88,8 @@ Head <i>h</i> gets features <code>h·4 … h·4+3</code>. The 12 features are
 </div></div>
 
 <div class="step"><div class="i">3</div><div>
-<b>Each head now attends independently</b> over its own 4 dimensions. Head 0 never sees
-features 4–11. Three separate <code><span class="shp">(<b data-axis="time">T</b>, 4)</span></code> problems instead of one <code><span class="shp">(<b data-axis="time">T</b>, 12)</span></code>.
+<b>Each head now attends separately</b> over its own 4 dimensions. Head 0 never sees
+features 4 to 11. There are three separate <code><span class="shp">(<b data-axis="time">T</b>, 4)</span></code> problems instead of one <code><span class="shp">(<b data-axis="time">T</b>, 12)</span></code>.
 </div></div>
 
 <div class="step"><div class="i">4</div><div>
@@ -122,7 +122,7 @@ print("wrong[0,0] =", wrong[0, 0].tolist())
 
 <div class="mn">
   <span class="k">Why it hides</span>
-  Both merges give shape <code><span class="shp">(<b data-axis="batch">B</b>, <b data-axis="time">T</b>, <b data-axis="feat">C</b>)</span></code>. Nothing raises. The model still trains — just
+  Both merges give the shape <code><span class="shp">(<b data-axis="batch">B</b>, <b data-axis="time">T</b>, <b data-axis="feat">C</b>)</span></code>. Nothing raises an error, and the model still trains, just
   to a worse loss, with no error message pointing at the cause.
 </div>
 
@@ -168,20 +168,20 @@ out = W_o(out)                                 # (2, 100, 512)
 
 <div class="box gotcha">
 <span class="t">Step 5 is where everyone's implementation breaks</span>
-<p>After <code>transpose(1,2)</code> the tensor is <b>not contiguous</b> — its strides are out of order.
+<p>After <code>transpose(1,2)</code> the tensor is <b>not contiguous</b>, because its strides are out of order.
 <code>.view()</code> then raises:</p>
 <pre style="margin:.6em 0"><code class="nohl">RuntimeError: view size is not compatible with input tensor's size and stride</code></pre>
-<p style="margin-bottom:0">Two valid fixes: <code>.contiguous().view<span class="shp">(<b data-axis="batch">B</b>,<b data-axis="time">T</b>,<b data-axis="feat">C</b>)</span></code> or just
-<code>.reshape<span class="shp">(<b data-axis="batch">B</b>,<b data-axis="time">T</b>,<b data-axis="feat">C</b>)</span></code> (which calls <code>contiguous</code> internally when needed). What you must
-<b>not</b> do is "fix" it by reordering the transpose — that silently interleaves head outputs and produces a
+<p style="margin-bottom:0">There are two correct fixes: <code>.contiguous().view<span class="shp">(<b data-axis="batch">B</b>,<b data-axis="time">T</b>,<b data-axis="feat">C</b>)</span></code>, or simply
+<code>.reshape<span class="shp">(<b data-axis="batch">B</b>,<b data-axis="time">T</b>,<b data-axis="feat">C</b>)</span></code> (which calls <code>contiguous</code> for you when needed). What you must
+<b>not</b> do is "fix" it by reordering the transpose. That silently interleaves the head outputs and produces a
 model that trains to a mediocre loss and never tells you why.</p>
 </div>
 
 <h3>Why step 6 exists</h3>
 
-<p>After concatenation, the 512 features are 8 independent blocks of 64 that have never interacted.
-<code>W_o</code> — the output projection — is what lets information from head 3 combine with information from
-head 7. Without it, the heads would write to disjoint slices of the residual stream forever.</p>
+<p>After concatenation, the 512 features are 8 separate blocks of 64 that have never interacted.
+<code>W_o</code>, the output projection, is what lets information from head 3 combine with information from
+head 7. Without it, each head would write to its own slice of the residual stream forever.</p>
 
 <div class="mathblock">
 MultiHead(Q,K,V) = Concat(head<sub>1</sub>, …, head<sub>h</sub>) W<sup>O</sup>
@@ -194,10 +194,10 @@ MultiHead(Q,K,V) = Concat(head<sub>1</sub>, …, head<sub>h</sub>) W<sup>O</sup>
 <p style="margin-bottom:0">The paper writes <span class="math">h</span> separate projection matrices
 <span class="math">W<sub>i</sub><sup>Q</sup></span> of shape
 <span class="math">(d<sub>model</sub>, d<sub>k</sub>)</span>. The code uses <b>one</b> matrix of shape
-<span class="math">(d<sub>model</sub>, d<sub>model</sub>)</span> and slices the output. These are
-mathematically identical — the big matrix is just the small ones stacked side by side — but the single
-matmul is far faster on a GPU. Most implementations go further and fuse Q, K, V into one
-<code><span class="shp">(<b data-axis="feat">C</b>, <b data-axis="feat">3C</b>)</span></code> projection, then split.</p>
+<span class="math">(d<sub>model</sub>, d<sub>model</sub>)</span> and slices its output. The two are
+mathematically identical (the big matrix is just the small ones placed side by side), but one
+matmul is much faster on a GPU. Most implementations go further and fuse Q, K and V into one
+<code><span class="shp">(<b data-axis="feat">C</b>, <b data-axis="feat">3C</b>)</span></code> projection, then split it.</p>
 </div>
 
 <h2>6.3 · A complete, correct implementation</h2>
@@ -238,7 +238,7 @@ class MultiHeadAttention(nn.Module):
         return self.proj(y)
 </code></pre>
 
-<p>And the version you should actually ship:</p>
+<p>And here is the version you should ship:</p>
 
 <pre><code>    def forward(self, x):
         B, T, C = x.shape
@@ -252,7 +252,7 @@ class MultiHeadAttention(nn.Module):
         return self.proj(y.transpose(1, 2).reshape(B, T, C))
 </code></pre>
 
-<p>Same maths, a fraction of the memory, several times faster. Chapter 17 explains exactly how.</p>
+<p>The maths is the same, it uses a fraction of the memory, and it runs several times faster. Chapter 17 explains how.</p>
 
 <div class="quiz" data-title="Checkpoint 1 — the dance">
 <div class="qitem" data-answer="1">
@@ -266,7 +266,7 @@ class MultiHeadAttention(nn.Module):
   </div>
   <div class="expl"><b>(4, 12, 256, 64).</b> <code>transpose(1,2)</code> swaps axes 1 and 2, so
   <code><span class="shp">(<b data-axis="batch">B</b>, <b data-axis="time">T</b>, <b data-axis="head">nh</b>, <b data-axis="headdim">hd</b>)</span> → <span class="shp">(<b data-axis="batch">B</b>, <b data-axis="head">nh</b>, <b data-axis="time">T</b>, <b data-axis="headdim">hd</b>)</span></code>. The last two axes are now the <code><span class="shp">(<b data-axis="time">T</b>, <b data-axis="headdim">d_head</b>)</span></code>
-  matrix that attention operates on, batched over <code>B×nh = 48</code> independent problems.</div>
+  matrix that attention works on, batched over <code>B×nh = 48</code> separate problems.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">Compared to single-head attention with the same <code>d_model</code>, 12-head attention has:</div>
@@ -276,26 +276,26 @@ class MultiHeadAttention(nn.Module):
     <div class="opt">1/12 the parameters</div>
     <div class="opt">12× the FLOPs</div>
   </div>
-  <div class="expl"><b>Same.</b> W_q is <code><span class="shp">(<b data-axis="feat">d_model</b>, <b data-axis="feat">d_model</b>)</span></code> either way — you're partitioning
-  its output, not adding to it. The <code>T×T</code> score matrices total
-  <code>12 × T² × 64</code> vs <code>1 × T² × 768</code> of contraction work: identical. Multi-head attention
-  is free.</div>
+  <div class="expl"><b>The same.</b> W_q is <code><span class="shp">(<b data-axis="feat">d_model</b>, <b data-axis="feat">d_model</b>)</span></code> either way: you are dividing up
+  its output, not adding to it. The <code>T×T</code> score matrices need
+  <code>12 × T² × 64</code> against <code>1 × T² × 768</code> of multiply-adds, which is identical. Multi-head attention
+  costs nothing extra.</div>
 </div>
 <div class="qitem" data-answer="2">
   <div class="qq">Someone replaces <code>y.transpose(1,2).reshape<span class="shp">(<b data-axis="batch">B</b>,<b data-axis="time">T</b>,<b data-axis="feat">C</b>)</span></code> with
   <code>y.reshape<span class="shp">(<b data-axis="batch">B</b>,<b data-axis="time">T</b>,<b data-axis="feat">C</b>)</span></code> (no transpose). It runs. What is now wrong?</div>
   <div class="opts">
-    <div class="opt">Nothing — reshape handles it</div>
+    <div class="opt">Nothing, because reshape handles it</div>
     <div class="opt">The batch dimension is corrupted</div>
-    <div class="opt">The output features are ordered <span class="shp">(<b data-axis="head">head</b>, <b data-axis="time">time</b>)</span> instead of <span class="shp">(<b data-axis="time">time</b>, <b data-axis="head">head</b>)</span> — each token's vector is now a mix of other tokens' head outputs</div>
+    <div class="opt">The output features are ordered <span class="shp">(<b data-axis="head">head</b>, <b data-axis="time">time</b>)</span> instead of <span class="shp">(<b data-axis="time">time</b>, <b data-axis="head">head</b>)</span>, so each token's vector is now a mix of other tokens' head outputs</div>
     <div class="opt">It will raise a RuntimeError</div>
   </div>
-  <div class="expl"><b>Catastrophic silent scrambling.</b> <code>y</code> is <code><span class="shp">(<b data-axis="batch">B</b>, <b data-axis="head">nh</b>, <b data-axis="time">T</b>, <b data-axis="headdim">hd</b>)</span></code>;
-  reshaping directly to <code><span class="shp">(<b data-axis="batch">B</b>, <b data-axis="time">T</b>, <b data-axis="feat">C</b>)</span></code> reinterprets <code>nh×T×hd</code> numbers in memory order —
-  so "token 0's feature vector" is actually built from head 0's outputs for tokens 0 and 1, etc.
-  The shapes are all valid, nothing errors, and the model learns something mediocre. <b>This is the single
-  most common bug in hand-written attention.</b> Test it: run one token through and check the output equals
-  the concatenation of per-head outputs.</div>
+  <div class="expl"><b>Severe, silent scrambling.</b> <code>y</code> is <code><span class="shp">(<b data-axis="batch">B</b>, <b data-axis="head">nh</b>, <b data-axis="time">T</b>, <b data-axis="headdim">hd</b>)</span></code>, and
+  reshaping it directly to <code><span class="shp">(<b data-axis="batch">B</b>, <b data-axis="time">T</b>, <b data-axis="feat">C</b>)</span></code> reads the <code>nh×T×hd</code> numbers in memory order.
+  So "token 0's feature vector" is actually built from head 0's outputs for tokens 0 and 1, and so on.
+  All the shapes are valid, nothing raises an error, and the model learns something mediocre. <b>This is the
+  most common bug in hand-written attention.</b> To test for it, run one token through and check that the output
+  equals the concatenation of the per-head outputs.</div>
 </div>
 </div>
 
@@ -312,16 +312,16 @@ class MultiHeadAttention(nn.Module):
 <tr><td>DeepSeek-V3</td><td class="num">7168</td><td class="num">128</td><td class="num">128*</td><td class="num">MLA (rank 512)</td></tr>
 </tbody>
 </table>
-<p class="tiny">*DeepSeek-V3's query/key head dim is actually 192 (128 no-RoPE + 64 RoPE) with value dim 128 — Chapter 16.</p>
+<p class="tiny">*DeepSeek-V3's query and key head dimension is actually 192 (128 without RoPE + 64 with RoPE), with a value dimension of 128; see Chapter 16.</p>
 </div>
 
-<p>Patterns worth noticing:</p>
+<p>Some patterns worth noticing:</p>
 <ul>
-<li><b><code>d_head</code> is almost always 64 or 128.</b> It's held roughly fixed while
-<code>d_model</code> grows, so <code>n_head</code> is what scales. 64 and 128 are also what tensor cores
-like.</li>
-<li><b><code>n_kv_head</code> diverged from <code>n_head</code> starting around 2023.</b> That's GQA —
-Chapter 16.</li>
+<li><b><code>d_head</code> is almost always 64 or 128.</b> It stays roughly fixed while
+<code>d_model</code> grows, so <code>n_head</code> is what grows. 64 and 128 are also sizes tensor cores
+handle well.</li>
+<li><b><code>n_kv_head</code> started to differ from <code>n_head</code> around 2023.</b> That is GQA;
+see Chapter 16.</li>
 <li>Too many tiny heads hurts: below <code>d_head ≈ 32</code> each head has too little room to express a
 useful query.</li>
 </ul>
@@ -329,9 +329,9 @@ useful query.</li>
 <h2>6.5 · Each head is two circuits: QK and OV</h2>
 
 <p>Write one head's computation with the weights multiplied out. With row vectors (<code>x @ W</code>) and
-head <i>h</i>'s slices <code>W<sub>Q</sub><sup>h</sup></code>, <code>W<sub>K</sub><sup>h</sup></code>,
-<code>W<sub>V</sub><sup>h</sup></code> (each <code>(C, d_head)</code>) and <code>W<sub>O</sub><sup>h</sup></code>
-(the <code>(d_head, C)</code> rows of the output projection that this head's output multiplies):</p>
+head <i>h</i>'s slices <code>W<sub>Q</sub><sup>h</sup></code>, <code>W<sub>K</sub><sup>h</sup></code> and
+<code>W<sub>V</sub><sup>h</sup></code> (each <code>(C, d_head)</code>), and <code>W<sub>O</sub><sup>h</sup></code>
+(the <code>(d_head, C)</code> rows of the output projection that this head's output is multiplied by):</p>
 
 <div class="mathblock">
 score(i, j) = x<sub>i</sub> W<sub>Q</sub><sup>h</sup> (x<sub>j</sub> W<sub>K</sub><sup>h</sup>)ᵀ / √d<sub>head</sub> = x<sub>i</sub> <b>W<sub>QK</sub><sup>h</sup></b> x<sub>j</sub>ᵀ / √d<sub>head</sub>
@@ -347,26 +347,25 @@ head h writes &nbsp; <span class="op">Σ</span><sub>j</sub> a<sub>ij</sub> x<sub
 </div>
 
 <p>This view (Elhage et al. 2021, "A Mathematical Framework for Transformer Circuits") separates two questions
-the code mixes together. <b>Where does the head attend?</b> That is entirely <code>W<sub>QK</sub></code> (plus
-positions). <b>What does it do with what it finds?</b> That is entirely <code>W<sub>OV</sub></code>. A
+that the code mixes together. <b>Where does the head attend?</b> That depends only on <code>W<sub>QK</sub></code> (plus
+positions). <b>What does it do with what it finds?</b> That depends only on <code>W<sub>OV</sub></code>. A
 previous-token head is a QK circuit that matches position <i>j</i> = <i>i</i> − 1, with an OV circuit that
-copies token identity. An induction head's OV circuit copies the attended token into the output's "predict this
+copies the token's identity. An induction head's OV circuit copies the attended token into the output's "predict this
 token" direction. The split also makes one structural fact obvious: <b>both circuits have rank at most
-<code>d_head</code></b>, because each is a product through a <code>d_head</code>-wide bottleneck.
-<code>tfs.foundations.qk_ov_circuits</code> builds them for a 4-head, <code>C = 64</code>, <code>d_head = 16</code>
-layer, and every one has rank exactly 16 of a possible 64 (<code>test_ch06_circuit_rank</code>). A head is a
-low-rank reader and a low-rank writer of a shared stream, which is the Chapter 4 picture made exact.</p>
+<code>d_head</code></b>, because each one passes through a bottleneck <code>d_head</code> wide.
+<code>tfs.foundations.qk_ov_circuits</code> builds them for a layer with 4 heads, <code>C = 64</code> and <code>d_head = 16</code>,
+and every circuit has rank exactly 16 out of a possible 64 (<code>test_ch06_circuit_rank</code>). A head reads
+from a shared stream through a narrow window and writes back through another, which is the Chapter 4 picture made exact.</p>
 
 <p>The circuits are a way to <i>analyse</i> a head, not to compute it. Stored as <code>C × C</code> matrices
 they would cost <code>C/(2·d_head)</code> times more parameters and FLOPs than the factored form: 6× for
-GPT-2 small. Factored, low-rank weights are the efficient representation; the product is what you inspect.</p>
+GPT-2 small. The factored, low-rank weights are the efficient form; the product is what you inspect.</p>
 
 <h2>6.6 · Fused QKV in real checkpoints</h2>
 
-<p>§6.3's model computes Q, K and V with one <code>Linear(C, 3C)</code>: one large matmul is faster than three
-small ones. The output's <code>3C</code> features then have to be cut back into three, and <b>there is more
-than one convention for which feature is which</b>. When you load or convert someone else's weights, this is
-where it goes wrong.</p>
+<p>§6.3's model computes Q, K and V with one <code>Linear(C, 3C)</code>, because one large matmul is faster than three
+small ones. The output's <code>3C</code> features then have to be cut back into three, and <b>different codebases
+disagree about which feature is which</b>. This is where loading or converting someone else's weights goes wrong.</p>
 
 <div class="tw">
 <table>
@@ -380,7 +379,7 @@ where it goes wrong.</p>
 </div>
 
 <p>Both fused layouts have the same shape, <code>(3C, C)</code>, so loading one as the other raises no error.
-Here is what goes wrong, with a toy fused weight whose 12 output rows are just the numbers 0–11
+Here is what goes wrong, with a toy fused weight whose 12 output rows are just the numbers 0 to 11
 (2 heads × d_head 2 × 3; <code>tfs.foundations.split_fused_qkv</code>):</p>
 
 <pre><code class="nohl">rows:              0  1  2  3  4  5  6  7  8  9 10 11
@@ -388,18 +387,18 @@ Here is what goes wrong, with a toy fused weight whose 12 output rows are just t
 split as blocked:  Q = rows 0 1 2 3     K = rows 4 5 6 7      V = rows 8 9 10 11
 split as per-head: Q = rows 0 1 6 7     K = rows 2 3 8 9      V = rows 4 5 10 11</code></pre>
 
-<p>Read a NeoX checkpoint as blocked and half of every "query" is really a key, a third of every "value" is a
-query. The model produces fluent-looking garbage, and nothing crashes. The fix is a one-time permutation of
-the weight rows when converting (<code>per_head_to_blocked</code>; <code>test_ch06_fused_qkv_layouts</code>
-checks that converting and then splitting as blocked recovers the per-head split exactly).</p>
+<p>Read a NeoX checkpoint as if it were blocked, and half of every "query" is really a key, while a third of every "value" is a
+query. The model produces fluent-looking nonsense, and nothing crashes. The fix is to permute the
+weight rows once during conversion (<code>per_head_to_blocked</code>; <code>test_ch06_fused_qkv_layouts</code>
+checks that converting and then splitting as blocked gives exactly the per-head split).</p>
 
-<p>Two more traps of the same kind. GPT-2's original checkpoint stores <code>c_attn</code> as a
+<p>There are two more traps of the same kind. GPT-2's original checkpoint stores <code>c_attn</code> as a
 <code>Conv1D</code> whose weight is <code>(C, 3C)</code>, the transpose of <code>nn.Linear</code>'s
 <code>(3C, C)</code>, so loaders transpose it (nanoGPT's <code>from_pretrained</code> does). And Meta's original
 Llama checkpoints order each head's features for RoPE in interleaved pairs, while Hugging Face's implementation
-rotates halves (Chapter 7); the conversion script permutes the rows of <code>q_proj</code> and
-<code>k_proj</code> to match. The general rule: <b>after converting any checkpoint, compare logits against the
-reference implementation on one batch</b>, to a tolerance, before anything else.</p>
+rotates halves (Chapter 7), so the conversion script permutes the rows of <code>q_proj</code> and
+<code>k_proj</code> to match. The general rule: <b>after converting any checkpoint, compare its logits with the
+reference implementation on one batch</b>, to a tolerance, before doing anything else.</p>
 
 <div class="quiz" data-title="Checkpoint 2 — circuits and layouts">
 <div class="qitem" data-answer="2">
@@ -410,20 +409,20 @@ reference implementation on one batch</b>, to a tolerance, before anything else.
     <div class="opt">64</div>
     <div class="opt">32</div>
   </div>
-  <div class="expl"><b>64.</b> A product through a 64-wide bottleneck cannot have rank above 64. The head can
+  <div class="expl"><b>64.</b> A product through a bottleneck 64 wide cannot have rank above 64. The head can
   only compare queries and keys along 64 directions of a 4096-dimensional stream, which is why a model needs
   many heads.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">You load a GPT-NeoX checkpoint into code that splits <code>qkv</code> with <code>split(C, dim=-1)</code>. The model runs and outputs fluent nonsense. Most likely cause?</div>
   <div class="opts">
-    <div class="opt">NeoX's fused weight is interleaved per head (q, k, v for head 0, then head 1, ...); the blocked split mixes queries, keys and values</div>
+    <div class="opt">NeoX's fused weight is interleaved per head (q, k, v for head 0, then for head 1, and so on), so the blocked split mixes up queries, keys and values</div>
     <div class="opt">NeoX uses a different tokenizer</div>
     <div class="opt">The weights need to be transposed</div>
     <div class="opt">NeoX does not use a causal mask</div>
   </div>
   <div class="expl"><b>Same shape, different layout.</b> Permute the rows once at load time, or split with
-  <code>view(B, T, nh, 3, hd)</code>. Then compare logits against the reference implementation.</div>
+  <code>view(B, T, nh, 3, hd)</code>. Then compare logits with the reference implementation.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">An induction head attends from the second <code>A</code> in "… A B … A" to the earlier <code>B</code>, and the model then predicts <code>B</code>. Which circuit does the copying?</div>
@@ -431,10 +430,10 @@ reference implementation on one batch</b>, to a tolerance, before anything else.
     <div class="opt">The QK circuit</div>
     <div class="opt">The MLP</div>
     <div class="opt">The positional encoding</div>
-    <div class="opt">The OV circuit: it maps the attended token's representation to the direction that predicts that token</div>
+    <div class="opt">The OV circuit, which maps the attended token's representation to the direction that predicts that token</div>
   </div>
   <div class="expl"><b>QK decides where, OV decides what.</b> The QK circuit finds the token after the previous
-  <code>A</code> (with help from an earlier previous-token head); the OV circuit moves that token's identity into
+  <code>A</code> (with help from an earlier previous-token head), and the OV circuit moves that token's identity into
   the output.</div>
 </div>
 </div>
@@ -444,8 +443,8 @@ reference implementation on one batch</b>, to a tolerance, before anything else.
 <div class="exercise">
 <div class="eh"><span class="n">6.1</span><span class="ti">Prove your heads are independent</span><span class="lvl">essential</span></div>
 <div class="eb">
-<p>The definitive test that your reshape is correct. Implement MHA, then implement a naive loop version that
-runs single-head attention <code>n_head</code> times on explicit slices and concatenates. Assert they match.</p>
+<p>This test settles whether your reshape is correct. Implement MHA, then implement a naive loop version that
+runs single-head attention <code>n_head</code> times on explicit slices and concatenates the results. Assert that they match.</p>
 <pre><code>def mha_loop(x, W_q, W_k, W_v, W_o, nh):
     B, T, C = x.shape
     hd = C // nh
@@ -461,14 +460,14 @@ runs single-head attention <code>n_head</code> times on explicit slices and conc
 assert torch.allclose(mha_loop(...), mha_vectorised(...), atol=1e-5)
 </code></pre>
 <p>If this assert fails, your <code>view</code>/<code>transpose</code> order is wrong. Fix it before moving
-on — every later chapter builds on this.</p>
+on, because every later chapter builds on it.</p>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">6.2</span><span class="ti">einops rewrite</span><span class="lvl">warm-up</span></div>
 <div class="eb">
-<p>Rewrite the forward pass using only <code>einops.rearrange</code> — no <code>view</code>, no
-<code>transpose</code>. Confirm identical output.</p>
+<p>Rewrite the forward pass using only <code>einops.rearrange</code>, with no <code>view</code> and no
+<code>transpose</code>. Confirm that the output is identical.</p>
 <details class="reveal"><summary>Solution</summary><div>
 <pre><code>from einops import rearrange
 
@@ -482,24 +481,24 @@ y   = torch.einsum('bhqk,bhkd->bhqd', att, v)
 y = rearrange(y, 'b h t d -> b t (h d)')
 return self.proj(y)
 </code></pre>
-<p style="margin-bottom:0">Notice that the bug from Checkpoint 1 Q3 is now <b>impossible to write by
-accident</b> — <code>'b h t d -&gt; b t (h d)'</code> states the intent explicitly, and
-<code>'b h t d -&gt; b t (d h)'</code> would be visibly different. This is the strongest argument for einops.</p>
+<p style="margin-bottom:0">The bug from Checkpoint 1 Q3 can no longer be written <b>by
+accident</b>: <code>'b h t d -&gt; b t (h d)'</code> states the intent explicitly, and
+<code>'b h t d -&gt; b t (d h)'</code> would look visibly different. This is the strongest argument for einops.</p>
 </div></details>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">6.3</span><span class="ti">Head ablation</span><span class="lvl">exploration</span></div>
 <div class="eb">
-<p>Load GPT-2. For each of the 144 (layer, head) pairs, zero out that head's output (set its slice of
-<code>y</code> to 0 before <code>W_o</code>) and measure the increase in perplexity on a held-out paragraph.
+<p>Load GPT-2. For each of the 144 (layer, head) pairs, zero that head's output (set its slice of
+<code>y</code> to 0 before <code>W_o</code>) and measure how much perplexity rises on a held-out paragraph.
 Rank the heads.</p>
 <details class="reveal"><summary>What you'll find</summary><div>
-<p style="margin-bottom:0">The distribution is extremely skewed: most heads can be removed with almost no
-effect, while a handful cause large jumps. This replicates
+<p style="margin-bottom:0">The distribution is very lopsided: most heads can be removed with almost no
+effect, while a handful cause large jumps. This reproduces
 <a href="https://arxiv.org/abs/1905.10650">Michel et al. 2019, "Are Sixteen Heads Really Better than One?"</a>,
-which found many heads are prunable at inference. Two caveats worth internalising: (a) heads that are
-individually redundant may not be jointly redundant, and (b) heads that look useless on one distribution can
+which found that many heads can be pruned at inference. Two caveats are worth remembering: (a) heads that are
+redundant one at a time may not be redundant together, and (b) a head that looks useless on one distribution can
 be critical on another. Ablation tells you about <i>this</i> input, not about the head in general.</p>
 </div></details>
 </div></div>
@@ -510,17 +509,17 @@ be critical on another. Ablation tells you about <i>this</i> input, not about th
 <p>For one MHA layer with <code>d_model=4096</code>, <code>n_head=32</code>, no biases:</p>
 <ol>
 <li>How many parameters in total? Break it down by matrix.</li>
-<li>How does that change if <code>n_head=64</code> with <code>d_head=64</code>?</li>
+<li>How does that change if <code>n_head=64</code> and <code>d_head=64</code>?</li>
 <li>How does it change with GQA at <code>n_kv_head=8</code>?</li>
 </ol>
 <details class="reveal"><summary>Answers</summary><div>
 <ol>
-<li>W_q, W_k, W_v, W_o are each 4096×4096 = 16,777,216 → <b>4 × 16.78M = 67.1M</b> per layer.</li>
-<li><b>Identical.</b> 64 heads × 64 dims = 4096 = 32 × 128. The head split doesn't touch parameter count at
-all — this is the point of §6.1.</li>
+<li>W_q, W_k, W_v and W_o are each 4096×4096 = 16,777,216, so <b>4 × 16.78M = 67.1M</b> per layer.</li>
+<li><b>It is identical.</b> 64 heads × 64 dims = 4096 = 32 × 128. How you split the heads does not affect the parameter count
+at all, which is the point of §6.1.</li>
 <li>W_q and W_o stay 4096×4096. W_k and W_v shrink to 4096 × (8×128) = 4096×1024 = 4.19M each.
-Total = 16.78 + 16.78 + 4.19 + 4.19 = <b>41.9M</b>, a 37% reduction in attention parameters — and, far more
-importantly, a <b>4× reduction in KV cache</b>. Chapter 16.</li>
+The total is 16.78 + 16.78 + 4.19 + 4.19 = <b>41.9M</b>, a 37% cut in attention parameters. Much more
+important is the <b>4× cut in the KV cache</b>; see Chapter 16.</li>
 </ol>
 </div></details>
 </div></div>
@@ -530,28 +529,28 @@ importantly, a <b>4× reduction in KV cache</b>. Chapter 16.</li>
 <div class="eb">
 <p>Build a §6.3 attention module with a per-head interleaved <code>qkv</code> (split with
 <code>view(B, T, nh, 3, hd)</code>), and a second module with a blocked <code>qkv</code>. Copy the first
-module's weights into the second using <code>per_head_to_blocked</code>, and assert both produce the same output
-on random input to 10<sup>−6</sup>. Then copy <i>without</i> converting and measure the output's relative
+module's weights into the second using <code>per_head_to_blocked</code>, and assert that both give the same output
+on random input to within 10<sup>−6</sup>. Then copy <i>without</i> converting and measure the output's relative
 error.</p>
 <details class="reveal"><summary>What you should see</summary><div>
-<p style="margin-bottom:0">Converted: identical outputs. Unconverted: a relative error of order 1, the output is
-as different as a random layer's. The point of the exercise is the assertion, not the conversion: a checkpoint
-conversion without a numerical equivalence test is unfinished work.</p>
+<p style="margin-bottom:0">With the conversion, the outputs are identical. Without it, the relative error is around 1: the output is
+as different as a random layer's. The point of the exercise is the assertion, not the conversion. A checkpoint
+conversion without a numerical equivalence test is not finished.</p>
 </div></details>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">6.6</span><span class="ti">Find a previous-token head</span><span class="lvl">exploration</span></div>
 <div class="eb">
-<p>Load GPT-2 small. For every head in layers 0–5, compute the average attention weight from position
+<p>Load GPT-2 small. For every head in layers 0 to 5, compute the average attention weight from position
 <i>i</i> to position <i>i</i> − 1 over a few hundred tokens of ordinary text. Then, for the head with the highest
 score, compute its OV circuit <code>W<sub>V</sub><sup>h</sup>W<sub>O</sub><sup>h</sup></code> and check how
-well it maps each token's embedding back onto itself (compare <code>E W<sub>OV</sub> Eᵀ</code>'s diagonal with
-its off-diagonal entries, for the embedding matrix E).</p>
+well it maps each token's embedding back onto itself (compare the diagonal of <code>E W<sub>OV</sub> Eᵀ</code> with
+its off-diagonal entries, where E is the embedding matrix).</p>
 <details class="reveal"><summary>What to expect</summary><div>
 <p style="margin-bottom:0">One or two early-layer heads put most of their weight on the previous token, which
 is the first half of the induction mechanism. Their OV circuits tend to have a positive, above-average diagonal
-in the embedding basis: they move "which token was before me" into the stream, which a later induction head's
+in the embedding basis: they move "which token came before me" into the stream, which a later induction head's
 QK circuit then matches against. Use the circuit view to say which of the two matrices produced each half of the
 result.</p>
 </div></details>
@@ -560,11 +559,11 @@ result.</p>
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a>, §3.2.2.</li>
-<li><a href="https://transformer-circuits.pub/2021/framework/index.html">A Mathematical Framework for Transformer Circuits</a> — the QK/OV decomposition, and where induction heads were found.</li>
-<li><a href="https://arxiv.org/abs/1905.10650">Michel et al. 2019 — Are Sixteen Heads Really Better than One?</a></li>
-<li><a href="https://github.com/karpathy/nanoGPT/blob/master/model.py">nanoGPT model.py</a> — ~60 lines, the cleanest reference implementation in existence.</li>
-<li><a href="https://transformer-circuits.pub/2021/framework/index.html">Elhage et al. 2021 — A Mathematical Framework for Transformer Circuits</a> (QK and OV circuits)</li>
-<li><a href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt_neox/modeling_gpt_neox.py">Hugging Face — GPT-NeoX attention</a> (the per-head fused layout) · <a href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/convert_llama_weights_to_hf.py">Llama conversion script</a> (the RoPE row permutation)</li>
+<li><a href="https://transformer-circuits.pub/2021/framework/index.html">A Mathematical Framework for Transformer Circuits</a>: the QK/OV split, and where induction heads were found.</li>
+<li><a href="https://arxiv.org/abs/1905.10650">Michel et al. 2019, Are Sixteen Heads Really Better than One?</a></li>
+<li><a href="https://github.com/karpathy/nanoGPT/blob/master/model.py">nanoGPT model.py</a>: about 60 lines, and the cleanest reference implementation there is.</li>
+<li><a href="https://transformer-circuits.pub/2021/framework/index.html">Elhage et al. 2021, A Mathematical Framework for Transformer Circuits</a> (QK and OV circuits)</li>
+<li><a href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt_neox/modeling_gpt_neox.py">Hugging Face, GPT-NeoX attention</a> (the per-head fused layout) · <a href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/convert_llama_weights_to_hf.py">Llama conversion script</a> (the RoPE row permutation)</li>
 <li>Reference code: <code>tfs/foundations.py</code> (Ch 6 section) · tests: <code>tests/test_foundations.py</code></li>
 <li>Companion notebook: <code>notebooks/06_multihead.ipynb</code></li>
 </ul>
