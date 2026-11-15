@@ -13,18 +13,17 @@
 
 <h1>27 · Capstone: Build a Modern LLM End to End</h1>
 <p class="lead">
-Everything, assembled. You will build a small but architecturally current language model — RMSNorm, RoPE,
-GQA, SwiGLU, KV cache — train it, make it generate efficiently, align it with DPO, fine-tune it with LoRA, and
-evaluate it with error bars you can defend. On a laptop CPU, in a few hours.
+This is where everything comes together. You will build a small language model with a current architecture (RMSNorm, RoPE,
+GQA, SwiGLU, KV cache). You will train it, make it generate efficiently, align it with DPO, fine-tune it with LoRA, and
+evaluate it with error bars you can defend. It all runs on a laptop CPU in a few hours.
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; the architecture<br><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; training<br><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; the cache<br><a href="ch16-gqa-mla.html">Ch&nbsp;16</a> &mdash; GQA<br><a href="ch23-sft-rlhf.html">Ch&nbsp;23</a> &mdash; SFT and LoRA<br><a href="ch24-dpo.html">Ch&nbsp;24</a> &mdash; DPO<br><a href="ch26-evaluation.html">Ch&nbsp;26</a> &mdash; evaluation<div class="sep"></div><span class="k">Why this chapter</span>Everything, assembled. If you build this, you have built the thing.<div class="sep"></div><span class="k">The grader</span><code>notebooks/27_capstone.ipynb</code> runs every &ldquo;tests that must pass&rdquo; block below. It grades the reference code out of the box; point its imports at your modules to grade yours.</div>
 <div class="box intuition">
 <span class="t">Why this matters more than reading another paper</span>
 <p style="margin-bottom:0">You can follow every chapter of this course and still not be able to build one.
-The gap between "I understand attention" and "my attention implementation is causally correct, cache-correct,
-and matches a reference to 1e-5" is where the actual learning is. Everything below has a <b>testable</b>
-success criterion for exactly that reason.</p>
+The real learning happens in the gap between "I understand attention" and "my attention code is causally correct, correct with a cache,
+and matches a reference to 1e-5". That is why everything below has a success criterion you can <b>test</b>.</p>
 </div>
 
 <h2>The specification</h2>
@@ -69,8 +68,8 @@ class Config:
 <div class="exercise">
 <div class="eh"><span class="n">M1</span><span class="ti">Train a byte-level BPE tokenizer</span><span class="lvl">~1 hr</span></div>
 <div class="eb">
-<p>Train on your chosen corpus. Provide <code>encode</code>, <code>decode</code>, and special tokens
-<code>&lt;|bos|&gt;</code>, <code>&lt;|eos|&gt;</code>, <code>&lt;|user|&gt;</code>,
+<p>Train it on the corpus you chose. Provide <code>encode</code>, <code>decode</code> and the special tokens
+<code>&lt;|bos|&gt;</code>, <code>&lt;|eos|&gt;</code>, <code>&lt;|user|&gt;</code> and
 <code>&lt;|assistant|&gt;</code>.</p>
 <p><b>Tests that must pass:</b></p>
 <pre><code>assert tok.decode(tok.encode(s)) == s          # for 1000 random corpus slices
@@ -86,8 +85,8 @@ assert all(i &lt; cfg.vocab_size for i in tok.encode(text))
 <div class="eh"><span class="n">M2</span><span class="ti">Implement the architecture</span><span class="lvl">~2 hrs</span></div>
 <div class="eb">
 <p>Build <code>RMSNorm</code>, <code>build_rope_cache</code>/<code>apply_rope</code>,
-<code>GroupedQueryAttention</code>, <code>SwiGLU</code>, <code>Block</code>, <code>Model</code>.</p>
-<p><b>Tests that must pass — do not skip any of these:</b></p>
+<code>GroupedQueryAttention</code>, <code>SwiGLU</code>, <code>Block</code> and <code>Model</code>.</p>
+<p><b>Tests that must pass (do not skip any of them):</b></p>
 <pre><code># 1. Shapes
 logits, loss = model(ids)                 # ids: (2, 16)
 assert logits.shape == (2, 16, cfg.vocab_size)
@@ -114,8 +113,8 @@ for n, p in model.named_parameters():
 # 7. Parameter count matches your hand calculation                [Ch 9]
 assert abs(count_params(cfg) - sum(p.numel() for p in model.parameters())) &lt; 10
 </code></pre>
-<p class="tiny" style="margin-bottom:0">Test 3 is the one people skip and regret. Test 6 catches a
-disconnected sub-module, which otherwise looks like "the model just learns slowly."</p>
+<p class="tiny" style="margin-bottom:0">Test 3 is the one people skip and then regret. Test 6 catches a
+sub-module that is not connected, which otherwise looks like "the model just learns slowly".</p>
 </div></div>
 
 <h2>Milestone 3 — Training</h2>
@@ -123,20 +122,20 @@ disconnected sub-module, which otherwise looks like "the model just learns slowl
 <div class="exercise">
 <div class="eh"><span class="n">M3</span><span class="ti">Train it</span><span class="lvl">~1-2 hrs</span></div>
 <div class="eb">
-<p>Corpus options, in increasing order of interest: TinyStories (best results at this scale), Tiny
+<p>Corpus options, from least to most interesting: TinyStories (best results at this scale), Tiny
 Shakespeare (fastest), or ~20 MB of any text you like.</p>
-<p><b>Before the real run:</b> the overfit-one-batch test from Chapter 11. Loss must reach &lt; 0.1 on a
-single fixed batch within 500 steps. If it can't, stop and debug — nothing downstream will work.</p>
+<p><b>Before the real run,</b> do the overfit-one-batch test from Chapter 11. The loss must reach &lt; 0.1 on a
+single fixed batch within 500 steps. If it cannot, stop and debug, because nothing after this will work.</p>
 <pre><code>Suggested: batch 32 × seq 256, lr 3e-4, warmup 200, ~5000 steps,
 grad clip 1.0, eval every 250 steps.
 </code></pre>
 <p><b>Deliverables:</b> train/val loss curves, final val perplexity, 500 tokens of generated text, and the
-loss-vs-<code>ln(V)</code> check at step 0.</p>
+check of loss against <code>ln(V)</code> at step 0.</p>
 <details class="reveal"><summary>Target numbers</summary><div>
-<p style="margin-bottom:0">On TinyStories with 12.6M parameters, expect val loss around <b>1.6–2.2</b>
-(perplexity 5–9) and genuinely coherent short stories with consistent characters — TinyStories is designed
-so small models can actually succeed. On Shakespeare expect loss ~1.4–1.8 with convincing form and no
-meaning. Either is a pass; TinyStories is much more satisfying.</p>
+<p style="margin-bottom:0">On TinyStories with 12.6M parameters, expect a val loss of around <b>1.6 to 2.2</b>
+(perplexity 5 to 9) and truly coherent short stories with consistent characters. TinyStories was designed
+so that small models can actually succeed. On Shakespeare, expect a loss of ~1.4 to 1.8, with convincing form and no
+meaning. Either counts as a pass, but TinyStories is much more satisfying.</p>
 </div></details>
 </div></div>
 
@@ -151,7 +150,7 @@ torch.manual_seed(0); a = generate(model, prompt, 100, use_cache=False, temperat
 torch.manual_seed(0); b = generate(model, prompt, 100, use_cache=True,  temperature=0)
 assert torch.equal(a, b), "cache changes the output — check RoPE offset & is_causal"
 </code></pre>
-<p><b>Deliverables:</b> a plot of time-per-token vs position, cached and uncached; the measured speedup at
+<p><b>Deliverables:</b> a plot of time per token against position, cached and uncached; the measured speedup at
 100, 200 and 400 tokens; and generated samples at three temperatures.</p>
 </div></div>
 
@@ -160,27 +159,27 @@ assert torch.equal(a, b), "cache changes the output — check RoPE offset & is_c
 <div class="exercise">
 <div class="eh"><span class="n">M5</span><span class="ti">SFT then DPO</span><span class="lvl">~2 hrs</span></div>
 <div class="eb">
-<p>Build a small preference dataset — 200–500 triples is enough. The easiest way to make the effect
-<b>visible</b> at this scale is to choose a stylistic axis you can generate synthetically:</p>
+<p>Build a small preference dataset; 200 to 500 triples is enough. At this scale, the easiest way to make the effect
+<b>visible</b> is to pick a style difference you can generate synthetically:</p>
 <ul>
-<li>short answers (chosen) vs rambling ones (rejected)</li>
-<li>stories that end happily (chosen) vs abruptly (rejected)</li>
-<li>always-in-character vs breaking character</li>
+<li>short answers (chosen) against rambling ones (rejected)</li>
+<li>stories that end happily (chosen) against ones that end abruptly (rejected)</li>
+<li>always staying in character against breaking character</li>
 </ul>
-<p>Then: <b>(a)</b> SFT with prompt masking, <b>(b)</b> DPO with β=0.1, logging loss, implicit rewards,
-margin, ranking accuracy, and <b>absolute</b> chosen/rejected log-probs.</p>
+<p>Then do <b>(a)</b> SFT with prompt masking and <b>(b)</b> DPO with β=0.1. Log the loss, implicit rewards,
+margin, ranking accuracy, and the <b>absolute</b> chosen/rejected log-probs.</p>
 <p><b>Deliverables:</b></p>
 <ol>
 <li>Reward-margin and ranking-accuracy curves. Accuracy should reach &gt; 0.8.</li>
 <li>Side-by-side generations from base, SFT, and DPO models on 10 held-out prompts.</li>
-<li>A β sweep {0.01, 0.1, 0.5} with samples from each — and a paragraph on what β=0.01 did.</li>
+<li>A β sweep {0.01, 0.1, 0.5} with samples from each, and a paragraph on what β=0.01 did.</li>
 <li>The implicit-reward evaluation from Exercise 24.3: does <code>β·log(π/π_ref)</code> rank held-out
 pairs above chance?</li>
 </ol>
 <details class="reveal"><summary>What success looks like</summary><div>
-<p style="margin-bottom:0">The DPO model should visibly follow your preference axis while remaining
-coherent. At β=0.01 you'll likely see it collapse — very short outputs, repetition, or degraded grammar —
-which is the KL constraint being too weak, exactly as Chapter 24 predicts. <b>Seeing that failure yourself
+<p style="margin-bottom:0">The DPO model should clearly follow your preference while staying
+coherent. At β=0.01 you will probably see it collapse into very short outputs, repetition or broken grammar.
+That is the KL constraint being too weak, exactly as Chapter 24 predicts. <b>Seeing that failure yourself
 is the most valuable part of this milestone.</b></p>
 </div></details>
 </div></div>
@@ -190,9 +189,9 @@ is the most valuable part of this milestone.</b></p>
 <div class="exercise">
 <div class="eh"><span class="n">M6</span><span class="ti">Fine-tune with LoRA, then merge</span><span class="lvl">~1 hr</span></div>
 <div class="eb">
-<p>Repeat the SFT step of M5, this time freezing the pretrained model and training LoRA adapters (Ch 23.3) on
+<p>Repeat the SFT step of M5, but this time freeze the pretrained model and train LoRA adapters (Ch 23.3) on
 all seven projections (<code>q_proj k_proj v_proj o_proj gate up down</code>) at r = 8, α = 16. Write your own
-<code>LoRALinear</code>; check it against <code>tfs/lora.py</code> afterwards.</p>
+<code>LoRALinear</code>, and check it against <code>tfs/lora.py</code> afterwards.</p>
 <p><b>Tests that must pass:</b></p>
 <pre><code># 1. Your hand count matches the model                               [Ch 23]
 assert trainable_params(model) == 325_632            # r·(in+out) summed: 2.59% of 12,587,904
@@ -214,13 +213,13 @@ assert torch.allclose(model(ids)[0], y, atol=1e-5)
 <li>Validation loss curves for full SFT and LoRA SFT on the same data and steps, on one plot.</li>
 <li>A rank sweep r ∈ {2, 8, 32} with α/r and with rsLoRA's α/√r (exercise 23.4).</li>
 <li>Run M5's DPO on top of the LoRA-SFT model, with the policy as a second adapter and the reference as the base
-with adapters off. Does the reward margin curve match the full-model run?</li>
+with the adapters off. Does the reward margin curve match the full-model run?</li>
 </ol>
 <details class="reveal"><summary>What success looks like</summary><div>
-<p style="margin-bottom:0">At this scale the memory saving is irrelevant (the whole model's optimizer state is
-201 MB; the adapters' is 5.2 MB), so the point is the mechanics. For a stylistic preference axis, LoRA should
-come close to full SFT; if it lags badly, check the learning rate first (LoRA usually wants a larger one) and
-then the scaling. Doing the DPO with two adapters on one base is how real RLHF systems fit policy, reference and
+<p style="margin-bottom:0">At this scale the memory saving does not matter (the whole model's optimizer state is
+201 MB, and the adapters' is 5.2 MB), so the point is the mechanics. For a style preference, LoRA should
+come close to full SFT. If it lags badly, check the learning rate first (LoRA usually wants a larger one), and
+then the scaling. Running DPO with two adapters on one base is how real RLHF systems fit the policy, reference and
 value model into one GPU's memory.</p>
 </div></details>
 </div></div>
@@ -230,13 +229,13 @@ value model into one GPU's memory.</p>
 <div class="exercise">
 <div class="eh"><span class="n">M7</span><span class="ti">Measure what you built, with error bars</span><span class="lvl">~1-2 hrs</span></div>
 <div class="eb">
-<p>Evaluate every checkpoint you have (pretrained, SFT, DPO, LoRA-SFT) on two things, using Chapter 26.</p>
-<p><b>(a) Held-out perplexity.</b> On a validation split no checkpoint trained on, report perplexity and
-bits per byte (Ch 11), so the number survives a tokenizer change. Report a bootstrap interval over
-documents, not tokens: tokens within a document are not independent.</p>
-<p><b>(b) A tiny task benchmark you write.</b> 300 held-out prompts scored by a <i>program</i> along your M5
-preference axis (for example "the story ends with a happy sentence" by keyword rule, or "the answer is under 40
-words"), plus, if you did the GRPO stretch goal, 300 two-digit additions scored by exact match. Sample n = 10
+<p>Using Chapter 26, evaluate every checkpoint you have (pretrained, SFT, DPO, LoRA-SFT) on two things.</p>
+<p><b>(a) Held-out perplexity.</b> On a validation split that no checkpoint trained on, report perplexity and
+bits per byte (Ch 11), so the number still means something if the tokenizer changes. Report a bootstrap interval over
+documents, not tokens, because tokens within a document are not independent.</p>
+<p><b>(b) A tiny task benchmark you write.</b> Use 300 held-out prompts scored by a <i>program</i> on your M5
+preference (for example "the story ends with a happy sentence" by a keyword rule, or "the answer is under 40
+words"). If you did the GRPO stretch goal, add 300 two-digit additions scored by exact match. Sample n = 10
 completions per prompt at temperature 0.8.</p>
 <p><b>Tests that must pass:</b></p>
 <pre><code># 1. The benchmark is not in the training data                        [Ch 26.3]
@@ -258,11 +257,11 @@ from the same data, and the ratio of their widths.</li>
 change (<code>n_items_paired</code>)?</li>
 </ol>
 <details class="reveal"><summary>What success looks like</summary><div>
-<p style="margin-bottom:0">Perplexity typically gets slightly <i>worse</i> after SFT and DPO (the model moved away
-from the pretraining distribution on purpose) while the task score improves; seeing both is the point of measuring
-both. With 300 prompts expect intervals of several points, and the paired interval to be clearly narrower than the
-unpaired one. If DPO's gain is real it usually survives the paired test; if it only appears in a judge model's win
-rate and not in your programmatic scorer, Chapter 26's length bias is the first suspect.</p>
+<p style="margin-bottom:0">Perplexity usually gets slightly <i>worse</i> after SFT and DPO (the model moved away
+from the pretraining distribution on purpose), while the task score improves. Seeing both is the reason to measure
+both. With 300 prompts, expect intervals of several points, and expect the paired interval to be clearly narrower than the
+unpaired one. If DPO's gain is real, it usually survives the paired test. If it only shows up in a judge model's win
+rate and not in your program's score, the length bias of Chapter 26 is the first suspect.</p>
 </div></details>
 </div></div>
 
@@ -293,25 +292,25 @@ rate and not in your programmatic scorer, Chapter 26's length bias is the first 
   <div class="opts">
     <div class="opt">It normalises the vector lengths</div>
     <div class="opt">It makes attention weights sum to 1</div>
-    <div class="opt">Var(q·k) = d_k for unit-variance inputs, so std = √d_k — dividing by it keeps softmax out of saturation</div>
+    <div class="opt">Var(q·k) = d_k for unit-variance inputs, so std = √d_k, and dividing by it keeps the softmax out of saturation</div>
     <div class="opt">It compensates for the number of heads</div>
   </div>
-  <div class="expl">Ch 5. Variances add over the d_k summed terms; the standard deviation is the square root.</div>
+  <div class="expl">Ch 5. Variances add over the d_k summed terms, and the standard deviation is the square root.</div>
 </div>
 <div class="qitem" data-answer="1">
   <div class="qq">Why is LLM decoding memory-bound?</div>
   <div class="opts">
     <div class="opt">The KV cache is larger than the model</div>
-    <div class="opt">One token's forward pass reads every weight but does only ~1 FLOP per byte read — hundreds of times below the GPU's ridge point</div>
+    <div class="opt">One token's forward pass reads every weight but does only ~1 FLOP per byte read, hundreds of times below the GPU's ridge point</div>
     <div class="opt">GPUs have slow memory</div>
     <div class="opt">Attention is quadratic</div>
   </div>
-  <div class="expl">Ch 15. Arithmetic intensity ≈ 1 vs a ridge point around 295 FLOP/byte on an H100.</div>
+  <div class="expl">Ch 15. The arithmetic intensity is ≈ 1, against a ridge point of around 295 FLOP/byte on an H100.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">Why does GQA reduce memory but not FLOPs?</div>
   <div class="opts">
-    <div class="opt">All query heads still attend over the full sequence; only the number of stored/read K,V heads shrinks</div>
+    <div class="opt">All query heads still attend over the full sequence; only the number of K,V heads stored and read shrinks</div>
     <div class="opt">It skips some attention computations</div>
     <div class="opt">It uses lower precision for K and V</div>
     <div class="opt">It reduces the sequence length</div>
@@ -324,9 +323,9 @@ rate and not in your programmatic scorer, Chapter 26's length bias is the first 
     <div class="opt">It approximates the softmax</div>
     <div class="opt">It uses fewer attention heads</div>
     <div class="opt">It runs in lower precision</div>
-    <div class="opt">It never writes the N×N matrix to HBM — tiling plus the online softmax keep everything in SRAM</div>
+    <div class="opt">It never writes the N×N matrix to HBM, because tiling plus the online softmax keep everything in SRAM</div>
   </div>
-  <div class="expl">Ch 17. It is exact; the win is entirely in data movement.</div>
+  <div class="expl">Ch 17. It is exact, and the whole gain is in data movement.</div>
 </div>
 <div class="qitem" data-answer="1">
   <div class="qq">Why does DPO not need a reward model?</div>
@@ -336,17 +335,17 @@ rate and not in your programmatic scorer, Chapter 26's length bias is the first 
     <div class="opt">It trains the reward model implicitly through a second head</div>
     <div class="opt">It uses verifiable rewards instead</div>
   </div>
-  <div class="expl">Ch 24. The policy <i>is</i> the reward model; the intractable term cancels exactly.</div>
+  <div class="expl">Ch 24. The policy <i>is</i> the reward model, and the intractable term cancels exactly.</div>
 </div>
 <div class="qitem" data-answer="2">
   <div class="qq">Why does GRPO not need a value model?</div>
   <div class="opts">
     <div class="opt">It uses the reference model's values</div>
-    <div class="opt">It doesn't compute advantages</div>
-    <div class="opt">Sampling G completions per prompt makes the group mean an empirical baseline for the advantage</div>
+    <div class="opt">It does not compute advantages</div>
+    <div class="opt">Sampling G completions per prompt makes the group mean a measured baseline for the advantage</div>
     <div class="opt">The reward model provides per-token values</div>
   </div>
-  <div class="expl">Ch 25. Trade a learned critic for G× generation.</div>
+  <div class="expl">Ch 25. It trades a learned critic for G× generation.</div>
 </div>
 
 <div class="qitem" data-answer="0">
@@ -357,7 +356,7 @@ rate and not in your programmatic scorer, Chapter 26's length bias is the first 
     <div class="opt">So that A can be quantised</div>
     <div class="opt">Either can be zero; it makes no difference</div>
   </div>
-  <div class="expl">Ch 23. Each factor's gradient is proportional to the other; both zero is a saddle that never moves.</div>
+  <div class="expl">Ch 23. Each factor's gradient is proportional to the other, so with both at zero you sit on a saddle that never moves.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">Your DPO model beats your SFT model by 3 points on a 300-prompt task. How should you test whether that is real?</div>
@@ -367,7 +366,7 @@ rate and not in your programmatic scorer, Chapter 26's length bias is the first 
     <div class="opt">Use a larger judge model</div>
     <div class="opt">A paired bootstrap over prompts on the per-prompt score differences, since both models answered the same prompts</div>
   </div>
-  <div class="expl">Ch 26. Pairing cancels the difficulty noise both models share; overlapping separate intervals is the unpaired test and misses real gains.</div>
+  <div class="expl">Ch 26. Pairing cancels the difficulty noise both models share. Checking whether separate intervals overlap is the unpaired test, and it misses real gains.</div>
 </div>
 </div>
 
@@ -376,26 +375,26 @@ rate and not in your programmatic scorer, Chapter 26's length bias is the first 
 <p>This course is the first of eleven in <a href="https://ganesh-deepak.github.io/">the library</a> (the
 <b>Library</b> button in the top bar). Everyone should take
 <a class="xref" data-course="evals" data-ch="01" href="/llm-evaluation/course/ch01-define.html">Evaluation&nbsp;Ch&nbsp;01</a>
-next: every later skill is unverifiable without it. Then follow a track: systems (GPU programming, then
+next, because no later skill can be checked without it. Then follow a track: systems (GPU programming, then
 inference engineering), applied (retrieval, then agents), or model (post-training). The others are below,
 with outside reading.</p>
 
 <ul>
-<li><b>Interpretability</b> — <a href="https://transformer-circuits.pub/">Transformer Circuits</a>, sparse
-autoencoders, superposition. The most intellectually interesting open problem in the field.</li>
-<li><b>Systems</b> — read the vLLM or SGLang source. Write a Triton kernel. Chapters 15–18 are the
-prerequisites and you now have them.</li>
-<li><b>Post-training</b> — <a href="https://rlhfbook.com/">the RLHF Book</a>, then reproduce a GRPO run
+<li><b>Interpretability</b>: <a href="https://transformer-circuits.pub/">Transformer Circuits</a>, sparse
+autoencoders, superposition. It is the most intellectually interesting open problem in the field.</li>
+<li><b>Systems</b>: read the vLLM or SGLang source, and write a Triton kernel. Chapters 15 to 18 are the
+prerequisites, and you now have them.</li>
+<li><b>Post-training</b>: <a href="https://rlhfbook.com/">the RLHF Book</a>, then reproduce a GRPO run
 on a real benchmark.</li>
-<li><b>Build things</b> — the fastest remaining learning is deploying a model and discovering which of
-Chapters 13–18 you only <i>thought</i> you understood.</li>
+<li><b>Build things</b>: the fastest way to keep learning is to deploy a model and find out which of
+Chapters 13 to 18 you only <i>thought</i> you understood.</li>
 </ul>
 
 <div class="box intuition" style="margin-top:2.5em">
 <span class="t">One last thing</span>
-<p style="margin-bottom:0">The architecture in this capstone is, structurally, the same architecture as a
-frontier model. The differences are scale, data, and an enormous amount of engineering — not a different
-idea. If you built this, you have built the thing. Everything else is more of it.</p>
+<p style="margin-bottom:0">In structure, the architecture in this capstone is the same as that of a
+frontier model. The differences are scale, data and a huge amount of engineering. The idea is the same.
+If you built this, you have built the thing. Everything else is more of it.</p>
 </div>
 
 </main>
