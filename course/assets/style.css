@@ -835,7 +835,8 @@ main > .study-console,
 main > .home-study,
 main > .exercise,
 main > .quiz,
-main > .example {
+main > .example,
+main > [data-viz="float"] {      /* narrow monospace rows: full breakout leaves it left-heavy */
   --k: min(var(--ext), 4.5rem);
   margin-inline: calc(-1 * var(--k));
   width: auto;
@@ -2081,3 +2082,14 @@ b[data-axis].ax-cursor { outline: 2px dashed currentColor; outline-offset: 1px; 
   .lib-c { min-height: 2.75rem; }
 }
 @media print { .library, .lib-toggle { display: none !important; } }
+
+/* bit explorer (viz.js vizFloat): the decoded readout and the format's facts
+   sit side by side once the panel is wide, instead of one left-heavy column. */
+.vf-grid { container-type: inline-size; }
+.vf-grid-in { display: grid; grid-template-columns: 1fr; }
+.vf-range { margin-top: 12px; padding-top: 10px; border-top: 2px solid var(--line); }
+@container (min-width: 52rem) {
+  .vf-grid-in { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); column-gap: 2rem; }
+  .vf-range { margin-top: 10px; padding-top: 0; border-top: 0;
+              border-left: 2px solid var(--line); padding-left: 1.75rem; }
+}

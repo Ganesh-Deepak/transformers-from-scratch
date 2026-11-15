@@ -1065,11 +1065,18 @@ function vizFloat(el, d) {
   out.className = "vf-out";
   out.style.cssText = "margin-top:10px;font-family:var(--mono);font-size:12.5px;line-height:1.75;color:var(--ink-2);overflow-wrap:anywhere";
   out.setAttribute("aria-live", "polite");
-  el.appendChild(out);
+  // readout | format facts: stacked when narrow, side by side when the panel is wide (style.css)
+  const grid = document.createElement("div");
+  grid.className = "vf-grid";
+  const gridIn = document.createElement("div");
+  gridIn.className = "vf-grid-in";
+  grid.appendChild(gridIn);
+  el.appendChild(grid);
+  gridIn.appendChild(out);
   const rng = document.createElement("div");
   rng.className = "vf-range";
-  rng.style.cssText = "margin-top:12px;padding-top:10px;border-top:2px solid var(--line);font-family:var(--mono);font-size:12px;line-height:1.7;color:var(--ink-2);overflow-wrap:anywhere";
-  el.appendChild(rng);
+  rng.style.cssText = "font-family:var(--mono);font-size:12px;line-height:1.7;color:var(--ink-2);overflow-wrap:anywhere";
+  gridIn.appendChild(rng);
 
   const fmtNum = v => {
     if (Number.isNaN(v)) return "NaN";
@@ -1096,8 +1103,22 @@ function vizFloat(el, d) {
     });
   }
 
+  // Bit cells grow with the panel: on a wide screen the row spans the panel
+  // instead of huddling at the left. Floors are the old fixed sizes (phone fit).
+  const cellW = n => {
+    const base = n > 16 ? 15 : n > 8 ? 22 : 28;
+    const avail = bitsWrap.clientWidth - 40;                 // group gaps + sign spacing
+    return avail > 0 ? Math.max(base, Math.min(34, Math.floor(avail / n) - (n > 16 ? 1 : 2))) : base;
+  };
+  let lastCW = 0;
+  if (window.ResizeObserver) new ResizeObserver(() => {
+    const w = cellW(NF.bits(NF.formats[key]));
+    if (w !== lastCW) { lastCW = w; draw(); }
+  }).observe(bitsWrap);
+
   function draw() {
     const f = NF.formats[key], n = NF.bits(f), b = NF.bias(f), r = NF.range(f);
+    lastCW = cellW(n);
     if (pattern === null) {
       const p = NF.encode(f, typed);
       pattern = p === null ? 0 : p;          // fp4/fp6 have no NaN: show zero, say why below
@@ -1124,9 +1145,9 @@ function vizFloat(el, d) {
         c.setAttribute("aria-pressed", bit ? "true" : "false");
         c.setAttribute("aria-label", `${name} bit ${i - from}, currently ${bit}`);
         // 32 cells must fit a desktop panel without scrolling; narrower formats get bigger targets
-        const cw = n > 16 ? 15 : n > 8 ? 22 : 28;
-        c.style.cssText = `width:${cw}px;height:30px;padding:0;cursor:pointer;` +
-          `font-family:var(--mono);font-size:${n > 16 ? 11 : 13}px;font-weight:700;border-radius:3px;` +
+        const cw = cellW(n);
+        c.style.cssText = `width:${cw}px;height:${cw > 22 ? 34 : 30}px;padding:0;cursor:pointer;` +
+          `font-family:var(--mono);font-size:${cw > 22 ? 14 : n > 16 ? 11 : 13}px;font-weight:700;border-radius:3px;` +
           `border:2px solid ${col};background:${bit ? col : "var(--surface)"};color:${bit ? "var(--surface)" : col}`;
         c.onclick = () => {
           pattern = bit ? pattern - Math.pow(2, i) : pattern + Math.pow(2, i);
