@@ -15,8 +15,8 @@
 <p class="lead">
 Every chapter so far ends with a claim that something got better: a lower loss, a higher win rate, more
 problems solved. This chapter is about whether you should believe it. An evaluation is a <b>measurement</b>,
-and like any measurement it has a resolution, a bias and a way of being fooled. Most published benchmark
-gaps are smaller than the benchmark can resolve, many benchmarks are partly in the training data, and the
+and like any measurement it has a resolution, a bias and ways to be fooled. Most published benchmark
+gaps are smaller than the benchmark can detect. Many benchmarks are partly in the training data. And the
 most popular judges prefer long answers. None of that makes evaluation hopeless. It makes it a discipline
 with arithmetic, and the arithmetic is short.
 </p>
@@ -26,13 +26,13 @@ with arithmetic, and the arithmetic is short.
 <div class="box intuition">
 <span class="t">The whole chapter in six sentences</span>
 <p style="margin-bottom:0"><b>An eval is a dataset, a prompt format, a decoding setup, a scorer and an
-aggregate</b>, and changing any one of them changes the number. <b>A benchmark of n items cannot resolve
+aggregate</b>, and changing any one of them changes the number. <b>A benchmark of n items cannot detect
 differences much smaller than 2.8·√(2p(1−p)/n)</b>: 13 points on GPQA Diamond, 1.2 on MMLU. <b>Compare two
 models on the same items</b>, because the paired difference is far less noisy than the two scores are.
-<b>Sampled metrics need unbiased estimators</b>: pass@k from n samples is 1 − C(n−c, k)/C(n, k), not
+<b>Sampled metrics need unbiased estimators.</b> pass@k from n samples is 1 − C(n−c, k)/C(n, k), not
 1 − (1 − c/n)<sup>k</sup>. <b>Model judges are biased</b> toward the first answer, the longer answer and
 their own answers, and each bias has a standard correction. <b>Public benchmarks leak into training data and
-saturate</b>, so the eval that decides what you ship is a private one you built and keep.</p>
+saturate</b>, so the eval that decides what you ship is a private one that you built and keep.</p>
 </div>
 
 <h2>26.1 · What an eval actually is</h2>
@@ -53,27 +53,27 @@ the pipeline has five parts:</p>
 </table>
 </div>
 
-<p>The practical consequence: <b>a number is comparable only with numbers produced by the same pipeline.</b>
+<p>The practical consequence: <b>a number can be compared only with numbers produced by the same pipeline.</b>
 In 2023 the Hugging Face Open LLM Leaderboard found that three popular implementations of MMLU, all honest,
-gave the same model scores that differed enough to reorder the leaderboard: one scored the probability of
-the answer letter, one the probability of the full answer text, one generated text and parsed it. When you
+gave the same model scores far enough apart to reorder the leaderboard. One scored the probability of
+the answer letter, one the probability of the full answer text, and one generated text and parsed it. When you
 read a model card, look for the harness and the settings before you look at the score.</p>
 
 <h3>Two ways to score a multiple-choice question</h3>
 
 <p><b>Log-likelihood scoring</b> never lets the model generate. For each option it computes the log-probability
 of the option text (or its letter) after the question, using exactly the <code>sequence_logp</code> of
-Chapter 24, and picks the largest. It is cheap, deterministic, and works on base models that cannot follow an
+Chapter 24, and picks the largest. It is cheap and deterministic, and it works on base models that cannot follow an
 instruction. <b>Generative scoring</b> lets the model answer freely, then parses the answer. It measures what a
 user would see, including whether the model can follow the format, and it is the only option for chain-of-thought
-and reasoning models. The two disagree most on small or base models, which is why a base-model leaderboard and
-a chat-model leaderboard are not interchangeable.</p>
+and reasoning models. The two disagree most on small or base models. That is why a base-model leaderboard and
+a chat-model leaderboard cannot be swapped for each other.</p>
 
 <div class="box gotcha">
 <span class="t">Length-normalised log-likelihood is a choice, not a fix</span>
 <p style="margin-bottom:0">Summed log-probabilities favour short options, because every extra token adds a
-negative number. Harnesses therefore often divide by the number of tokens or characters. That is the same
-sum-versus-average choice as DPO versus SimPO (Ch 24, Ch 25), and it changes which option wins. Whichever you
+negative number. So harnesses often divide by the number of tokens or characters. That is the same
+choice between sum and average as DPO against SimPO (Ch 24, Ch 25), and it changes which option wins. Whichever you
 use, use it for every model you compare.</p>
 </div>
 
@@ -107,8 +107,8 @@ items it has</b>, because section 26.5 turns that into a resolution.</p>
 <h3>Saturation, and why it happens faster every year</h3>
 
 <p>MMLU was released in 2020, when GPT-3 scored 43.9% on it. Within four years frontier models were near 90%,
-where the remaining errors are a mix of genuinely hard items and items whose answer key is wrong. A benchmark is
-<b>saturated</b> when the differences between strong models are smaller than its noise and its error rate; it
+where the remaining errors are a mix of truly hard items and items whose answer key is wrong. A benchmark is
+<b>saturated</b> when the differences between strong models are smaller than its noise and its error rate. It
 still detects a broken model, but it can no longer rank good ones. Three forces shorten a benchmark's useful
 life: models improve, the benchmark leaks into training data, and labs optimise for the numbers that appear
 on their model cards. Goodhart's law applies to benchmarks exactly as it applied to the reward model in
@@ -131,8 +131,8 @@ benchmark, the leaderboard measures agreement with the answer key, not correctne
     <div class="opt">MMLU has two different test sets</div>
   </div>
   <div class="expl"><b>The pipeline is part of the number.</b> Greedy decoding is deterministic, and the test set is
-  the same. Formatting and scoring choices routinely move multiple-choice scores by several points, which is
-  why numbers are only comparable within one harness.</div>
+  the same. Formatting and scoring choices often move multiple-choice scores by several points, which is
+  why numbers can be compared only within one harness.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">Why can log-likelihood scoring evaluate a base model that generative scoring cannot?</div>
@@ -142,9 +142,9 @@ benchmark, the leaderboard measures agreement with the answer key, not correctne
     <div class="opt">Base models cannot generate text</div>
     <div class="opt">It averages over many samples</div>
   </div>
-  <div class="expl"><b>No generation, no format to follow.</b> A base model asked a question may write five more
-  questions (Ch 23). Comparing the log-probability of each option sidesteps instruction-following entirely,
-  which is also why it can overstate what a user would experience.</div>
+  <div class="expl"><b>No generation, so no format to follow.</b> A base model asked a question may write five more
+  questions (Ch 23). Comparing the log-probability of each option skips instruction-following entirely.
+  That is also why it can overstate what a user would experience.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">A benchmark has about 6.5% wrong answer keys. Model A scores 94.8%, model B 93.2%. What can you conclude?</div>
@@ -156,22 +156,22 @@ benchmark, the leaderboard measures agreement with the answer key, not correctne
   </div>
   <div class="expl"><b>Above the noise ceiling, ranking is unreliable.</b> A model right about everything would
   score about 93.5%. A higher score means matching some wrong keys, which can come from memorising the benchmark
-  or from luck. You need a cleaner benchmark, or a re-labelled subset, to separate them.</div>
+  or from luck. You need a cleaner benchmark, or a re-labelled subset, to tell them apart.</div>
 </div>
 </div>
 
 <h2>26.3 · Contamination: has the model seen the test?</h2>
 
-<p>A pretraining corpus of 15 trillion tokens scraped from the web contains most public benchmarks: the
-questions are on GitHub, in blog posts, in forum threads discussing them. A model that has seen an item can
-score it by recall rather than by the skill the benchmark meant to measure. This is <b>contamination</b>, and
-it comes in degrees: the exact item with its answer, the item without the answer, a paraphrase, or simply
+<p>A pretraining corpus of 15 trillion tokens scraped from the web contains most public benchmarks. The
+questions are on GitHub, in blog posts, and in forum threads about them. A model that has seen an item can
+answer it from memory instead of with the skill the benchmark meant to measure. This is <b>contamination</b>, and
+it comes in degrees: the exact item with its answer, the item without the answer, a paraphrase, or just
 heavy exposure to the same template.</p>
 
 <h3>Detecting it when you have the training data: n-gram overlap</h3>
 
 <p>If you can search the corpus, check whether long word sequences from each test item appear in it. GPT-3's
-paper used 13-gram overlap; the idea is that a 13-word sequence almost never repeats by chance. The function
+paper used 13-gram overlap, on the idea that a 13-word sequence almost never repeats by chance. The function
 <code>ngram_overlap</code> reports the fraction of an item's n-grams found in the corpus:</p>
 
 <pre><code>from tfs.evals import ngrams, ngram_overlap
@@ -181,14 +181,14 @@ ngram_overlap("a quick brown fox jumps over the lazy dog today", cg, 5)    # 0.6
 ngram_overlap("the fox jumps over the lazy cat and runs away",   cg, 5)    # 0.167: 1 of 6</code></pre>
 
 <p>At corpus scale you hash the n-grams into a Bloom filter or a suffix array. Two warnings. Overlap misses
-paraphrases and translations entirely. And the threshold is a choice: the Llama 2 report flags an item as
+paraphrases and translations entirely. And the threshold is a choice. The Llama 2 report flags an item as
 contaminated above a chosen fraction of matching tokens, and different fractions give different "clean" subsets.</p>
 
 <h3>Detecting it from outside: membership signals</h3>
 
 <p>For a closed model you have only its outputs and, sometimes, its log-probabilities. Text a model was trained
-on is unusually unsurprising to it, and the signal is clearest in the <i>hardest</i> tokens: a memorised passage
-has few very-unlikely tokens, an unseen one has several. <b>Min-K% Prob</b> (Shi et al. 2023) averages the
+on surprises it unusually little, and the signal is clearest in the <i>hardest</i> tokens. A memorised passage
+has few very unlikely tokens, while an unseen one has several. <b>Min-K% Prob</b> (Shi et al. 2023) averages the
 log-probability of the k% least likely tokens:</p>
 
 <div class="example">
@@ -204,8 +204,8 @@ unseen   -0.4 -3.9 -0.2 -2.7 -0.6 -5.1 -0.8 -0.3 -1.9 -0.5     mean -1.64</code>
 unseen   -5.1, -3.9   ->  -4.5</code></pre>
 </div></div>
 <p style="margin-bottom:0"><b>The gap widens from 1.18 to 3.5 nats.</b> The mean is dominated by easy tokens
-that both passages share ("the", "of"); the minimum tokens are where memorisation shows. In practice you
-calibrate a threshold on text you know was or was not in training, and the method is a statistical signal per
+that both passages share ("the", "of"), and the least likely tokens are where memorisation shows. In practice you
+set a threshold on text you know was or was not in training. The method gives a statistical signal per
 benchmark, not a verdict per item.</p>
 </div>
 
@@ -213,20 +213,20 @@ benchmark, not a verdict per item.</p>
 
 <p>The most convincing contamination test does not inspect the model at all. <b>Write a new version of the
 benchmark</b> with the same difficulty and see whether scores drop. GSM1k (Zhang et al. 2024) did this for
-GSM8K: 1,250 new grade-school problems written by people with no model involved. Several model families
-scored up to 8 points lower on the new problems than on the old ones, while others showed no drop, and the
-gap correlated with how likely each model was to generate GSM8K text verbatim. The second test is the
-<b>calendar</b>: LiveCodeBench tags every problem with its contest date, so you can score a model only on
-problems published after its training cutoff. If the score falls off a cliff at the cutoff date, the earlier
-score was partly recall.</p>
+GSM8K: 1,250 new grade-school problems written by people, with no model involved. Several model families
+scored up to 8 points lower on the new problems than on the old ones, while others showed no drop. The
+gap tracked how likely each model was to generate GSM8K text word for word. The second test is the
+<b>calendar</b>. LiveCodeBench tags every problem with its contest date, so you can score a model only on
+problems published after its training cutoff. If the score drops sharply at the cutoff date, the earlier
+score came partly from memory.</p>
 
 <div class="box intuition">
 <span class="t">Contamination you cause yourself</span>
 <p style="margin-bottom:0">The easiest contamination to create is your own. Synthetic SFT data generated by a
-strong model (Ch 23) can reproduce benchmark items the generator memorised; a "decontaminated" dataset scraped
-after a benchmark became popular contains its discussion threads. Deduplicate every training set you build
-against every eval you report, with an n-gram filter, before training. BIG-bench put a <b>canary string</b> (a
-unique GUID) in its files so that corpus builders can find and drop them; check for canaries too.</p>
+strong model (Ch 23) can reproduce benchmark items the generator memorised. A "decontaminated" dataset scraped
+after a benchmark became popular contains its discussion threads. Before training, deduplicate every training set you build
+against every eval you report, with an n-gram filter. BIG-bench put a <b>canary string</b> (a
+unique GUID) in its files so that corpus builders can find and drop them, so check for canaries too.</p>
 </div>
 
 <h2>26.4 · Scoring: exact match, executable checks, and model judges</h2>
@@ -235,16 +235,16 @@ unique GUID) in its files so that corpus builders can find and drop them; check 
 should trust them:</p>
 
 <ol>
-<li><b>Execution.</b> Run the code against tests, check the final database state, verify the proof. The
-strongest scorer when it exists, with the weaknesses of Chapter 25's verifiers: tests can be incomplete, and a
-model can satisfy them without solving the problem.</li>
+<li><b>Execution.</b> Run the code against tests, check the final database state, verify the proof. It is the
+strongest scorer when it exists, with the weaknesses of the verifiers in Chapter 25: tests can be incomplete, and a
+model can pass them without solving the problem.</li>
 <li><b>Normalised exact match.</b> Compare the extracted answer to the gold answer after normalisation. SQuAD's
 normalisation, in <code>normalize_answer</code>, lower-cases, strips punctuation and the articles a/an/the, and
 collapses whitespace.</li>
 <li><b>Equivalence checks.</b> For maths, <code>1/2</code>, <code>0.5</code> and the same fraction
-written in LaTeX are one answer; parse both sides and compare symbolically.</li>
+written in LaTeX are one answer. Parse both sides and compare them symbolically.</li>
 <li><b>Token F1.</b> Partial credit by word overlap, for extractive questions.</li>
-<li><b>A model judge.</b> For anything open-ended. Powerful and biased; section 26.7.</li>
+<li><b>A model judge.</b> For anything open-ended. Strong but biased; see section 26.7.</li>
 </ol>
 
 <pre><code>from tfs.evals import exact_match, token_f1, majority_vote
@@ -254,16 +254,16 @@ token_f1("the tower in Paris", "Eiffel Tower")                     # 0.4: P = 1/
 majority_vote(["42", "41", "42.", "forty-two", "42"])              # "42": 3 of 5 after normalising</code></pre>
 
 <p>The F1 of 0.4 is worth reading slowly. After normalisation the prediction is <code>tower in paris</code>
-(3 words) and the gold is <code>eiffel tower</code> (2 words). One word is shared: precision 1/3, recall 1/2,
-F1 = 2·(1/3)(1/2)/(1/3 + 1/2) = 0.4. Note that <code>"forty-two"</code> is not matched to <code>"42"</code>:
-normalisation is not understanding, which is the gap model judges fill.</p>
+(3 words) and the gold is <code>eiffel tower</code> (2 words). One word is shared, so precision is 1/3, recall 1/2, and
+F1 = 2·(1/3)(1/2)/(1/3 + 1/2) = 0.4. Note that <code>"forty-two"</code> is not matched to <code>"42"</code>.
+Normalisation is not understanding, and model judges fill that gap.</p>
 
 <div class="box gotcha">
 <span class="t">Answer extraction is where most eval bugs live</span>
 <p style="margin-bottom:0">Reasoning models write long derivations and then an answer, sometimes several
 candidate answers. A regex that takes the first number instead of the last, or misses <code>\boxed{}</code>
-written with a space, silently scores correct answers as wrong. Before trusting any new eval, read 20
-scored outputs by hand and count how many the scorer got wrong. This is the eval equivalent of Chapter 23's
+written with a space, quietly scores correct answers as wrong. Before trusting any new eval, read 20
+scored outputs by hand and count how many the scorer got wrong. This is the eval version of Chapter 23's
 "print a decoded example with the masked positions marked".</p>
 </div>
 
@@ -271,7 +271,7 @@ scored outputs by hand and count how many the scorer got wrong. This is the eval
 
 <p>Treat the benchmark's items as a sample from a much larger population of questions that test the same
 skill (Miller 2024 calls it the super-population). Each item is a coin flip with the model's true accuracy
-<i>p</i>. The measured accuracy over <i>n</i> independent items then has a standard error:</p>
+<i>p</i>. The accuracy measured over <i>n</i> independent items then has a standard error:</p>
 
 <div class="mathblock">
 SE = √( p(1 − p) / n ) &nbsp;&nbsp;&nbsp;&nbsp; 95% interval ≈ p ± 1.96 · SE
@@ -301,25 +301,25 @@ A model reported at 70% could plausibly be anywhere in a 13-point band.
 well inside its own noise.
 </div></div>
 <div class="step"><div class="i">3</div><div>
-<b>The last column</b> is the minimum detectable effect for comparing two independently evaluated models at
+<b>The last column</b> is the minimum detectable effect for comparing two models evaluated separately, at
 5% significance and 80% power: (z<sub>0.975</sub> + z<sub>0.8</sub>) · √(2p(1−p)/n) = 2.80 × √(2p(1−p)/n).
 On GPQA Diamond: 2.80 × √(2 × 0.21 / 198) = 12.9 points.
 </div></div>
 <p style="margin-bottom:0"><b>Most leaderboard gaps between frontier models on small benchmarks are smaller
-than the benchmark can see.</b> That does not mean the models are equal; it means this measurement cannot tell.
+than the benchmark can see.</b> The models are not necessarily equal. This measurement simply cannot tell.
 Read every score as an interval, and ask how many items stood behind it.</p>
 </div>
 
 <h3>Pair the comparison: the single biggest improvement you can make</h3>
 
-<p>The formula above treats the two models' scores as independent. They are not: both models answered the
-<i>same</i> items, and items differ wildly in difficulty. Most items are either easy for both or hard for both,
-and contribute nothing to the difference. Compute the difference per item,
+<p>The formula above treats the two models' scores as independent. They are not. Both models answered the
+<i>same</i> items, and items vary hugely in difficulty. Most items are either easy for both or hard for both,
+and they add nothing to the difference. Compute the difference per item,
 <code>d<sub>i</sub> = score<sub>B,i</sub> − score<sub>A,i</sub></code> (which is −1, 0 or +1), and put the
 error bar on the mean of <i>d</i>. Its variance is the probability that the models disagree, minus the squared
-gap, which is usually far smaller than the sum of the two models' variances.</p>
+gap. That is usually far smaller than the sum of the two models' variances.</p>
 
-<p>The <b>bootstrap</b> gives the same answer without formulas: resample the items with replacement many
+<p>The <b>bootstrap</b> gives the same answer without formulas. Resample the items with replacement many
 times, recompute the statistic each time, and read the interval off the spread. The one rule is to
 <b>resample items, and resample the pair together</b>.</p>
 
@@ -335,8 +335,8 @@ def paired_bootstrap_diff(a, b, **kw):            # a, b: per-item scores on the
 
 <div class="example">
 <span class="t">Worked example — the same 3-point gain, judged two ways</span>
-<p>Two models on the same 500 items. A is right on 350 (70.0%). B is right on 340 of those 350 and on 25 of
-A's 150 failures: 365 (73.0%). They disagree on 35 items, 7%.</p>
+<p>Two models answer the same 500 items. A is right on 350 (70.0%). B is right on 340 of those 350 and on 25 of
+A's 150 failures, for 365 (73.0%). They disagree on 35 items, 7%.</p>
 <div class="step"><div class="i">1</div><div>
 <b>Unpaired</b> (each model's items resampled separately, as if they had answered different questions):
 <pre style="margin:.4rem 0"><code class="nohl">SE of difference = √(0.70·0.30/500 + 0.73·0.27/500) = 0.0285
@@ -349,7 +349,7 @@ SE of mean d = 0.0118
 95% bootstrap CI for B − A:  [+0.8, +5.4] points     excludes 0: B is better</code></pre>
 </div></div>
 <p style="margin-bottom:0"><b>Same data, same 3 points, a standard error 2.4× smaller.</b> The 465 items on
-which the models agree carry no information about which is better, and the paired analysis stops pretending
+which the models agree say nothing about which is better, and the paired analysis stops pretending
 they do. If your eval tool reports two separate confidence intervals and you check whether they overlap, you
 are doing the unpaired analysis, and you will miss real improvements.</p>
 </div>
@@ -374,17 +374,17 @@ n = 2.80<sup>2</sup> × (0.10 − 0.02<sup>2</sup>) / 0.02<sup>2</sup> = <b>1,95
 </div>
 
 <p><b>Pairing cuts the eval you need by a factor of four.</b> And both numbers are far larger than GPQA Diamond
-(198) or AIME (30). For small benchmarks, the honest options are to sample several answers per item and
-average them (this reduces the within-item noise of a sampled model, though not the item-sampling noise), to
-pool related benchmarks, or to report the interval and stop there.</p>
+(198) or AIME (30). For small benchmarks the honest options are these. Sample several answers per item and
+average them (this reduces the within-item noise of a sampled model, though not the item-sampling noise). Or
+pool related benchmarks. Or report the interval and stop there.</p>
 
 <div class="box math-note">
 <span class="t">Two refinements Miller (2024) recommends</span>
 <p style="margin-bottom:0"><b>Clustered standard errors.</b> When items come in groups (several questions on
 one reading passage, several tests of one function), they are not independent, and the plain SE is too small.
-Compute the SE over clusters instead; on reading-comprehension benchmarks it can be several times larger.
+Compute the SE over clusters instead. On reading-comprehension benchmarks it can be several times larger.
 <b>Separate the two sources of noise.</b> A sampled model's score on one item is itself random. Averaging k
-samples per item shrinks that part by 1/k; nothing but more items shrinks the other.</p>
+samples per item shrinks that part by 1/k, but only more items shrink the other part.</p>
 </div>
 
 <div class="quiz" data-title="Checkpoint 2 — contamination and error bars">
@@ -392,12 +392,12 @@ samples per item shrinks that part by 1/k; nothing but more items shrinks the ot
   <div class="qq">Why does Min-K% Prob average only the least likely tokens instead of the whole passage?</div>
   <div class="opts">
     <div class="opt">It is cheaper to compute</div>
-    <div class="opt">The easy tokens are predictable whether or not the passage was seen; memorisation shows in how unsurprised the model is by the hard ones</div>
+    <div class="opt">The easy tokens are predictable whether or not the passage was seen; memorisation shows in how little the hard ones surprise the model</div>
     <div class="opt">The most likely tokens are usually stop words, which are removed</div>
     <div class="opt">It is a lower bound on perplexity</div>
   </div>
-  <div class="expl"><b>Signal lives in the tail.</b> In the worked example the means differ by 1.18 nats, the
-  bottom-20% averages by 3.5. An unseen passage contains a few tokens the model could not have predicted; a
+  <div class="expl"><b>The signal is in the tail.</b> In the worked example the means differ by 1.18 nats, and the
+  bottom-20% averages by 3.5. An unseen passage contains a few tokens the model could not have predicted, and a
   memorised one does not.</div>
 </div>
 <div class="qitem" data-answer="3">
@@ -409,7 +409,7 @@ samples per item shrinks that part by 1/k; nothing but more items shrinks the ot
     <div class="opt">The gap is below what an unpaired comparison on 198 items can reliably detect (about 13 points); compute the paired difference on the same items before claiming anything</div>
   </div>
   <div class="expl"><b>Report the interval, then pair.</b> Each score's 95% CI is about ±6.4 points. The paired
-  analysis may well find B better, because most of the noise cancels, but the two headline numbers alone do not
+  analysis may well find B better, because most of the noise cancels. But the two headline numbers alone do not
   show it.</div>
 </div>
 <div class="qitem" data-answer="0">
@@ -420,8 +420,8 @@ samples per item shrinks that part by 1/k; nothing but more items shrinks the ot
     <div class="opt">Resampled with replacement, which double-counts items</div>
     <div class="opt">Used too few bootstrap replicates</div>
   </div>
-  <div class="expl"><b>Resample item ids, keep the pair.</b> In the worked example the unpaired interval
-  [−2.4, +8.6] contains zero while the paired one [+0.8, +5.4] does not, from the same data.</div>
+  <div class="expl"><b>Resample item ids, and keep the pair.</b> In the worked example the unpaired interval
+  [−2.4, +8.6] contains zero, while the paired one [+0.8, +5.4] does not, from the same data.</div>
 </div>
 <div class="qitem" data-answer="2">
   <div class="qq">A model scores 82% on GSM8K and 74% on a freshly written set of matched difficulty. The most likely reading?</div>
@@ -431,8 +431,8 @@ samples per item shrinks that part by 1/k; nothing but more items shrinks the ot
     <div class="opt">Part of the GSM8K score came from having seen GSM8K-like items in training; the fresh set measures the skill</div>
     <div class="opt">The model is overfitting to the new set</div>
   </div>
-  <div class="expl"><b>The GSM1k test.</b> When difficulty is matched by construction (and 8 points on ~1,300
-  items is far outside the noise), a drop is evidence of contamination or of training against the old
+  <div class="expl"><b>The GSM1k test.</b> When difficulty is matched by design (and 8 points on ~1,300
+  items is far outside the noise), a drop is evidence of contamination, or of training against the old
   benchmark's style.</div>
 </div>
 </div>
@@ -449,7 +449,7 @@ pass@k = 1 − (1 − p)<sup>k</sup>
 </div>
 
 <p>We do not know <i>p</i>. The obvious estimate draws k samples and checks whether any is right, but that is
-very noisy. Better: draw <b>n ≥ k</b> samples once, count the <b>c</b> correct ones, and ask what fraction of all
+very noisy. A better way is to draw <b>n ≥ k</b> samples once and count the <b>c</b> correct ones. Then ask what fraction of all
 the ways of choosing k of the n samples contains at least one correct sample.</p>
 
 <div class="mathblock">
@@ -459,11 +459,11 @@ pass@k estimate = 1 − <span class="frac"><span class="n">C(n − c, k)</span><
 
 <h3>Why this is unbiased</h3>
 
-<p>Think of the n samples as a random sample, then a random k-subset of them. The k-subset is itself a set of
+<p>Think of the n samples as a random sample, and then take a random k-subset of them. The k-subset is itself a set of
 k independent samples from the model, so the probability that it contains no correct sample is exactly
 (1 − p)<sup>k</sup> on average. The estimator computes that probability for the k-subset exactly, by counting,
-instead of drawing one at random. Averaging over the randomness of which c you happened to get therefore gives
-the true value. The test suite checks this without sampling at all: it sums the estimator over every c, weighted
+instead of drawing one at random. So averaging over the randomness of which c you happened to get gives
+the true value. The test suite checks this without sampling at all. It sums the estimator over every c, weighted
 by the binomial probability of seeing c, and gets 1 − (1 − p)<sup>k</sup> to nine decimal places.</p>
 
 <p>The <b>naive</b> plug-in estimate 1 − (1 − c/n)<sup>k</sup> is biased <b>low</b>. The function
@@ -515,22 +515,22 @@ form, 1 − Π<sub>i = n−c+1..n</sub> (1 − k/i), never does, and is what <co
 <p style="margin-bottom:0">Reasoning models are evaluated with sampling, not greedy decoding (greedy decoding
 makes long chains of thought loop). DeepSeek-R1's report, for example, samples at temperature 0.6 and reports
 pass@1 as the average correctness over many samples per problem (up to 64), alongside cons@64. On a 30-problem
-AIME this averaging is what makes the number usable at all: it removes the sampling noise of each problem,
-leaving only the (still large) noise of having 30 problems.</p>
+AIME, this averaging is what makes the number usable at all. It removes the sampling noise of each problem,
+leaving only the (still large) noise of having just 30 problems.</p>
 </div>
 
 <h2>26.7 · Model judges: LLM-as-judge and its biases</h2>
 
 <p>Open-ended answers ("explain this", "write that") have no gold answer to match. Asking people is the gold
-standard and slow. Asking a strong model is fast, and Zheng et al. (2023) showed that GPT-4 as a judge agreed
-with human preferences over 80% of the time on MT-Bench and Chatbot Arena data, about the same rate at which
-humans agree with each other. Since then model judges grade most open-ended evals. They have three
+standard, but it is slow. Asking a strong model is fast. Zheng et al. (2023) showed that GPT-4 as a judge agreed
+with human preferences over 80% of the time on MT-Bench and Chatbot Arena data, about as often as
+humans agree with each other. Since then, model judges have graded most open-ended evals. They have three
 well-measured biases.</p>
 
 <h3>Position bias, and the swap test</h3>
 
 <p>Shown two answers, judges favour one slot, usually the first. In the MT-Bench study even GPT-4 gave the same
-verdict after the two answers were swapped in only about two-thirds of cases. The correction is mechanical:
+verdict after the two answers were swapped in only about two-thirds of cases. The fix is mechanical:
 <b>judge every pair in both orders</b>, and count a win only if it survives the swap.</p>
 
 <pre><code>def debias_pairwise(v_ab, v_ba):          # v_ab: model shown FIRST; v_ba: model shown SECOND
@@ -541,16 +541,16 @@ verdict after the two answers were swapped in only about two-thirds of cases. Th
     return "tie"                             # the verdict followed the slot, not the answer</code></pre>
 
 <p>A judge that says "first" both times is not judging the answers at all, and the swap turns that into a tie
-instead of a spurious win. Report the <b>consistency rate</b> too: the fraction of pairs on which the two orders
+instead of a false win. Report the <b>consistency rate</b> too, the fraction of pairs on which the two orders
 agree. It is a free measure of how much to trust the judge on this task.</p>
 
 <h3>Length bias, and length-controlled win rates</h3>
 
 <p>Judges, like the human annotators of Chapter 23, prefer longer answers. A model can raise its win rate by
-being verbose without being better, and in 2023 several did, which made the AlpacaEval leaderboard easy to
-game. <b>Length-controlled AlpacaEval</b> (Dubois et al. 2024) fixes this with a regression. Model the judge's
-preference as a function of a quality term and a length term, fit it, and report the win rate with the length
-term set to zero: <i>how often would this model win if its answers were the same length as the
+being wordy without being better. In 2023 several did, which made the AlpacaEval leaderboard easy to
+game. <b>Length-controlled AlpacaEval</b> (Dubois et al. 2024) fixes this with a regression. It models the judge's
+preference as a function of a quality term and a length term, fits it, and reports the win rate with the length
+term set to zero. In other words: <i>how often would this model win if its answers were the same length as the
 baseline's?</i></p>
 
 <div class="mathblock">
@@ -574,26 +574,26 @@ the baseline.
 <b>LC win rate</b> = σ(−0.104) = <b>47.4%</b>, within noise of the true 50%.
 </div></div>
 <p style="margin-bottom:0"><b>Twelve points of "quality" were length.</b> On real data, Dubois et al. report
-that length control raised AlpacaEval's Spearman correlation with Chatbot Arena rankings from 0.94 to 0.98, and
+that length control raised the Spearman correlation of AlpacaEval with Chatbot Arena rankings from 0.94 to 0.98. It also
 made the metric much harder to game by asking for longer answers. Chatbot Arena itself later added a "style
-control" option that regresses out length and markdown formatting the same way.</p>
+control" option that removes the effect of length and markdown formatting in the same way.</p>
 </div>
 
 <h3>Self-preference, and the rest</h3>
 
-<p>Judges rate their own outputs, and those of models like them, higher than other judges do. Panickssery et
+<p>Judges rate their own outputs, and those of similar models, higher than other judges do. Panickssery et
 al. (2024) found that the more reliably a model can recognise its own text, the more it favours it. The
-corrections are to use a judge from a different family than the models being compared, or a panel of judges
-from several families, and to validate the judge against human labels on your task. Other documented biases:
+fixes are to use a judge from a different family than the models being compared, or a panel of judges
+from several families, and to check the judge against human labels on your task. Other documented biases:
 judges are swayed by confident tone, by formatting (headers, bullets), and by an answer that agrees with a
-reference answer shown in the prompt even when the reference is wrong.</p>
+reference answer shown in the prompt, even when the reference is wrong.</p>
 
 <div class="box intuition">
 <span class="t">Rubrics beat vibes</span>
 <p style="margin-bottom:0">A judge asked "which is better?" brings its own taste. A judge asked "does the answer
 state the dosage? does it cite the guideline? is it under 150 words?" is closer to an exact-match scorer, and
-its biases have less room. For anything you will ship, write the rubric first, have the judge score each
-criterion separately, and check the judge against a few hundred human-labelled examples (26.9).</p>
+its biases have less room to act. For anything you will ship, write the rubric first, have the judge score each
+criterion separately, and check the judge against a few hundred examples labelled by people (26.9).</p>
 </div>
 
 <h3>Arena ratings are Bradley-Terry</h3>
@@ -606,8 +606,8 @@ P(A beats B) = 1 / ( 1 + 10<sup>−(R<sub>A</sub> − R<sub>B</sub>)/400</sup> )
 <span class="lbl">100 points → 64.0% · 30 points → 54.3% · 400 points → 90.9%</span>
 </div>
 
-<p>Two models 30 points apart differ by four points of head-to-head win rate. Arena publishes bootstrap
-confidence intervals on each rating for this reason; models whose intervals overlap are not reliably ordered.</p>
+<p>Two models 30 points apart differ by four points of head-to-head win rate. That is why Arena publishes bootstrap
+confidence intervals on each rating. Models whose intervals overlap are not reliably ordered.</p>
 
 <div class="quiz" data-title="Checkpoint 3 — pass@k and judges">
 <div class="qitem" data-answer="1">
@@ -619,7 +619,7 @@ confidence intervals on each rating for this reason; models whose intervals over
     <div class="opt">It is correct; the combinatorial formula is only an approximation</div>
   </div>
   <div class="expl"><b>Jensen's inequality.</b> The combinatorial estimator 1 − C(n−c,k)/C(n,k) is exactly
-  unbiased; the plug-in is not. In the worked example with n = 10, p = 0.3, k = 5, the plug-in averages 0.760
+  unbiased, and the plug-in is not. In the worked example with n = 10, p = 0.3, k = 5, the plug-in averages 0.760
   against a true 0.832.</div>
 </div>
 <div class="qitem" data-answer="2">
@@ -631,7 +631,7 @@ confidence intervals on each rating for this reason; models whose intervals over
     <div class="opt">The pair is discarded and re-judged until consistent</div>
   </div>
   <div class="expl"><b>Inconsistent verdicts are ties.</b> A win must survive the swap. The fraction of
-  inconsistent pairs is itself worth reporting: it tells you how much of the judge's output is position.</div>
+  inconsistent pairs is itself worth reporting, because it tells you how much of the judge's output is position.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">After DPO your model's raw AlpacaEval win rate rose from 50% to 62%, and its length-controlled win rate is 51%. What happened?</div>
@@ -642,7 +642,7 @@ confidence intervals on each rating for this reason; models whose intervals over
     <div class="opt">The baseline got worse</div>
   </div>
   <div class="expl"><b>DPO's known side effect, measured.</b> DPO on summed log-probs tends to lengthen answers
-  (Ch 25). LC win rate asks what the win rate would be at matched length, and here the answer is: no better.</div>
+  (Ch 25). The LC win rate asks what the win rate would be at matched length, and here the answer is: no better.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">Which is the best defence against self-preference bias when comparing your model with a competitor's?</div>
@@ -653,7 +653,7 @@ confidence intervals on each rating for this reason; models whose intervals over
     <div class="opt">Use a judge (or a panel) from a different model family, and validate it against human labels on your task</div>
   </div>
   <div class="expl"><b>Independence, then validation.</b> Judges favour text like their own. A third-party judge,
-  or several averaged, removes the conflict of interest; agreement with a human-labelled sample tells you
+  or several averaged, removes the conflict of interest. Agreement with a sample labelled by people tells you
   whether what is left can be trusted.</div>
 </div>
 </div>
@@ -664,16 +664,16 @@ confidence intervals on each rating for this reason; models whose intervals over
 
 <p>A reasoning model's accuracy rises with the number of tokens it is allowed to think. A score without its
 <b>thinking budget</b> (maximum tokens, or the effort setting) is like a latency number without the batch size.
-Report, for each eval: the sampling temperature, the maximum output length, the number of samples averaged per
+For each eval, report the sampling temperature, the maximum output length, the number of samples averaged per
 item, and the mean number of tokens actually generated. The last one is also the cost. And check how many
-responses hit the length limit: a truncated chain of thought scores zero for reasons that have nothing to do
+responses hit the length limit. A cut-off chain of thought scores zero for reasons that have nothing to do
 with whether the model could solve the problem.</p>
 
 <h3>Agents: the environment is part of the model</h3>
 
 <p>An agent eval runs a model inside a loop with tools (a shell, a browser, an API) for many turns, and scores the
-final state: did the repository's tests pass (SWE-bench), is the airline database in the right state
-(τ-bench), did the terminal task's checker succeed (Terminal-Bench). Three things make them different from
+final state. Did the repository's tests pass (SWE-bench)? Is the airline database in the right state
+(τ-bench)? Did the terminal task's checker succeed (Terminal-Bench)? Three things set them apart from
 question-answering evals:</p>
 
 <ul>
@@ -692,41 +692,41 @@ trials with c successes is C(c, k)/C(n, k), and for a per-trial success rate p i
 An agent succeeds on a task 60% of the time. <b>pass@1 = 0.60.</b> On a leaderboard that is a decent score.
 </div></div>
 <div class="step"><div class="i">2</div><div>
-<b>pass^8 = 0.6<sup>8</sup> = 0.0168.</b> The chance that eight users who each try this task once are all
+<b>pass^8 = 0.6<sup>8</sup> = 0.0168.</b> The chance that eight users, each trying this task once, are all
 served correctly is under 2%.
 </div></div>
 <div class="step"><div class="i">3</div><div>
-From data: n = 10 trials, c = 8 successes gives pass^4 = C(8,4)/C(10,4) = 70/210 = <b>0.333</b>, where the
+From data, n = 10 trials with c = 8 successes gives pass^4 = C(8,4)/C(10,4) = 70/210 = <b>0.333</b>, where the
 plug-in 0.8<sup>4</sup> would say 0.410.
 </div></div>
-<p style="margin-bottom:0"><b>pass@k rises with k and pass^k falls with it.</b> One measures capability with
-retries and a checker; the other measures dependability. Agents are bought for the second.</p>
+<p style="margin-bottom:0"><b>pass@k rises with k, and pass^k falls with it.</b> One measures capability with
+retries and a checker, and the other measures dependability. People buy agents for the second.</p>
 </div>
 
-<p>Grade agents on <b>outcomes</b> (the end state) rather than on the transcript wherever possible: a transcript
-judge rewards plausible-looking steps, the state check rewards the work being done. And report <b>cost per
+<p>Grade agents on <b>outcomes</b> (the end state) instead of on the transcript wherever you can. A transcript
+judge rewards steps that look plausible, while the state check rewards the work being done. And report <b>cost per
 task</b> alongside success rate. An agent that solves 5% more tasks with four times the tokens may be the
 wrong trade.</p>
 
 <h2>26.9 · Building a private eval set</h2>
 
 <p>Public benchmarks tell you how a model compares with others on tasks somebody else chose. The decision
-in front of you, which checkpoint to ship, whether a fine-tune helped, whether a prompt change broke
-something, needs an eval of <i>your</i> task that nobody has trained on. Building one is unglamorous and is
-usually the highest-value evaluation work a team does.</p>
+in front of you needs an eval of <i>your</i> task that nobody has trained on: which checkpoint to ship, whether a fine-tune helped,
+or whether a prompt change broke something. Building one is unglamorous work, and it is
+usually the most valuable evaluation work a team does.</p>
 
 <ol>
 <li><b>Name the decision.</b> "Is checkpoint B better than A for support replies?" sets what to measure and how
 big a difference matters.</li>
-<li><b>Sample real inputs</b> from the traffic you will serve, stratified over the slices you care about
-(languages, product areas, difficulty). Synthetic inputs are a supplement, not a substitute.</li>
+<li><b>Sample real inputs</b> from the traffic you will serve, spread over the slices you care about
+(languages, product areas, difficulty). Synthetic inputs can add to them but cannot replace them.</li>
 <li><b>Write a rubric</b> of checkable criteria before you look at model outputs, so the rubric is not fitted to
 one model's style.</li>
 <li><b>Label with two people</b> on a shared subset and measure their agreement with Cohen's κ. If people cannot
-agree, no judge model will, and the criterion needs rewriting.</li>
+agree, no judge model will either, and the criterion needs rewriting.</li>
 <li><b>Size it</b> with section 26.5: decide the smallest difference you need to see, and compute the items.</li>
 <li><b>Keep it private</b>, version it, and keep it out of every training set (n-gram filter, canary string).
-Add the failures you find in production as new items, and never delete the old ones: that is your regression
+Add the failures you find in production as new items, and never delete the old ones. That is your regression
 suite.</li>
 <li><b>Calibrate any judge</b> against the human labels, and re-check whenever you change the judge model.</li>
 </ol>
@@ -747,16 +747,16 @@ p<sub>e</sub> = 0.7 × 0.7 + 0.3 × 0.3 = <b>0.58</b>.
 <b>κ = (p<sub>o</sub> − p<sub>e</sub>)/(1 − p<sub>e</sub>) = 0.22/0.42 = 0.524.</b>
 </div></div>
 <p style="margin-bottom:0"><b>When most answers are acceptable, two annotators agree a lot by accident.</b>
-κ = 0.52 is "moderate" agreement: good enough to start, not good enough to resolve small differences between
-models. The usual fix is not more annotators but a sharper rubric.</p>
+κ = 0.52 is "moderate" agreement. It is good enough to start, but not good enough to detect small differences between
+models. The usual fix is a sharper rubric, not more annotators.</p>
 </div>
 
 <div class="box warn">
 <span class="t">The eval-set lifecycle</span>
 <p style="margin-bottom:0">Every time you look at a failure and change the model, the prompt or the data
 because of it, that item becomes slightly less of a test. Over months a private eval drifts toward being a
-training set. Keep a <b>held-out</b> portion that nobody inspects item by item, and use it only for the final
-decision, the same way you would never tune hyperparameters on the test split.</p>
+training set. Keep a <b>held-out</b> part that nobody looks at item by item, and use it only for the final
+decision, just as you would never tune hyperparameters on the test split.</p>
 </div>
 
 <h2>26.10 · The mental model to keep</h2>
@@ -766,11 +766,11 @@ decision, the same way you would never tune hyperparameters on the test split.</
 like.</li>
 <li><b>Every score has an error bar of √(p(1−p)/n).</b> Small benchmarks resolve only large gaps: ±6.4 points on
 GPQA Diamond, ±18 on one year of AIME.</li>
-<li><b>Pair your comparisons.</b> Same items, per-item differences, bootstrap over items. It needs a quarter of
+<li><b>Pair your comparisons.</b> Use the same items, per-item differences, and a bootstrap over items. It needs a quarter of
 the data.</li>
 <li><b>Use unbiased estimators for sampled metrics.</b> pass@k = 1 − C(n−c,k)/C(n,k); pass^k = C(c,k)/C(n,k).</li>
 <li><b>Judges are biased in known directions.</b> Swap positions, control for length, judge across families,
-validate against people.</li>
+and check against people.</li>
 <li><b>Public benchmarks leak and saturate.</b> The eval that decides what you ship is private, sized by a power
 calculation, and kept out of training.</li>
 </ul>
@@ -790,9 +790,9 @@ much.</p>
 <li>For generation, read 20 outputs the parser marked wrong. How many were actually right?</li>
 </ol>
 <details class="reveal"><summary>What to look for</summary><div>
-<p style="margin-bottom:0">Expect the four numbers to differ by more than their individual error bars on a
-small model, and the summed-versus-averaged choice to flip the winner on a noticeable fraction of items whose
-options differ in length. The parser check usually finds a few correct answers marked wrong: that is a bug in
+<p style="margin-bottom:0">Expect the four numbers to differ by more than their separate error bars on a
+small model. Expect the choice between sum and average to flip the winner on a noticeable share of items whose
+options differ in length. The parser check usually finds a few correct answers marked wrong. That is a bug in
 the eval, not in the model, and it is the most common one.</p>
 </div></details>
 </div></div>
@@ -831,8 +831,8 @@ you, and what did they not?</li>
 2. 28,800,000 / 2,000 = 14,400 s = 4.0 hours
 3. still about ±17.9 points: SE = √(0.5 × 0.5 / 30) = 0.091</code></pre>
 <p style="margin-bottom:0">The 64 samples remove the <i>within-problem</i> sampling noise, so pass@1 is a
-stable property of these 30 problems. They do nothing about having only 30 problems. To narrow the interval
-you need more problems (pool years, or add MATH-level items), not more samples.</p>
+stable property of these 30 problems. They do nothing about there being only 30 problems. To narrow the interval
+you need more problems (pool several years, or add MATH-level items), not more samples.</p>
 </div></details>
 </div></div>
 
@@ -848,10 +848,10 @@ does its win rate move?</li>
 result?</li>
 </ol>
 <details class="reveal"><summary>What you'll see</summary><div>
-<p style="margin-bottom:0">Consistency well below 100%, with the inconsistencies leaning toward one slot.
+<p style="margin-bottom:0">Expect consistency well below 100%, with the inconsistencies leaning toward one slot.
 Padding usually raises the win rate even though it adds nothing, which is the length bias in its purest form,
 and the LC estimate should move back toward the unpadded number. If padding <i>lowers</i> the win rate, your
-judge prompt penalises verbosity, which is a bias in the other direction worth knowing about too.</p>
+judge prompt penalises wordiness. That is a bias in the other direction, and also worth knowing about.</p>
 </div></details>
 </div></div>
 
@@ -869,8 +869,8 @@ signal.)</li>
 <details class="reveal"><summary>What to expect</summary><div>
 <p style="margin-bottom:0">A small model trained for one epoch memorises little, so both signals will be weak,
 and Min-K% usually separates the sets somewhat better than the mean. Training longer (more epochs over the
-same data) strengthens both. This is the same experiment contamination papers run on billion-parameter models,
-at a size where you know the ground truth.</p>
+same data) strengthens both. Contamination papers run this same experiment on billion-parameter models,
+but here the model is small enough that you know the ground truth.</p>
 </div></details>
 </div></div>
 
@@ -886,27 +886,27 @@ difference.</li>
 <li>Using the measured disagreement rate, how many items would you need to detect a 3-point difference?</li>
 </ol>
 <details class="reveal"><summary>How to read your answer</summary><div>
-<p style="margin-bottom:0">The first rubric almost always has a criterion people read differently ("is the tone
-appropriate?"); splitting it into observable checks raises κ. With 150 items, expect the paired interval to be
-several points wide; part 3 tells you whether to grow the set or accept that this eval only catches large
-regressions. Both are legitimate, if you know which you have.</p>
+<p style="margin-bottom:0">The first rubric almost always has a criterion that people read differently ("is the tone
+appropriate?"). Splitting it into checks you can observe raises κ. With 150 items, expect the paired interval to be
+several points wide. Part 3 tells you whether to grow the set, or to accept that this eval only catches large
+regressions. Both are fine, as long as you know which one you have.</p>
 </div></details>
 </div></div>
 
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
-<li><a href="https://arxiv.org/abs/2411.00640">Miller 2024 — Adding Error Bars to Evals</a> (standard errors, clustering, paired differences, power)</li>
-<li><a href="https://arxiv.org/abs/2107.03374">Chen et al. 2021 — Evaluating Large Language Models Trained on Code</a> (HumanEval, the unbiased pass@k estimator)</li>
-<li><a href="https://arxiv.org/abs/2306.05685">Zheng et al. 2023 — Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena</a> (position, verbosity and self-enhancement bias)</li>
-<li><a href="https://arxiv.org/abs/2404.04475">Dubois et al. 2024 — Length-Controlled AlpacaEval</a></li>
-<li><a href="https://arxiv.org/abs/2404.13076">Panickssery et al. 2024 — LLM Evaluators Recognize and Favor Their Own Generations</a></li>
-<li><a href="https://arxiv.org/abs/2403.04132">Chiang et al. 2024 — Chatbot Arena</a> (Bradley-Terry ratings from human votes)</li>
-<li><a href="https://arxiv.org/abs/2310.16789">Shi et al. 2023 — Detecting Pretraining Data from Large Language Models</a> (Min-K% Prob)</li>
-<li><a href="https://arxiv.org/abs/2405.00332">Zhang et al. 2024 — A Careful Examination of LLM Performance on Grade School Arithmetic</a> (GSM1k)</li>
-<li><a href="https://arxiv.org/abs/2403.07974">Jain et al. 2024 — LiveCodeBench</a> (time-split, contamination-controlled evaluation)</li>
-<li><a href="https://arxiv.org/abs/2406.04127">Gema et al. 2024 — Are We Done with MMLU?</a> (label errors in MMLU)</li>
-<li><a href="https://arxiv.org/abs/2310.11324">Sclar et al. 2023 — Quantifying Language Models' Sensitivity to Spurious Features in Prompt Design</a></li>
-<li><a href="https://arxiv.org/abs/2406.12045">Yao et al. 2024 — τ-bench</a> (tool-agent-user evaluation, pass^k)</li>
+<li><a href="https://arxiv.org/abs/2411.00640">Miller 2024, Adding Error Bars to Evals</a> (standard errors, clustering, paired differences, power)</li>
+<li><a href="https://arxiv.org/abs/2107.03374">Chen et al. 2021, Evaluating Large Language Models Trained on Code</a> (HumanEval, the unbiased pass@k estimator)</li>
+<li><a href="https://arxiv.org/abs/2306.05685">Zheng et al. 2023, Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena</a> (position, verbosity and self-enhancement bias)</li>
+<li><a href="https://arxiv.org/abs/2404.04475">Dubois et al. 2024, Length-Controlled AlpacaEval</a></li>
+<li><a href="https://arxiv.org/abs/2404.13076">Panickssery et al. 2024, LLM Evaluators Recognize and Favor Their Own Generations</a></li>
+<li><a href="https://arxiv.org/abs/2403.04132">Chiang et al. 2024, Chatbot Arena</a> (Bradley-Terry ratings from human votes)</li>
+<li><a href="https://arxiv.org/abs/2310.16789">Shi et al. 2023, Detecting Pretraining Data from Large Language Models</a> (Min-K% Prob)</li>
+<li><a href="https://arxiv.org/abs/2405.00332">Zhang et al. 2024, A Careful Examination of LLM Performance on Grade School Arithmetic</a> (GSM1k)</li>
+<li><a href="https://arxiv.org/abs/2403.07974">Jain et al. 2024, LiveCodeBench</a> (time-split, contamination-controlled evaluation)</li>
+<li><a href="https://arxiv.org/abs/2406.04127">Gema et al. 2024, Are We Done with MMLU?</a> (label errors in MMLU)</li>
+<li><a href="https://arxiv.org/abs/2310.11324">Sclar et al. 2023, Quantifying Language Models' Sensitivity to Spurious Features in Prompt Design</a></li>
+<li><a href="https://arxiv.org/abs/2406.12045">Yao et al. 2024, τ-bench</a> (tool-agent-user evaluation, pass^k)</li>
 <li>Benchmarks: <a href="https://arxiv.org/abs/2009.03300">MMLU</a> · <a href="https://arxiv.org/abs/2406.01574">MMLU-Pro</a> · <a href="https://arxiv.org/abs/2311.12022">GPQA</a> · <a href="https://arxiv.org/abs/2110.14168">GSM8K</a> · <a href="https://arxiv.org/abs/2103.03874">MATH</a> · <a href="https://arxiv.org/abs/2310.06770">SWE-bench</a> · <a href="https://arxiv.org/abs/2311.07911">IFEval</a> · <a href="https://arxiv.org/abs/2501.14249">Humanity's Last Exam</a></li>
 <li>Reference code: <code>tfs/evals.py</code> · tests: <code>tests/test_posttraining.py</code> · notebook: <code>notebooks/26_evaluation.ipynb</code></li>
 </ul>
