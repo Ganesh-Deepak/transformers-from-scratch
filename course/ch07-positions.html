@@ -14,25 +14,25 @@
 <h1>7 · Position: Sinusoidal → Learned → RoPE → ALiBi</h1>
 <p class="lead">
 Attention has a strange property: it does not know what order the tokens are in. <em>"Dog bites man"</em> and
-<em>"man bites dog"</em> produce identical outputs unless you do something about it. This chapter is about
-what that something is — ending with RoPE, which essentially every model shipped since 2023 uses.
+<em>"man bites dog"</em> give identical outputs unless you do something about it. This chapter is about
+what that something is, ending with RoPE, which almost every model released since 2023 uses.
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; position enters through the q-k dot product<div class="sep"></div><span class="k">Leads to</span><a href="ch16-gqa-mla.html">Ch&nbsp;16</a> &mdash; MLA has to split RoPE off to work<br><a href="ch21-scaling.html">Ch&nbsp;21</a> &mdash; context extension is RoPE scaling<div class="sep"></div><span class="k">Why this chapter</span>Attention cannot see order. Everything here is about telling it.</div>
 <div class="box intuition">
 <span class="t">The whole chapter in five sentences</span>
-<p style="margin-bottom:0"><b>Attention is permutation-equivariant</b>, so order must be injected from outside.
-<b>The 2017 answers add a position vector to the input</b>, sinusoidal or learned, which fixes a maximum length
-and can be washed out by depth. <b>RoPE rotates each pair of q and k channels by an angle proportional to the
-position</b>, so their dot product depends only on the distance between them, in every layer. <b>Variants rotate
-only some channels</b> (partial and decoupled RoPE) <b>or split the channels between several coordinates</b>
-(M-RoPE for images and video). <b>None of them extrapolates for free</b>: a model trained at 64 tokens and run
+<p style="margin-bottom:0"><b>Attention is permutation-equivariant</b>, so order has to be supplied from outside.
+The 2017 answers add a position vector to the input, either sinusoidal or learned. That fixes a maximum length,
+and the signal can fade with depth. <b>RoPE rotates each pair of q and k channels by an angle proportional to the
+position</b>, so their dot product depends only on the distance between them, in every layer. Variants rotate
+only some channels (partial and decoupled RoPE) or divide the channels between several coordinates
+(M-RoPE for images and video). None of them extends to longer sequences for free: a model trained at 64 tokens and run
 at 128 fails, and the repo's own measurement shows why.</p>
 </div>
 
 <h2>7.1 · Proving attention is position-blind</h2>
 
-<p>This isn't a hand-wave. Let <span class="math">P</span> be a permutation matrix that shuffles the token
+<p>This can be proved. Let <span class="math">P</span> be a permutation matrix that shuffles the token
 order. Then:</p>
 
 <div class="mathblock">
@@ -42,15 +42,15 @@ Attention(PQ, PK, PV) = softmax<big>(</big><span class="frac"><span class="n">PQ
 <span class="lbl">shuffle the input → the output is shuffled the same way, but otherwise unchanged</span>
 </div>
 
-<p>This is called <b>permutation equivariance</b>. The set of tokens is all attention sees; their order is
-invisible. And the MLP that follows works on each position independently, so it can't fix this either.</p>
+<p>This property is called <b>permutation equivariance</b>. Attention sees the set of tokens, and their order is
+invisible to it. The MLP that follows works on each position separately, so it cannot fix this either.</p>
 
 <div class="box intuition">
 <span class="t">Why this is actually a feature</span>
-<p style="margin-bottom:0">An RNN gets order for free but pays with sequential computation. A transformer
-gets full parallelism but must be <i>told</i> about order. Because position is injected explicitly rather
-than baked into the architecture, we can <b>choose the encoding</b> — and that freedom is why context windows
-grew from 512 to 1M tokens. You cannot retrofit an RNN's notion of position; you can swap a transformer's.</p>
+<p style="margin-bottom:0">An RNN gets order for free but pays for it with sequential computation. A transformer
+gets full parallelism but has to be <i>told</i> the order. Because position is supplied explicitly instead of
+being built into the architecture, we can <b>choose the encoding</b>, and that freedom is why context windows
+grew from 512 to 1M tokens. You cannot swap out an RNN's sense of position, but you can swap a transformer's.</p>
 </div>
 
 <h2>7.2 · Approach 1 — Sinusoidal (the original, 2017)</h2>
@@ -75,15 +75,15 @@ PE<sub>(pos, 2i+1)</sub> = cos<big>(</big>pos / 10000<sup>2i/d</sup><big>)</big>
 x = embed(ids) + sinusoidal(T, C)[None]        # (B,T,C) + (1,T,C)
 </code></pre>
 
-<p>Each dimension is a sine wave of a different frequency — fast on the left, slow on the right — so the
-vector encodes position the way a binary counter encodes a number, but continuously. The clever property is
+<p>Each dimension is a sine wave of a different frequency, fast on the left and slow on the right, so the
+vector encodes position the way a binary counter encodes a number, but smoothly. Its useful property is
 that <span class="math">PE<sub>pos+k</sub></span> is a <b>linear function</b> of
-<span class="math">PE<sub>pos</sub></span> (rotation by a fixed angle), so relative offsets are in principle
-learnable.</p>
+<span class="math">PE<sub>pos</sub></span> (a rotation by a fixed angle), so in principle the model can learn
+relative offsets.</p>
 
-<p><b>Why it fell out of favour:</b> it's added <i>once</i> at the input, so by layer 20 the positional signal
-has been mangled by 20 rounds of attention and MLPs. Extrapolation beyond the trained length is poor in
-practice despite the theory.</p>
+<p><b>Why it was dropped:</b> it is added only <i>once</i>, at the input, so by layer 20 the position signal
+has been mixed up by 20 rounds of attention and MLPs. In practice it handles lengths beyond the trained length
+poorly, whatever the theory says.</p>
 
 <h2>7.3 · Approach 2 — Learned absolute (GPT-2, BERT, ViT)</h2>
 
@@ -91,39 +91,39 @@ practice despite the theory.</p>
 x = self.wte(ids) + self.wpe(torch.arange(T))  # (B,T,C)
 </code></pre>
 
-<p>Simplest possible thing: a second lookup table indexed by position. Works well, and for a while was the
+<p>The simplest option: a second lookup table, indexed by position. It works well, and for a while it was the
 default.</p>
 
 <div class="box gotcha">
 <span class="t">The hard ceiling</span>
-<p style="margin-bottom:0">The table has <code>max_T</code> rows. Position 1025 in a GPT-2 model
-<b>does not exist</b> — it's an index error, not a quality degradation. You cannot extend the context of a
-learned-absolute model without training new rows from scratch. This limitation, more than anything, is what
-pushed the field to relative schemes.</p>
+<p style="margin-bottom:0">The table has <code>max_T</code> rows, so position 1025 in a GPT-2 model
+<b>does not exist</b>: you get an index error, not just worse quality. You cannot extend the context of a
+model with learned absolute positions without training new rows from scratch. More than anything, this limit
+pushed the field toward relative schemes.</p>
 </div>
 
 <h2>7.4 · Approach 3 — RoPE (Rotary Position Embedding)</h2>
 
-<p>Su et al. (2021). The idea that won. Every one of Llama, Mistral, Qwen, Gemma, DeepSeek, Phi and GPT-NeoX
-uses it.</p>
+<p>Su et al. (2021) proposed the scheme that won. Llama, Mistral, Qwen, Gemma, DeepSeek, Phi and GPT-NeoX
+all use it.</p>
 
 <div class="box intuition">
 <span class="t">The idea in one sentence</span>
-<p style="margin-bottom:0">Don't <b>add</b> anything to the embedding. Instead, <b>rotate</b> the query and
-key vectors by an angle proportional to their position — so that when you take their dot product, the
-angles subtract and what survives depends only on the <b>relative</b> distance.</p>
+<p style="margin-bottom:0">Do not <b>add</b> anything to the embedding. Instead, <b>rotate</b> the query and
+key vectors by an angle proportional to their position. When you take their dot product, the
+angles subtract, and what remains depends only on the <b>relative</b> distance.</p>
 </div>
 
 <h3>The 2D case</h3>
 
-<p>Take a pair of adjacent features and treat them as a point in a plane. For a token at position
+<p>Take a pair of neighbouring features and treat them as a point in a plane. For a token at position
 <span class="math">m</span>, rotate that point by <span class="math">mθ</span>:</p>
 
 <div class="mathblock">
 R<sub>m</sub> = <big>[</big> <span style="display:inline-block;text-align:center;line-height:1.4">cos mθ &nbsp;&nbsp;−sin mθ<br>sin mθ &nbsp;&nbsp;&nbsp;&nbsp;cos mθ</span> <big>]</big>
 </div>
 
-<p>Now the crucial algebra. Rotation matrices satisfy
+<p>Now the important algebra. Rotation matrices satisfy
 <span class="math">R<sub>m</sub><sup>T</sup>R<sub>n</sub> = R<sub>n−m</sub></span>, so:</p>
 
 <div class="mathblock" style="font-size:1.15em">
@@ -133,11 +133,11 @@ R<sub>m</sub> = <big>[</big> <span style="display:inline-block;text-align:center
 <span class="lbl">the absolute positions m and n vanish — only (n − m) survives</span>
 </div>
 
-<p><b>That equation is the whole paper.</b> Absolute rotations applied separately to q and k produce an
-attention score that is a function of relative distance only, with zero parameters and no change to the
-attention formula itself.</p>
+<p><b>That equation is the core of the paper.</b> Absolute rotations applied separately to q and k produce an
+attention score that depends only on the relative distance, with no parameters and no change to the
+attention formula.</p>
 
-<p>Drag the sliders. Notice how the rotation speed depends on which feature pair you're looking at:</p>
+<p>Drag the sliders. Notice how the rotation speed depends on which pair of features you look at:</p>
 
 <div data-viz="rope"></div>
 
@@ -150,14 +150,14 @@ attention formula itself.</p>
 θ<sub>i</sub> = base<sup>−2i/d</sup>, &nbsp;&nbsp; i = 0, 1, …, d/2 − 1 &nbsp;&nbsp;&nbsp; (base = 10000 originally)
 </div>
 
-<p>Pair 0 rotates fast (full turn every ~6.3 tokens) and encodes fine local ordering; the last pair rotates
-extremely slowly and encodes coarse long-range position. One mechanism, all scales — the same logic as the
-sinusoidal frequencies, but applied multiplicatively inside attention instead of additively at the input.</p>
+<p>Pair 0 rotates fast (a full turn every ~6.3 tokens) and encodes fine local order; the last pair rotates
+very slowly and encodes rough long-range position. One mechanism covers every scale. The logic is the same as the
+sinusoidal frequencies, but it is applied by multiplication inside attention instead of by addition at the input.</p>
 
 <div class="example">
 <span class="t">Worked example — rotate one pair, then watch the positions cancel</span>
-<p><code>d_head = 8</code>, so 4 pairs. Take pair <span class="math">i = 0</span>, where
-<span class="math">θ₀ = 10000<sup>0</sup> = 1</span> — one radian per token.</p>
+<p><code>d_head = 8</code>, so there are 4 pairs. Take pair <span class="math">i = 0</span>, where
+<span class="math">θ₀ = 10000<sup>0</sup> = 1</span>, one radian per token.</p>
 
 <div class="step"><div class="i">1</div><div>
 <b>The four frequencies.</b> Each pair turns at its own rate:
@@ -189,10 +189,10 @@ m=10  n=12   offset 2   dot = +0.477750   <- identical every time
 m= 1  n= 4   offset 3   dot = -0.481099   <- different offset, different value</code></pre>
 </div></div>
 
-<p style="margin-bottom:0"><b>That is the theorem, measured.</b> The absolute positions were 0, 1,
-5 and 10 — wildly different — yet the attention score is <i>identical</i> (to float32 rounding, about 10<sup>−8</sup>) because the
-gap was always 2. Absolute position went in; only relative position came out. No parameters, no lookup
-table, no maximum length.</p>
+<p style="margin-bottom:0"><b>This is the theorem, measured.</b> The absolute positions were 0, 1,
+5 and 10, all very different, yet the attention score is <i>identical</i> (to float32 rounding, about 10<sup>−8</sup>) because the
+gap was always 2. Absolute positions went in, and only the relative position came out. There are no parameters,
+no lookup table and no maximum length.</p>
 </div>
 
 <pre><code>import torch, math
@@ -208,9 +208,9 @@ assert abs(torch.dot(rot(q,0),rot(k,2)) - torch.dot(rot(q,10),rot(k,12))) < 1e-6
 
 <div class="mn">
   <span class="k">Why no max length</span>
-  A learned position table has <code>max_T</code> rows and position 1025 simply does not exist.
-  RoPE computes <code>cos(m·θ)</code> for any <code>m</code> — which is why context extension
-  (Ch 21) is possible at all.
+  A learned position table has <code>max_T</code> rows, and position 1025 simply does not exist.
+  RoPE computes <code>cos(m·θ)</code> for any <code>m</code>, which is what makes context extension
+  (Ch 21) possible at all.
 </div>
 
 <h3>Implementation</h3>
@@ -237,12 +237,12 @@ def apply_rope(q, k, cos, sin):
 
 <div class="box math-note">
 <span class="t">Two conventions, both correct</span>
-<p style="margin-bottom:0">The original paper pairs <b>adjacent</b> dimensions
-<code>(x0,x1), (x2,x3), …</code>. The HuggingFace/Llama implementation above pairs
-<code>(x0, x<sub>d/2</sub>), (x1, x<sub>1+d/2</sub>), …</code> — it splits the head in half instead. These are related by a
+<p style="margin-bottom:0">The original paper pairs <b>neighbouring</b> dimensions,
+<code>(x0,x1), (x2,x3), …</code>. The Hugging Face/Llama implementation above pairs
+<code>(x0, x<sub>d/2</sub>), (x1, x<sub>1+d/2</sub>), …</code>: it splits the head in half instead. The two differ by a
 fixed permutation of the feature axis, so they are <b>mathematically equivalent</b> (the model just learns
-its weights in the corresponding permuted basis). But they are <b>not interchangeable at inference</b>:
-loading Llama weights into an adjacent-pair implementation produces garbage. If you ever port RoPE between
+its weights in the permuted basis). But they are <b>not interchangeable at inference</b>:
+loading Llama weights into an implementation that pairs neighbours produces nonsense. If you ever port RoPE between
 codebases, check this first.</p>
 </div>
 
@@ -257,12 +257,12 @@ q, k = apply_rope(q, k, cos, sin)                  # ← q and k ONLY. Never v.
 out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
 </code></pre>
 
-<p><b>V is never rotated.</b> Position matters for deciding <i>who to attend to</i> (which is the dot product,
-i.e. q and k). It should not distort the <i>content</i> being retrieved. Rotating v would make the same
+<p><b>V is never rotated.</b> Position matters for deciding <i>which tokens to attend to</i>, which is the dot product
+of q and k. It should not distort the <i>content</i> being retrieved. Rotating v would make the same
 information mean different things at different positions.</p>
 
-<p>Also note: RoPE is applied <b>inside every layer</b>, freshly, on every forward pass. Unlike sinusoidal
-encoding, the positional signal cannot be washed out by depth.</p>
+<p>Note also that RoPE is applied <b>inside every layer</b>, afresh, on every forward pass. Unlike the sinusoidal
+encoding, its position signal cannot fade with depth.</p>
 
 <div class="quiz" data-title="Checkpoint 1 — RoPE">
 <div class="qitem" data-answer="2">
@@ -273,9 +273,9 @@ encoding, the positional signal cannot be washed out by depth.</p>
     <div class="opt">R<sub>m</sub><sup>T</sup>R<sub>n</sub> = R<sub>n−m</sub>, so absolute positions cancel in the dot product</div>
     <div class="opt">The frequencies form a geometric series</div>
   </div>
-  <div class="expl"><b>The composition property of rotations.</b> Options A and D are true statements about
-  RoPE (norm preservation is why it doesn't change vector magnitudes; the geometric frequency series gives
-  multi-scale coverage) but neither produces relative encoding. Only the group property
+  <div class="expl"><b>The way rotations combine.</b> Options A and D are true statements about
+  RoPE (norm preservation is why it does not change vector sizes; the geometric series of frequencies covers
+  many scales), but neither makes the encoding relative. Only the property
   R<sub>m</sub><sup>T</sup>R<sub>n</sub> = R<sub>n−m</sub> makes the absolute positions cancel.</div>
 </div>
 <div class="qitem" data-answer="1">
@@ -283,55 +283,55 @@ encoding, the positional signal cannot be washed out by depth.</p>
   <div class="opts">
     <div class="opt">It would be too slow</div>
     <div class="opt">Position should influence <i>which</i> tokens are selected, not <i>what</i> those tokens contain</div>
-    <div class="opt">v has a different shape than q and k</div>
+    <div class="opt">v has a different shape from q and k</div>
     <div class="opt">It is applied to v in most implementations</div>
   </div>
-  <div class="expl"><b>Separation of concerns.</b> q·k determines the attention weights — that's where
-  position belongs. v is the payload. Rotating v would mean the same retrieved fact gets a different vector
-  depending on where it sat, forcing the model to undo the rotation. (Note in GQA/MHA v often <i>does</i>
-  have the same shape as k — that's not the reason.)</div>
+  <div class="expl"><b>Each part has its own job.</b> q·k decides the attention weights, so that is where
+  position belongs. v is the content being carried. Rotating v would give the same retrieved fact a different vector
+  depending on where it sat, and the model would have to undo the rotation. (In GQA and MHA, v often <i>does</i>
+  have the same shape as k, so shape is not the reason.)</div>
 </div>
 <div class="qitem" data-answer="0">
-  <div class="qq">A model is trained with RoPE at <code>base=10000</code> and 4k context. You run it at 32k
+  <div class="qq">A model is trained with RoPE at <code>base=10000</code> and a 4k context. You run it at 32k
   tokens with no other change. What happens?</div>
   <div class="opts">
-    <div class="opt">It runs without error but quality degrades badly — the rotation angles are far outside the trained range</div>
+    <div class="opt">It runs without error, but quality drops badly, because the rotation angles are far outside the trained range</div>
     <div class="opt">It raises an index error</div>
-    <div class="opt">It works perfectly — RoPE extrapolates by design</div>
+    <div class="opt">It works perfectly, because RoPE extends to longer lengths by design</div>
     <div class="opt">Only the first 4k tokens are used</div>
   </div>
-  <div class="expl"><b>Runs, degrades.</b> Unlike a learned table there's no hard limit — you can compute
-  cos(m·θ) for any m. But the model never saw those angle regimes and generalises poorly. The fixes
-  (position interpolation, NTK-aware scaling, YaRN) are Chapter 21. This "silently gets worse rather than
-  crashing" behaviour is why long-context claims need to be benchmarked, not trusted.</div>
+  <div class="expl"><b>It runs, and gets worse.</b> Unlike a learned table there is no hard limit: you can compute
+  cos(m·θ) for any m. But the model never saw those angles and generalises poorly to them. The fixes
+  (position interpolation, NTK-aware scaling, YaRN) are in Chapter 21. Because it quietly gets worse instead of
+  crashing, long-context claims need to be measured, not trusted.</div>
 </div>
 </div>
 
 <h2>7.5 · Approach 4 — ALiBi (and the "no positional encoding" result)</h2>
 
-<p><b>ALiBi</b> (Press et al. 2021) is almost aggressively simple: add a linear penalty to attention scores
-based on distance. No embeddings at all.</p>
+<p><b>ALiBi</b> (Press et al. 2021) is about as simple as it gets: add a linear penalty to the attention scores
+based on distance, with no position embeddings at all.</p>
 
 <pre><code># head h gets slope m_h; slopes form a geometric sequence, e.g. 1/2, 1/4, 1/8, ...
 scores = q @ k.transpose(-2,-1) / sqrt(d)
 scores = scores + m_h * (j - i)      # (j - i) <= 0 for causal, so this is a penalty
 </code></pre>
 
-<p>Distant tokens get systematically down-weighted, with different heads decaying at different rates — some
-near-sighted, some far-sighted. ALiBi extrapolates to longer sequences remarkably well and was used by
-BLOOM and MPT. It has largely lost to RoPE in new models, but the idea survives inside sliding-window
+<p>Distant tokens are steadily down-weighted, and different heads decay at different rates, so some heads look
+near and some look far. ALiBi handles longer sequences remarkably well and was used by
+BLOOM and MPT. New models mostly use RoPE instead, but the idea lives on in sliding-window
 attention.</p>
 
-<p><b>NoPE:</b> it turns out causally-masked decoders can learn position <i>implicitly</i> — the mask itself
-breaks the permutation symmetry, since token <code>i</code> sees exactly <code>i+1</code> tokens.
-Kazemnejad et al. (2023) showed NoPE models can match or beat explicit schemes on some length-generalisation
-tasks. It's not mainstream, but it's a good reminder that the "attention has no position" story is subtler
+<p><b>NoPE:</b> decoders with a causal mask can learn position <i>implicitly</i>, because the mask itself
+breaks the permutation symmetry: token <code>i</code> sees exactly <code>i+1</code> tokens.
+Kazemnejad et al. (2023) showed that NoPE models can match or beat explicit schemes on some length-generalisation
+tasks. Few models use it, but it is a good reminder that "attention has no sense of position" is less simple
 for decoders than for encoders.</p>
 
 <h2>7.6 · Partial and decoupled RoPE: rotate only some channels</h2>
 
 <p>Nothing requires RoPE to rotate every channel of a head. <b>Partial RoPE</b> rotates the first
-<code>r</code> of the <code>d_head</code> channels and passes the rest through untouched:</p>
+<code>r</code> of the <code>d_head</code> channels and passes the rest through unchanged:</p>
 
 <pre><code>def apply_partial_rope(x, pos, rot_dim):           # x: (T, d_head)
     cos, sin = build_rope_cache(max(pos) + 1, rot_dim)
@@ -341,10 +341,10 @@ for decoders than for encoders.</p>
     return torch.cat([xr, xp], dim=-1)             # (T, d_head)</code></pre>
 
 <p>The dot product splits into two sums. The rotated channels contribute a term that depends only on the
-distance <code>n − m</code>, exactly as in §7.4; the pass-through channels contribute a term that does not depend
+distance <code>n − m</code>, exactly as in §7.4; the other channels contribute a term that does not depend
 on position at all. <code>test_ch07_partial_rope</code> checks both halves: the unrotated channels are
-bit-identical to the input, and a score at positions (3, 5) equals the score at (100, 102). So a head gets some
-channels to ask "how far away?" and some to ask "what is it?" with no positional interference. Real
+bit-identical to the input, and a score at positions (3, 5) equals the score at (100, 102). So a head has some
+channels for asking "how far away?" and some for asking "what is it?", without position getting in the way. Real
 configurations:</p>
 
 <div class="tw">
@@ -359,47 +359,47 @@ configurations:</p>
 </table>
 </div>
 
-<p>DeepSeek's case is the one with a hard reason behind it, and Chapter 16 develops it. MLA caches a compressed
+<p>DeepSeek has a hard reason for it, which Chapter 16 develops. MLA caches a compressed
 latent and wants to fold the key up-projection into the query ("absorption"). A rotation that depends on the key's
 position sits between the two matrices and blocks the fold. So MLA <b>decouples</b> position: 128 channels per
-head carry content with no rotation and can be absorbed, and a separate 64-channel RoPE part, shared across heads
-for the key, carries position. It is partial RoPE, done for a systems reason rather than a modelling one.</p>
+head carry content without rotation and can be absorbed, and a separate 64-channel RoPE part, shared across heads
+for the key, carries position. It is partial RoPE, chosen for a systems reason instead of a modelling one.</p>
 
 <h2>7.7 · Multimodal RoPE: more than one coordinate</h2>
 
-<p>Text has one position. An image patch has two (row, column) and a video patch three (frame, row, column).
+<p>Text has one position. An image patch has two (row and column) and a video patch has three (frame, row and column).
 Flattening an image into a sequence and using 1-D RoPE throws that structure away: the patch directly below
 another would look 32 positions away. <b>M-RoPE</b> (Qwen2-VL, Wang et al. 2024) splits the
-<code>d_head/2</code> rotation frequencies into three sections and rotates each by a different coordinate.
-Qwen2-VL's config uses <code>mrope_section = [16, 24, 24]</code> for a 128-wide head: 16 frequencies follow the
-temporal index, 24 the height, 24 the width.</p>
+<code>d_head/2</code> rotation frequencies into three sections and rotates each one by a different coordinate.
+Qwen2-VL's config uses <code>mrope_section = [16, 24, 24]</code> for a head 128 wide: 16 frequencies follow the
+time index, 24 the height and 24 the width.</p>
 
 <div class="mathblock">
 θ<sub>i</sub> = p<sub>s(i)</sub> · base<sup>−2i/d</sup> &nbsp;&nbsp;&nbsp; s(i) = t for i &lt; 16, h for 16 ≤ i &lt; 40, w for 40 ≤ i &lt; 64
 <span class="lbl">each frequency index i is assigned one coordinate of the token's (t, h, w) position (<code>tfs.foundations.mrope_angles</code>)</span>
 </div>
 
-<p>For a video patch at <code>(t, h, w) = (3, 5, 9)</code> the angles at the start of each section are
-<code>3 × 1 = 3.0</code> (i = 0), <code>5 × 10000<sup>−32/128</sup> = 0.5</code> (i = 16), and
+<p>For a video patch at <code>(t, h, w) = (3, 5, 9)</code>, the angles at the start of each section are
+<code>3 × 1 = 3.0</code> (i = 0), <code>5 × 10000<sup>−32/128</sup> = 0.5</code> (i = 16) and
 <code>9 × 10000<sup>−80/128</sup> = 0.0285</code> (i = 40). Text tokens get the same index in all three
-coordinates, <code>(p, p, p)</code>, and then every frequency is rotated by <code>p</code>: M-RoPE <b>reduces
-exactly to ordinary 1-D RoPE</b> for text (<code>test_ch07_mrope_reduces_to_rope_for_text</code> checks the cosines
-against <code>build_rope_cache</code>). That is the design constraint that let Qwen2-VL start from a text model's
-weights. Later versions refine how the temporal index tracks real time and how sections are interleaved, but the
+coordinates, <code>(p, p, p)</code>, so every frequency is rotated by <code>p</code>, and M-RoPE <b>becomes
+exactly ordinary 1-D RoPE</b> for text (<code>test_ch07_mrope_reduces_to_rope_for_text</code> checks the cosines
+against <code>build_rope_cache</code>). That design constraint let Qwen2-VL start from a text model's
+weights. Later versions refine how the time index tracks real time and how the sections are interleaved, but the
 idea, one rotation per coordinate, is the same.</p>
 
 <h2>7.8 · Measured: how far does RoPE extrapolate?</h2>
 
-<p>"RoPE extrapolates with scaling" in the table below hides a measurement. Here it is on the repo's own model.
-The 2-layer <code>tfs.model.Model</code> from Chapter 4's logit-lens run
+<p>The table below says RoPE extends to longer sequences "with scaling", and that hides a measurement. Here it is on
+the repo's own model. The 2-layer <code>tfs.model.Model</code> from Chapter 4's logit-lens run
 (<code>train_toy_copy_model</code>: RoPE, trained only on 64-token sequences whose second half copies the first)
 is evaluated at longer lengths. Two tests separate two possible causes of failure:</p>
 <ul>
 <li><b>Copy at half the length</b> (<code>copy_loss</code>): the second half repeats the first, so at length T the
-model must copy from T/2 back. At T &gt; 64 that distance was never seen in training.</li>
+model must copy from T/2 positions back. At T &gt; 64 that distance never appeared in training.</li>
 <li><b>Copy at the trained distance</b> (<code>periodic_loss</code>): a 32-token block repeated to fill T tokens,
-so the copy distance is always 32, exactly as in training; only the absolute positions are new. RoPE depends only
-on relative position, so naive reasoning says this should still work.</li>
+so the copy distance is always 32, exactly as in training, and only the absolute positions are new. RoPE depends only
+on relative position, so a naive argument says this should still work.</li>
 </ul>
 
 <div class="tw">
@@ -415,18 +415,18 @@ on relative position, so naive reasoning says this should still work.</li>
 <p class="tiny">Loss in nats per predicted token. A uniform guess over the 30 possible tokens scores ln 30 = 3.40.</p>
 </div>
 
-<p>The first column is expected: an unseen copy distance fails, worse than guessing (the model is confidently
-wrong). The last column is the lesson. Even when the distance the model needs was seen in training, every position
-past 64 fails. The reason is the <i>other</i> keys. At position 100 the query also scores keys at distances
-65–100, rotation angles the model never saw during training. Nothing constrained those scores, and some of them come
-out large enough to steal the softmax from the key at distance 32. RoPE makes the score depend only on relative
-position, but it does not make unseen relative positions harmless. The positions below 64 in the same sequences,
-where every distance is in range, stay perfect.</p>
+<p>The first column is expected: a copy distance the model never saw fails, worse than guessing (the model is confidently
+wrong). The last column is the lesson. Even when the distance the model needs was in training, every position
+past 64 fails. The cause is the <i>other</i> keys. At position 100 the query also scores keys at distances
+of 65 to 100, rotation angles the model never saw in training. Nothing constrained those scores, and some of them come
+out large enough to take the softmax away from the key at distance 32. RoPE makes the score depend only on relative
+position, but it does not make unseen relative positions harmless. Positions below 64 in the same sequences,
+where every distance is within range, stay perfect.</p>
 
-<p>That is the problem Chapter 21's methods solve. <b>Position interpolation</b> squeezes long positions back into
+<p>Chapter 21's methods solve this problem. <b>Position interpolation</b> squeezes long positions back into
 the trained range, so no angle is new. <b>NTK-aware scaling</b> and <b>YaRN</b> raise the base so the
-low-frequency channels rotate more slowly, and leave the high-frequency channels (which have already wrapped around
-many times and are seen at all angles) alone. Sliding windows avoid the issue by never showing a layer a distance
+low-frequency channels rotate more slowly, and leave the high-frequency channels alone (they have already turned
+many times and have been seen at every angle). Sliding windows avoid the problem by never showing a layer a distance
 beyond its window. Exercise 7.4 has you try the first of these on this model.</p>
 
 <div class="quiz" data-title="Checkpoint 2 — variants and limits">
@@ -436,11 +436,11 @@ beyond its window. Exercise 7.4 has you try the first of these on this model.</p
     <div class="opt">Only through n − m, in all 80 channels</div>
     <div class="opt">The 32 rotated channels contribute a term that depends on n − m; the 48 others contribute a position-independent term</div>
     <div class="opt">Through m and n separately, because partial rotation breaks the relative property</div>
-    <div class="opt">Not at all: partial RoPE disables position</div>
+    <div class="opt">Not at all, because partial RoPE turns off position</div>
   </div>
-  <div class="expl"><b>The dot product splits by channel.</b> The rotated sum is relative, as in full RoPE; the
-  pass-through sum ignores position. The relative property survives, and the head gains channels for pure content
-  matching (Phi-2's configuration).</div>
+  <div class="expl"><b>The dot product splits by channel.</b> The rotated sum is relative, as in full RoPE, and the
+  other sum ignores position. The relative property survives, and the head gains channels for matching on content
+  alone (Phi-2's configuration).</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">Why does M-RoPE give text tokens the same index (p, p, p) in all three coordinates?</div>
@@ -450,21 +450,21 @@ beyond its window. Exercise 7.4 has you try the first of these on this model.</p
     <div class="opt">Because images need all three sections</div>
     <div class="opt">Then every frequency rotates by p and M-RoPE equals ordinary 1-D RoPE, so a text model's weights and behaviour carry over</div>
   </div>
-  <div class="expl"><b>Backwards compatibility by construction.</b> Each section's angle is p × its frequency, so
+  <div class="expl"><b>Backward compatible by design.</b> Each section's angle is p × its frequency, so
   the full set of angles is exactly 1-D RoPE's. Only image and video tokens, whose coordinates differ, see anything
   new.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">The toy model, trained at length 64, fails beyond position 64 even when it only needs to copy from 32 back, a distance it was trained on. Why?</div>
   <div class="opts">
-    <div class="opt">The query also scores keys at distances it never saw in training; those unconstrained scores can be large enough to take the softmax away from the right key</div>
+    <div class="opt">The query also scores keys at distances it never saw in training, and those unconstrained scores can be large enough to take the softmax away from the right key</div>
     <div class="opt">RoPE encodes absolute position, so position 100 is new</div>
     <div class="opt">The KV cache overflows</div>
     <div class="opt">The model's max_T is 64</div>
   </div>
-  <div class="expl"><b>Out-of-distribution distances poison the softmax.</b> RoPE is relative (option B is wrong),
-  and the model's max_T is 512. Positions below 64 in the same sequences are still perfect, which isolates the
-  cause: what is new is the set of distances in the softmax, not the one being used.</div>
+  <div class="expl"><b>Unseen distances spoil the softmax.</b> RoPE is relative (so option B is wrong),
+  and the model's max_T is 512. Positions below 64 in the same sequences are still perfect, which pins down the
+  cause: what is new is the set of distances in the softmax, not the one the model needs.</div>
 </div>
 </div>
 
@@ -486,14 +486,14 @@ beyond its window. Exercise 7.4 has you try the first of these on this model.</p
 
 <div class="box sota">
 <span class="t">Where this stands in 2026</span>
-<p style="margin-bottom:0">RoPE is the default, and the interesting action has moved to <b>how you scale
-its base frequency</b> for long context. Llama 3 raised the base from 10,000 to <b>500,000</b> specifically
-to make 128k context viable — a one-line change with a large effect. Many current long-context models also
-interleave <b>local (sliding-window) RoPE layers</b> with a few <b>global</b> layers, so most layers only pay
-attention cost over a small window. Gemma 2/3 popularised that pattern. Llama 4 goes one step further and
-leaves out positional encoding entirely in every fourth (global) attention layer, interleaving RoPE layers
-with NoPE layers so that the long-range layers are not tied to trained rotation angles. Chapter 21 covers the scaling
-methods properly.</p>
+<p style="margin-bottom:0">RoPE is the default, and most of the current work is on <b>how to scale
+its base frequency</b> for long context. Llama 3 raised the base from 10,000 to <b>500,000</b> to make
+128k context workable, a one-line change with a large effect. Many current long-context models also
+mix <b>local (sliding-window) RoPE layers</b> with a few <b>global</b> layers, so most layers only pay
+the attention cost of a small window. Gemma 2 and 3 made that pattern popular. Llama 4 goes one step further and
+drops positional encoding entirely in every fourth (global) attention layer, alternating RoPE layers
+with NoPE layers so that the long-range layers are not tied to trained rotation angles. Chapter 21 covers the
+scaling methods in full.</p>
 </div>
 
 <h2>7.10 · Exercises</h2>
@@ -502,12 +502,12 @@ methods properly.</p>
 <div class="eh"><span class="n">7.1</span><span class="ti">Demonstrate permutation equivariance</span><span class="lvl">warm-up</span></div>
 <div class="eb">
 <p>Build a 1-layer attention module with <b>no</b> positional encoding and no causal mask. Feed it
-<code>x</code> and <code>x[:, perm]</code> for a random permutation. Show
-<code>out[:, perm] == out_permuted</code>. Then add RoPE and show the property breaks.</p>
+<code>x</code> and <code>x[:, perm]</code> for a random permutation, and show that
+<code>out[:, perm] == out_permuted</code>. Then add RoPE and show that the property breaks.</p>
 <details class="reveal"><summary>Note</summary><div>
-<p style="margin-bottom:0">With a <b>causal mask</b> the equivariance already breaks, even without positional
-encoding — that's the NoPE observation from §7.5. To see clean equivariance you must remove the mask. This
-is a good exercise precisely because it forces you to notice that the mask is itself a source of positional
+<p style="margin-bottom:0">With a <b>causal mask</b> the equivariance breaks already, even without a positional
+encoding; that is the NoPE observation from §7.5. To see clean equivariance you have to remove the mask. The
+exercise is useful because it makes you notice that the mask itself carries position
 information.</p>
 </div></details>
 </div></div>
@@ -530,9 +530,9 @@ print(score(5, 8), score(50, 53), score(100, 103))   # all offset +3
 print(score(5, 9))                                    # offset +4 → different
 </code></pre>
 <details class="reveal"><summary>Expected</summary><div>
-<p style="margin-bottom:0">The first three agree to ~6 decimal places. The fourth differs. If yours don't
-match, your <code>rotate_half</code> convention is inconsistent with your cos/sin table construction — the
-exact issue described in §7.4's convention box.</p>
+<p style="margin-bottom:0">The first three agree to ~6 decimal places, and the fourth differs. If yours do not
+match, your <code>rotate_half</code> convention does not match the way you built the cos/sin table, which is
+exactly the issue described in the convention box in §7.4.</p>
 </div></details>
 </div></div>
 
@@ -552,10 +552,10 @@ exact issue described in §7.4's convention box.</p>
 2π·10000<sup>126/128</sup> ≈ 5.4×10⁴ tokens; at base=500000 it's ≈ 2.6×10⁶ tokens.</li>
 <li>18 of 64 pairs exceed 4096 tokens at base 10000; 32 at base 500000. (A pair i has wavelength
 <code>2π · base<sup>2i/d</sup></code>, so it exceeds L when <code>i &gt; (d/2) · ln(L/2π) / ln(base)</code>.)</li>
-<li>Raising the base <b>stretches all wavelengths</b>, so more dimensions still complete less than one full
-rotation across the whole context — meaning they encode position <i>unambiguously</i> rather than wrapping
-around. Dimensions that wrap many times within the context can't distinguish distance 100 from distance
-100 + wavelength.</li>
+<li>Raising the base <b>stretches every wavelength</b>, so more dimensions complete less than one full
+rotation over the whole context. Those dimensions encode position <i>without ambiguity</i> instead of wrapping
+around. A dimension that wraps many times within the context cannot tell distance 100 from distance
+100 + its wavelength.</li>
 </ol>
 </div></details>
 </div></div>
@@ -564,11 +564,11 @@ around. Dimensions that wrap many times within the context can't distinguish dis
 <div class="eh"><span class="n">7.4</span><span class="ti">Predict, then measure: fix the extrapolation</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>Take the toy model from §7.8. Without retraining, implement <b>position interpolation</b>: at evaluation length
-T, multiply every position by <code>64 / T</code> before building the RoPE cache (so angles never exceed the
-trained range). Predict the result first, then measure <code>periodic_loss</code> beyond position 64 at T = 128
+T, multiply every position by <code>64 / T</code> before building the RoPE cache, so the angles never exceed the
+trained range. Predict the result first, then measure <code>periodic_loss</code> beyond position 64 at T = 128
 and 256.</p>
 <ol>
-<li>Does it fix the failure? Completely?</li>
+<li>Does it fix the failure? Fully?</li>
 <li>Why does interpolation also change what the model sees at distance 32?</li>
 <li>What does that suggest about why real models fine-tune briefly after interpolating?</li>
 </ol>
@@ -578,10 +578,10 @@ and 256.</p>
 interpolation) and 6.89 at T = 256 (5.94 without). Interpolation removes the unseen angles, but it also moves the
 key the model needs: distance 32 now produces the rotation that distance 16 produced in training, and this model,
 trained on a single copy distance, has learned to look for one exact angle. Every distance the model relies on is
-now at the wrong angle. That is answer 2, and it is an extreme version of what happens in real models, which use
-many distances and degrade less. It is also answer 3: position interpolation, NTK and YaRN are always followed by a
+now at the wrong angle. That answers question 2. It is an extreme version of what happens in real models, which use
+many distances and degrade less. It also answers question 3: position interpolation, NTK and YaRN are always followed by a
 short fine-tune at the new length (Chen et al. used about 1,000 steps), during which the model relearns what the
-compressed angles mean (Chapter 21). If your prediction was "interpolation fixes it", this exercise did its job.</p>
+compressed angles mean (Chapter 21). If you predicted that interpolation would fix it, the exercise taught you something.</p>
 </div></details>
 </div></div>
 
@@ -590,27 +590,27 @@ compressed angles mean (Chapter 21). If your prediction was "interpolation fixes
 <div class="eb">
 <p>(1) How many FLOPs per token does applying RoPE cost for a head of width 128, and what does rotating only 32
 channels save, relative to the head's attention cost at T = 4096? (2) DeepSeek-V3's MLA shares one 64-wide RoPE
-key across all 128 heads. How many bytes per token does that part of the KV cache take in bf16, versus a per-head
-64-wide RoPE key?</p>
+key across all 128 heads. How many bytes per token does that part of the KV cache take in bf16, compared with a
+64-wide RoPE key for every head?</p>
 <details class="reveal"><summary>Answers</summary><div>
 <pre><code class="nohl">1. RoPE: ~3 FLOPs per channel (two multiplies, one add) for q and for k: 3 × 128 × 2 ≈ 768 per head per token
    attention at T = 4096: 2·4096·128 (scores) + 2·4096·128 (mix) = 2.1 M per head per token
    → rotating 32 channels instead of 128 saves ~576 FLOPs of 2.1 M: nothing. Partial RoPE is a modelling choice.
 2. shared:   64 × 2 bytes           =    128 bytes per token per layer
    per head: 128 × 64 × 2 bytes     = 16,384 bytes per token per layer (128× more)</code></pre>
-<p style="margin-bottom:0">The second number is why MLA shares the RoPE key: per-head rotated keys would undo
+<p style="margin-bottom:0">The second answer is why MLA shares the RoPE key: a rotated key for every head would undo
 most of the compression the latent achieves.</p>
 </div></details>
 </div></div>
 
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
-<li><a href="https://arxiv.org/abs/2104.09864">Su et al. 2021 — RoFormer (RoPE)</a></li>
-<li><a href="https://blog.eleuther.ai/rotary-embeddings/">EleutherAI — Rotary Embeddings: A Relative Revolution</a> — the best intuitive explanation.</li>
-<li><a href="https://arxiv.org/abs/2108.12409">Press et al. 2021 — ALiBi</a></li>
-<li><a href="https://arxiv.org/abs/2305.19466">Kazemnejad et al. 2023 — The Impact of Positional Encoding on Length Generalization</a> (NoPE)</li>
-<li><a href="https://arxiv.org/abs/2409.12191">Wang et al. 2024 — Qwen2-VL</a> (M-RoPE) · <a href="https://arxiv.org/abs/2405.04434">DeepSeek-V2</a> (decoupled RoPE)</li>
-<li><a href="https://arxiv.org/abs/2306.15595">Chen et al. 2023 — Extending Context Window via Positional Interpolation</a> (why unseen angles break attention)</li>
+<li><a href="https://arxiv.org/abs/2104.09864">Su et al. 2021, RoFormer (RoPE)</a></li>
+<li><a href="https://blog.eleuther.ai/rotary-embeddings/">EleutherAI, Rotary Embeddings: A Relative Revolution</a>: the best intuitive explanation.</li>
+<li><a href="https://arxiv.org/abs/2108.12409">Press et al. 2021, ALiBi</a></li>
+<li><a href="https://arxiv.org/abs/2305.19466">Kazemnejad et al. 2023, The Impact of Positional Encoding on Length Generalization</a> (NoPE)</li>
+<li><a href="https://arxiv.org/abs/2409.12191">Wang et al. 2024, Qwen2-VL</a> (M-RoPE) · <a href="https://arxiv.org/abs/2405.04434">DeepSeek-V2</a> (decoupled RoPE)</li>
+<li><a href="https://arxiv.org/abs/2306.15595">Chen et al. 2023, Extending Context Window via Positional Interpolation</a> (why unseen angles break attention)</li>
 <li><a href="https://huggingface.co/microsoft/phi-2/blob/main/config.json">Phi-2 config</a> (<code>partial_rotary_factor</code>) · <a href="https://huggingface.co/EleutherAI/gpt-neox-20b/blob/main/config.json">GPT-NeoX-20B config</a> (<code>rotary_pct</code>)</li>
 <li>Reference code: <code>tfs/foundations.py</code> (Ch 7 section) · tests: <code>tests/test_foundations.py</code></li>
 <li>Companion notebook: <code>notebooks/07_positions.ipynb</code></li>
