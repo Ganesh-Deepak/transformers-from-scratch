@@ -13,10 +13,10 @@
 
 <h1>12 · Precision in Training: fp16, bf16, fp8 and the Loss Scale</h1>
 <p class="lead">
-Every tensor so far has been <code>float32</code>, and every claim assumed arithmetic is exact. Neither
-is true in a real training run. <a href="ch00-numbers.html">Chapter&nbsp;0</a> took the formats apart bit by
-bit; this chapter puts them inside the loop you built in Chapter&nbsp;11 and watches what breaks: exactly how
-fp16 destroys a converging model, why bf16 fixed it by <i>giving up precision</i>, which handful of values
+Every tensor so far has been <code>float32</code>, and every claim has assumed that arithmetic is exact. Neither
+holds in a real training run. <a href="ch00-numbers.html">Chapter&nbsp;0</a> took the formats apart bit by
+bit. This chapter puts them inside the loop you built in Chapter&nbsp;11 and watches what breaks: exactly how
+fp16 ruins a model that is converging, why bf16 fixed that by <i>giving up precision</i>, which few values
 must stay in fp32 no matter what, and how the same story continues into fp8 and 4-bit training.
 </p>
 
@@ -25,20 +25,20 @@ must stay in fp32 no matter what, and how the same story continues into fp8 and 
 <div class="box intuition">
 <span class="t">The whole chapter in five sentences</span>
 <p style="margin-bottom:0">A float spends its bits on <b>range</b> (the exponent) and <b>precision</b> (the
-mantissa), and going from 32 bits to 16 forces you to give one of them up. <b>fp16 kept precision and lost range</b>:
-as a model converges its gradients shrink below fp16's floor (62% of them on this course's model), which loss
-scaling patches. <b>bf16 kept range and gave up precision</b>, and won, because rounding noise averages out and a
-zeroed gradient does not. <b>Anything that accumulates stays wide</b>: master weights, optimizer moments, norm and
-softmax statistics, matmul and gradient sums, or else small additions silently vanish. <b>fp8 and fp4 repeat the
-same story with a scale per tensor, per tile or per block</b>, and floating formats tolerate outliers far better
+mantissa), and going from 32 bits to 16 forces you to give up one of them. <b>fp16 kept precision and lost range.</b>
+As a model converges, its gradients shrink below fp16's floor (62% of them on this course's model), and loss
+scaling patches that. <b>bf16 kept range and gave up precision</b>, and it won, because rounding noise averages out and a
+gradient set to zero does not. Anything that accumulates stays wide: master weights, optimizer moments, norm and
+softmax statistics, and matmul and gradient sums. Otherwise small additions quietly vanish. fp8 and fp4 repeat the
+same story with a scale per tensor, per tile or per block, and floating formats tolerate outliers far better
 than integer ones.</p>
 </div>
 
 <h2>12.1 · The two facts from Chapter 0 that this chapter runs on</h2>
 
-<p>If you have not read <a href="ch00-numbers.html">Chapter&nbsp;0</a>, read §0.2–0.4 first; everything
-below assumes the bucket-and-gap picture. Two facts carry the whole chapter. The first is the bit layout of
-the three 16- and 32-bit training formats:</p>
+<p>If you have not read <a href="ch00-numbers.html">Chapter&nbsp;0</a>, read §0.2 to 0.4 first, because everything
+below assumes its picture of buckets and gaps. Two facts carry the whole chapter. The first is the bit layout of
+the three training formats of 16 and 32 bits:</p>
 
 <pre><code class="nohl">                sign  exponent      mantissa
   1.0   fp32     0    01111111      00000000000000000000000     (8 exp, 23 mant)
@@ -51,17 +51,17 @@ the three 16- and 32-bit training formats:</p>
 
 <div class="box math-note">
 <span class="t">Read those rows again — they are the whole chapter</span>
-<p style="margin-bottom:0"><b>bf16 has the identical exponent field to fp32.</b> Eight bits, same bias,
-same layout. It is literally fp32 with the bottom 16 mantissa bits deleted. <b>fp16 has a different,
-smaller exponent field</b> — 5 bits instead of 8. That single design decision is the source of every
-fp16 training failure in this chapter, and converting fp32&nbsp;&harr;&nbsp;bf16 is just rounding off or
-zero-padding mantissa bits. It can overflow only in the top sliver of fp32's range — measured,
-<code>3.4e38</code> rounds up past bf16's max of 3.3895e38 to <code>inf</code> — and no value a network
+<p style="margin-bottom:0"><b>bf16 has exactly the same exponent field as fp32.</b> It has eight bits, the same bias and the same
+layout: it is fp32 with the bottom 16 mantissa bits deleted. <b>fp16 has a different,
+smaller exponent field</b>, 5 bits instead of 8. That one design decision causes every
+fp16 training failure in this chapter. Converting fp32&nbsp;&harr;&nbsp;bf16 just rounds off or adds
+zero mantissa bits. It can overflow only at the very top of fp32's range (we measured
+<code>3.4e38</code> rounding up past bf16's max of 3.3895e38 to <code>inf</code>), and no value a network
 produces comes anywhere near that.</p>
 </div>
 
-<p>The second is the pair of numbers each format's bits buy, which you can now derive yourself with the
-formulas of §0.4 — and which <code>torch.finfo</code> confirms:</p>
+<p>The second fact is the pair of numbers each format's bits buy, which you can now derive yourself with the
+formulas of §0.4, and which <code>torch.finfo</code> confirms:</p>
 
 <pre><code class="nohl">format    max            min normal      eps          decimal digits
 fp32      3.40282e+38    1.17549e-38     1.19e-07     ~7.2
@@ -70,8 +70,8 @@ bf16      3.38953e+38    1.17549e-38     7.81e-03     ~2.4
 fp8 e4m3  448            1.5625e-02      1.25e-01     ~1.2
 fp8 e5m2  57344          6.10352e-05     2.50e-01     ~0.9</code></pre>
 
-<p>Two things should jump out. <b>fp16's max is 65504</b> — not astronomically large, just sixty-five
-thousand. And <b>bf16's epsilon is 8&times; worse than fp16's</b>: bf16 can only distinguish numbers about
+<p>Two things stand out. <b>fp16's max is 65504</b>: not huge, just sixty-five
+thousand. And <b>bf16's epsilon is 8&times; worse than fp16's</b>, so bf16 can only tell apart numbers about
 0.8% apart. Both facts matter, in opposite directions. Keep the explorer open while you read; it starts on
 the three formats this chapter compares:</p>
 
@@ -79,8 +79,8 @@ the three formats this chapter compares:</p>
 
 <h2>12.2 · The same number, both ways</h2>
 
-<p>Cast a handful of values through each format and the trade becomes concrete. Nothing here is a
-corner case; these are ordinary magnitudes that appear inside real models.</p>
+<p>Cast a few values through each format and the trade becomes concrete. None of these is a
+corner case; they are ordinary sizes that appear inside real models.</p>
 
 <pre><code class="nohl">value          fp16           bf16
 1              1              1
@@ -93,33 +93,33 @@ corner case; these are ordinary magnitudes that appear inside real models.</p>
 <div class="box warn">
 <span class="t">This is not "fp16 is worse"</span>
 <p style="margin-bottom:0">Look at row 3. For values fp16 <i>can</i> represent, it is
-<b>more accurate than bf16</b>, because it has three more mantissa bits. The failures are entirely at
-the extremes of the range. So the honest statement is: <b>fp16 is the more precise format and the more
-fragile one.</b> Which you want depends on whether your numbers cluster near 1 (fp16 wins) or span
+<b>more accurate than bf16</b>, because it has three more mantissa bits. All its failures are at
+the ends of the range. So the fair summary is: <b>fp16 is the more precise format and the more
+fragile one.</b> Which one you want depends on whether your numbers cluster near 1 (fp16 wins) or span
 thirty orders of magnitude (bf16 wins). Gradients do the latter.</p>
 </div>
 
 <h3>Measure it on something that matters</h3>
 
 <p>Multiply two random <span class="shape"><b>512</b><span class="x">, </span><b>512</b></span> matrices
-in each format and compare against an fp64 reference. Inputs and output are rounded to the format and the
-products accumulate in fp32, which is what a tensor core does (§12.5):</p>
+in each format and compare with an fp64 reference. The inputs and output are rounded to the format and the
+products are added up in fp32, which is what a tensor core does (§12.5):</p>
 
 <pre><code class="nohl">max relative error vs float64, same 512x512 @ 512x512 (torch.manual_seed(0))
   fp32    3.64e-07
   fp16    4.05e-04     <- 8.8x MORE accurate than bf16
   bf16    3.58e-03</code></pre>
 
-<p>If precision were the only thing that mattered, fp16 would have won and this chapter would be one
-paragraph long. The next section is why it did not.</p>
+<p>If precision were all that mattered, fp16 would have won and this chapter would be one
+paragraph long. The next section explains why it did not.</p>
 
 <h2>12.3 · How fp16 kills a training run</h2>
 
-<p>There are two separate failures, at opposite ends of the range. Both are worth seeing directly.</p>
+<p>There are two separate failures, at opposite ends of the range, and both are worth seeing directly.</p>
 
 <h3>Failure 1 — overflow, in the forward pass</h3>
 
-<p>Attention scores are a sum of <span class="math">d</span> products. Their magnitude grows, and then
+<p>Attention scores are a sum of <span class="math">d</span> products. They get large, and then
 you exponentiate them:</p>
 
 <pre><code class="nohl">q, k of shape (·, 128), moderately scaled
@@ -129,18 +129,18 @@ exp(63.85)                      ->  5.367e+27   in fp32: fine
 
 <p>The fix is the one you already met in <a href="ch05-attention.html">Ch&nbsp;05</a>: subtract the row
 maximum before exponentiating. Then the largest term is <span class="math">e<sup>0</sup> = 1</span> and
-nothing can overflow — measured max after subtraction: <b>exactly 1.0</b>, all finite.</p>
+nothing can overflow. The measured max after subtraction is <b>exactly 1.0</b>, and every value is finite.</p>
 
 <div class="box math-note">
 <span class="t">Now you know why that trick is mandatory rather than tidy</span>
-<p style="margin-bottom:0">In fp32 the max-subtraction is a nicety; <span class="math">e<sup>63.85</sup></span>
-is comfortably representable and you would never notice. In fp16 it is the difference between a number
-and <code>inf</code>. Every fused softmax kernel does it, and it is the reason
-<a href="ch17-flashattention.html">FlashAttention</a> can stream a softmax at all — its running maximum
-exists for exactly this reason.</p>
+<p style="margin-bottom:0">In fp32 the max subtraction is a nice extra: <span class="math">e<sup>63.85</sup></span>
+fits comfortably, and you would never notice. In fp16 it is the difference between a number
+and <code>inf</code>. Every fused softmax kernel does it, and it is why
+<a href="ch17-flashattention.html">FlashAttention</a> can stream a softmax at all: its running maximum
+exists for exactly this purpose.</p>
 </div>
 
-<p>The same failure appears in RMSNorm, which sums squares:</p>
+<p>The same failure appears in RMSNorm, which adds up squares:</p>
 
 <pre><code class="nohl">x = torch.full((4096,), 100.0)     # not a large activation
 sum of squares = 4096 * 100^2 = 40,960,000
@@ -150,16 +150,16 @@ sum of squares = 4096 * 100^2 = 40,960,000
 
 <h3>Failure 2 — underflow, in the backward pass</h3>
 
-<p>This one is quieter, and much worse, because <b>nothing announces it</b>. Gradients are small. fp16's
+<p>This failure is quieter and much worse, because <b>nothing reports it</b>. Gradients are small. fp16's
 smallest subnormal is <span class="math">2<sup>&minus;24</sup> &asymp; 5.96&times;10<sup>&minus;8</sup></span>,
 and because casting rounds to the nearest value, anything below <b>half</b> of that,
 <span class="math">2<sup>&minus;25</sup> &asymp; 2.98&times;10<sup>&minus;8</sup></span>, becomes exactly zero
 (<a href="ch00-numbers.html">§0.4</a>).</p>
 
-<p>Here is that measured on this course's own model — the configuration from
-<a href="ch09-architectures.html">Ch&nbsp;09</a>, 623,744 parameters — by fitting one fixed batch and, at
-several points, casting every gradient to fp16 and counting how many come back as zero. The script is
-<code>notebooks/12_precision.ipynb</code>; the numbers below are its output.</p>
+<p>Here it is, measured on this course's own model (the configuration from
+<a href="ch09-architectures.html">Ch&nbsp;09</a>, with 623,744 parameters). We fit one fixed batch and, at
+several points, cast every gradient to fp16 and count how many come back as zero. The script is
+<code>notebooks/12_precision.ipynb</code>, and the numbers below are its output.</p>
 
 <div class="example">
 <span class="t">Measurement — the fraction of the learning signal fp16 deletes</span>
@@ -178,13 +178,13 @@ several points, casting every gradient to fp16 and counting how many come back a
 <b>At initialisation an fp16 run looks completely fine</b>: 0.01% of gradients vanish. By step 1200,
 <b>62% of the gradients are silently replaced with zero</b>, and every one of the rest has lost precision
 in the subnormal range. (The subnormal column falls at the end only because those gradients have moved into
-the zero column.) Most of the model stops learning — no error, no warning, and the loss curve just
+the zero column.) Most of the model stops learning, with no error and no warning, and the loss curve just
 flattens.
 </div></div>
 
 <div class="step"><div class="i">3</div><div>
-<b>Why the threshold matters:</b> at step 1200, 79.7% of the gradients are below
-<span class="math">2<sup>&minus;24</sup></span> but only 62.1% actually become zero. The difference is
+<b>Why the exact threshold matters:</b> at step 1200, 79.7% of the gradients are below
+<span class="math">2<sup>&minus;24</sup></span>, but only 62.1% actually become zero. The difference is
 everything in <span class="math">(2<sup>&minus;25</sup>, 2<sup>&minus;24</sup>)</span>, which rounds
 <i>up</i> to the minimum subnormal. Counting against the wrong threshold overstates the loss by more than a quarter.
 </div></div>
@@ -192,41 +192,41 @@ everything in <span class="math">(2<sup>&minus;25</sup>, 2<sup>&minus;24</sup>)<
 
 <div class="box warn">
 <span class="t">The trap: it gets worse exactly as things go well</span>
-<p style="margin-bottom:0">At step 0, 0.01% of gradients vanish. At step 1200, 62% do. <b>The failure
-mode strengthens as the model improves</b>, so an fp16 run can train beautifully for hours and then
-plateau for reasons that look like a bad learning-rate schedule. This is why "it trained fine at first"
-is not evidence that precision is not your problem.</p>
+<p style="margin-bottom:0">At step 0, 0.01% of gradients vanish; at step 1200, 62% do. <b>The failure
+gets worse as the model gets better</b>, so an fp16 run can train beautifully for hours and then
+level off for reasons that look like a bad learning-rate schedule. That is why "it trained fine at first"
+is no evidence that precision is not your problem.</p>
 </div>
 
 <h3>The subnormal range, and why "representable" is not enough</h3>
 
-<p>Between <span class="math">2<sup>&minus;24</sup></span> and the smallest <i>normal</i> value
+<p>Between <span class="math">2<sup>&minus;24</sup></span> and the smallest <i>normal</i> value,
 <span class="math">2<sup>&minus;14</sup> = 6.1&times;10<sup>&minus;5</sup></span>, fp16 uses
-<b>subnormals</b>: the hidden leading 1 is dropped, so numbers are still representable but with
-progressively fewer significant bits. In that region the gap is a fixed
+<b>subnormals</b>: the hidden leading 1 is dropped, so numbers can still be represented, but with
+fewer and fewer significant bits. In that region the gap is a fixed
 <span class="math">2<sup>&minus;24</sup></span>, not a fraction of the value. Watch what happens to a
 perfectly ordinary gradient:</p>
 
 <pre><code class="nohl">1e-7 stored in fp16  ->  1.19209e-07      = 2 x 2^-24, a 19% error, and no warning</code></pre>
 
-<p>It did not underflow to zero. It is "representable". It is also wrong by a fifth. That is the subnormal
-column above: the gradients that survive are still being mangled.</p>
+<p>It did not underflow to zero, and it counts as "representable", but it is wrong by a fifth. That is the subnormal
+column above: the gradients that survive are still being damaged.</p>
 
 <h2>12.4 · Loss scaling: the fix that made fp16 usable</h2>
 
-<p>The gradients are too small for fp16's range — but the range is not too <i>narrow</i>, it is in the
-wrong <i>place</i>. fp16 has an enormous amount of unused headroom above the gradients and up to 65504.
-So: <b>move the gradients into it</b>.</p>
+<p>The gradients are too small for fp16's range, but the problem is where the range sits, not how wide it is.
+fp16 has a huge amount of unused room above the gradients, all the way up to 65504.
+So <b>move the gradients into it</b>.</p>
 
 <div class="mathblock">
 backward(<b>S</b> &middot; L) &nbsp;&rarr;&nbsp; every gradient is <b>S</b>&times; larger &nbsp;&rarr;&nbsp; divide by <b>S</b> before the optimizer step
 </div>
 
 <p>Because differentiation is linear, scaling the loss scales every gradient in the graph by exactly the
-same factor. Unscale before the optimizer sees them and the update is mathematically identical — but the
-intermediate values spent their life in a part of fp16's range that works.</p>
+same factor. Unscale them before the optimizer sees them, and the update is mathematically identical, but the
+intermediate values spent their whole time in a part of fp16's range that works.</p>
 
-<p>The same model at step 1200, its gradients multiplied by several scale factors before the fp16
+<p>The same model at step 1200, with its gradients multiplied by several scale factors before the fp16
 cast:</p>
 
 <pre><code class="nohl">loss scale        vanish     overflow
@@ -238,12 +238,12 @@ cast:</p>
 <div class="box intuition">
 <span class="t">Why the scale has to be chosen dynamically</span>
 <p style="margin-bottom:0">Too small and gradients still vanish; too large and they overflow to
-<code>inf</code>. And the right value <b>moves during training</b> — you just saw the gradient median drop
-28,000&times; between step 0 and step 1200. So real implementations use <b>dynamic loss scaling</b>: start
+<code>inf</code>. And the right value <b>moves during training</b>: you just saw the median gradient drop
+28,000&times; between step 0 and step 1200. So real implementations use <b>dynamic loss scaling</b>. Start
 high, and whenever a step produces <code>inf</code> or <code>NaN</code>, <b>throw that step away</b> and
 halve the scale; after a few hundred clean steps, double it. This is what
-<code>torch.amp.GradScaler</code> is doing, and it is why a healthy AMP run silently skips a
-handful of early steps.</p>
+<code>torch.amp.GradScaler</code> does, and it is why a healthy AMP run quietly skips a
+few early steps.</p>
 </div>
 
 <pre><code>scaler = torch.amp.GradScaler("cuda")
@@ -262,8 +262,8 @@ for x in loader:
 <div class="box warn">
 <span class="t">The bug almost everyone writes once</span>
 <p style="margin-bottom:0">If you clip gradients <b>without</b> calling <code>scaler.unscale_(opt)</code>
-first, you are clipping the <i>scaled</i> gradients to norm 1.0. With <span class="math">S = 32768</span>
-that clips the true gradient to <span class="math">3&times;10<sup>&minus;5</sup></span> — your model
+first, you clip the <i>scaled</i> gradients to norm 1.0. With <span class="math">S = 32768</span>
+that clips the true gradient to <span class="math">3&times;10<sup>&minus;5</sup></span>. Your model
 effectively stops training, and the loss curve looks like a learning-rate problem. <b>Unscale, then clip,
 then step.</b></p>
 </div>
@@ -271,29 +271,29 @@ then step.</b></p>
 <h3>bf16 makes all of this disappear</h3>
 
 <p>bf16 has fp32's exponent field, so its smallest normal value is
-<span class="math">1.18&times;10<sup>&minus;38</sup></span> rather than
-<span class="math">6.1&times;10<sup>&minus;5</sup></span>. Gradients at
+<span class="math">1.18&times;10<sup>&minus;38</sup></span> instead of
+<span class="math">6.1&times;10<sup>&minus;5</sup></span>. Gradients of
 <span class="math">10<sup>&minus;7</sup></span>, or <span class="math">10<sup>&minus;20</sup></span>,
-are ordinary numbers. <b>No loss scaling, no GradScaler, no skipped steps, no unscale-before-clip
-bug.</b> You pay for it with 3 fewer mantissa bits — an 8&times; coarser epsilon.</p>
+are ordinary numbers. <b>There is no loss scaling, no GradScaler, no skipped steps and no unscale-before-clip
+bug.</b> You pay with 3 fewer mantissa bits, an 8&times; coarser epsilon.</p>
 
-<p>That trade turned out to be overwhelmingly correct, and the reason is worth stating plainly:
-<b>gradient descent is already a noisy, averaged process.</b> A 0.8% error on an individual gradient is
-swamped by the variance of minibatch sampling. A gradient that has become exactly zero, however, is not
-noise — it is a permanently missing update. <b>Range failures are structural; precision failures average
-out.</b> GPT-3 (2020) was still trained in fp16 with loss scaling; since about 2021–22, on hardware that
+<p>That trade turned out to be clearly right, and the reason is worth stating plainly:
+<b>gradient descent is already a noisy, averaged process.</b> A 0.8% error on one gradient is
+small next to the variation from minibatch sampling. A gradient that has become exactly zero, though, is not
+noise: it is an update that is missing for good. <b>Range failures are permanent; precision failures average
+out.</b> GPT-3 (2020) was still trained in fp16 with loss scaling, but since about 2021-22, on hardware that
 supports it, nearly every large model trains in bf16 for this reason.</p>
 
 <h2>12.5 · What must stay in fp32</h2>
 
-<p>"Mixed precision" is mixed. Some things genuinely cannot be narrowed, and they are all instances of
-one rule: <b>anything that accumulates, or that compares two nearly-equal numbers, needs the wider
+<p>"Mixed precision" really is mixed. Some values cannot be narrowed, and they all follow
+one rule: <b>anything that accumulates, or that compares two nearly equal numbers, needs the wider
 type.</b></p>
 
 <h3>The accumulator matters more than the data</h3>
 
-<p>Sum 4096 small positive values, uniform in <span class="math">[0, 0.01)</span>, varying only where the
-running total lives (<code>torch.manual_seed(0)</code>):</p>
+<p>Add up 4096 small positive values, uniform in <span class="math">[0, 0.01)</span>, changing only where the
+running total is kept (<code>torch.manual_seed(0)</code>):</p>
 
 <pre><code class="nohl">exact (fp64)                   20.5984571911
 fp32 values, fp32 accumulate   20.5984573364     rel err 7.1e-09
@@ -302,18 +302,18 @@ fp16 values, fp32 accumulate   20.5985393524     rel err 4.0e-06   <- 20,000x be
 
 <div class="box math-note">
 <span class="t">Same inputs, 20,000&times; the accuracy, from where the total lives</span>
-<p>Rows 2 and 3 hold the <b>identical fp16 input values</b>. The only difference is the running total.
-Use the gap formula from <a href="ch00-numbers.html">§0.3</a>: once the sum passes 16 it is in bucket
+<p>Rows 2 and 3 hold <b>exactly the same fp16 input values</b>; the only difference is the running total.
+Use the gap formula from <a href="ch00-numbers.html">§0.3</a>: once the sum passes 16 it is in the bucket
 <span class="math">[16, 32)</span>, where fp16's gap is <span class="math">2<sup>4&minus;10</sup> = 0.0156</span>.
-An addend smaller than half a gap, 0.0078, rounds away <i>entirely</i> — and the average addend here is
+Any value smaller than half a gap, 0.0078, rounds away <i>entirely</i>, and the average value here is
 0.005. So past 16 most additions simply do not happen, and the total stalls 8% short. <b>This is why tensor
-cores multiply in fp16/bf16 but accumulate in fp32</b> — it is free accuracy, and it is a hardware feature,
+cores multiply in fp16 or bf16 but add up in fp32</b>: it is free accuracy, and it is a hardware feature,
 not a software choice (<a href="ch14-gpu.html">Ch&nbsp;14</a>).</p>
-<p style="margin-bottom:0"><b>A measurement trap worth knowing:</b> <code>x.half().sum(dtype=torch.float16)</code>
-is <i>not</i> an fp16 accumulator. It returns 2.3e-4 relative error on this same input, because PyTorch sums at
-higher precision internally and rounds once at the end. Only an explicit running total — or a real fp16
-accumulator in a kernel — shows the failure. An earlier version of this chapter made exactly that mistake
-and reported a 50&times; gap where the true one is about 20,000&times;.</p>
+<p style="margin-bottom:0"><b>A measurement trap to know about:</b> <code>x.half().sum(dtype=torch.float16)</code>
+is <i>not</i> an fp16 accumulator. It returns a relative error of 2.3e-4 on this same input, because PyTorch adds at
+higher precision internally and rounds once at the end. Only an explicit running total, or a real fp16
+accumulator in a kernel, shows the failure. An earlier version of this chapter made exactly that mistake
+and reported a 50&times; gap when the true one is about 20,000&times;.</p>
 </div>
 
 <h3>The fp32 list</h3>
@@ -332,42 +332,42 @@ and reported a 50&times; gap where the true one is about 20,000&times;.</p>
 </table>
 </div>
 
-<p>This is the origin of the <b>16 bytes per parameter</b> figure that dominates memory planning: bf16
+<p>This is where the figure of <b>16 bytes per parameter</b>, which dominates memory planning, comes from: bf16
 weights (2) + bf16 gradients (2) + fp32 master weights (4) + fp32 <span class="math">m</span> (4) + fp32
-<span class="math">v</span> (4). A 7B model needs <b>112 GB</b> before a single activation is stored —
-which is the entire reason <a href="ch19-distributed.html">Ch&nbsp;19</a> exists.</p>
+<span class="math">v</span> (4). A 7B model needs <b>112 GB</b> before a single activation is stored,
+which is the whole reason <a href="ch19-distributed.html">Ch&nbsp;19</a> exists.</p>
 
 <h2>12.6 · fp8, fp4, and where this is going</h2>
 
-<p>Hopper, Ada and Blackwell added 8-bit floats, and Blackwell 4-bit ones. <a href="ch00-numbers.html">§0.5–0.6</a>
-derives every one of them; here is what changes when you put them in a training loop.</p>
+<p>Hopper, Ada and Blackwell added 8-bit floats, and Blackwell added 4-bit ones. <a href="ch00-numbers.html">§0.5 to 0.6</a>
+derives every one of them; here is what changes when you use them in a training loop.</p>
 
 <pre><code class="nohl">           exp  mant   max      eps      classic role
 fp8 e4m3    4     3    448      0.125    weights and activations (want precision)
 fp8 e5m2    5     2    57344    0.25     gradients (want range)</code></pre>
 
-<p>The original fp8 recipe — NVIDIA's Transformer Engine, after Micikevicius et al. 2022 — is this
-chapter's thesis stated as hardware: <b>e4m3 forward, e5m2 backward</b>, each tensor with its own scale
-factor, which is loss scaling applied per tensor and recomputed constantly. With an epsilon of 0.125, e4m3
-resolves numbers only ~12% apart, so without a scale it fails immediately.</p>
+<p>The original fp8 recipe, NVIDIA's Transformer Engine following Micikevicius et al. 2022, is this
+chapter's main point built into hardware: <b>e4m3 forward, e5m2 backward</b>, with each tensor getting its own scale
+factor. That is loss scaling applied to every tensor and recomputed constantly. With an epsilon of 0.125, e4m3
+can only tell apart numbers ~12% apart, so without a scale it fails at once.</p>
 
-<p>The recipes since then have moved in one direction: <b>smaller scaling blocks</b>.
+<p>Recipes since then have all moved the same way, toward <b>smaller scaling blocks</b>.
 <b>DeepSeek-V3</b> (2024) trained a 671B-parameter MoE in fp8 with <b>e4m3 for every tensor, gradients
-included</b>, by scaling each 1×128 tile of activations and each 128×128 block of weights separately and
-promoting partial sums to fp32 every 128 elements. Once each block has its own scale, it no longer needs
-e5m2's range — so the extra mantissa bit wins everywhere. The <b>MX</b> formats standardise the same idea
-at 32-element blocks, and <b>NVFP4</b> (16-element blocks, two-level scales) has been used to pretrain a
+included</b>. It did so by scaling each 1×128 tile of activations and each 128×128 block of weights separately, and by
+moving partial sums into fp32 every 128 elements. Once each block has its own scale, it no longer needs
+e5m2's range, so the extra mantissa bit wins everywhere. The <b>MX</b> formats standardise the same idea
+with 32-element blocks, and <b>NVFP4</b> (16-element blocks, two-level scales) has been used to pretrain a
 12B model on 10T tokens with accuracy close to fp8, using stochastic rounding on the gradients
 (<a href="ch00-numbers.html">§0.8</a>) and keeping a minority of sensitive layers in bf16.</p>
 
 <div class="box intuition">
 <span class="t">The pattern, once you see it</span>
-<p style="margin-bottom:0">Every step down in width has followed the same script: <b>the format loses
-range, something silently breaks, and the fix is a scale factor</b> applied at ever-finer granularity.
+<p style="margin-bottom:0">Every step down in width has followed the same pattern: <b>the format loses
+range, something silently breaks, and the fix is a scale factor</b> applied at ever finer granularity.
 fp16 → one scale for the whole loss. fp8 → one per tensor, then one per 128-element tile. fp4 → one per 16
-or 32 values. Quantization to int8/int4 for inference (<a href="ch18-serving.html">Ch&nbsp;18</a>) → one per
-group of 64 or 128 weights. And through all of it the master weights, optimizer state and accumulators
-stay in fp32. It is the same idea, all the way down.</p>
+or 32 values. Quantization to int8 or int4 for inference (<a href="ch18-serving.html">Ch&nbsp;18</a>) → one per
+group of 64 or 128 weights. And throughout, the master weights, optimizer state and accumulators
+stay in fp32. It is the same idea at every level.</p>
 </div>
 
 <div class="quiz" data-title="Checkpoint 1 — precision">
@@ -376,13 +376,13 @@ stay in fp32. It is the same idea, all the way down.</p>
   <div class="opts">
     <div class="opt">bf16 is faster on tensor cores</div>
     <div class="opt">bf16 uses less memory than fp16</div>
-    <div class="opt">bf16 has fp32's exponent range, so gradients don't underflow — and precision loss averages out while a zeroed gradient does not</div>
+    <div class="opt">bf16 has fp32's exponent range, so gradients do not underflow, and lost precision averages out while a zeroed gradient does not</div>
     <div class="opt">bf16 is more accurate for values near 1</div>
   </div>
-  <div class="expl"><b>Range beats precision for gradients.</b> Both are 16 bits and run at the same speed.
-  bf16 is measurably <i>worse</i> at representing any given number — 3.58e-3 vs 4.05e-4 relative error on
+  <div class="expl"><b>For gradients, range matters more than precision.</b> Both are 16 bits and run at the same speed.
+  bf16 is measurably <i>worse</i> at representing any given number: 3.58e-3 against 4.05e-4 relative error on
   a 512×512 matmul. But a gradient rounded by 0.8% still points the right way, while a gradient flushed
-  to zero is a missing update forever. On the converged model above, fp16 zeroed <b>62%</b> of them.</div>
+  to zero is an update that is lost for good. On the converged model above, fp16 zeroed <b>62%</b> of them.</div>
 </div>
 
 <div class="qitem" data-answer="1">
@@ -393,9 +393,9 @@ stay in fp32. It is the same idea, all the way down.</p>
     <div class="opt">The data loader is repeating batches</div>
     <div class="opt">The model has run out of capacity</div>
   </div>
-  <div class="expl"><b>The failure mode arrives with convergence.</b> Measured on this course's model:
-  0.01% of gradients underflow at initialisation, <b>62%</b> by step 1200 — because gradients
-  shrink by ~28,000× as loss falls. That is precisely a run that looks healthy and then stops learning.
+  <div class="expl"><b>The failure arrives with convergence.</b> Measured on this course's model,
+  0.01% of gradients underflow at initialisation and <b>62%</b> by step 1200, because gradients
+  shrink by ~28,000× as the loss falls. That is exactly a run that looks healthy and then stops learning.
   Check the loss scale, or switch to bf16.</div>
 </div>
 
@@ -404,24 +404,24 @@ stay in fp32. It is the same idea, all the way down.</p>
   <div class="opts">
     <div class="opt">Clipping is incompatible with mixed precision</div>
     <div class="opt">The clip threshold is too high for fp16</div>
-    <div class="opt">You clipped before <code>scaler.unscale_()</code>, so you clipped gradients that were still S× too large — cutting the true gradient by a factor of S</div>
+    <div class="opt">You clipped before <code>scaler.unscale_()</code>, so you clipped gradients that were still S× too large, which cut the true gradient by a factor of S</div>
     <div class="opt">GradScaler already clips, so you clipped twice</div>
   </div>
-  <div class="expl"><b>Order of operations.</b> After <code>scale(loss).backward()</code> the gradients are
-  S× inflated. Clipping their norm to 1.0 at that point means the true norm becomes 1/S — with
-  S = 32768 the updates are ~3e-5 of what you intended. Always
+  <div class="expl"><b>The order of operations.</b> After <code>scale(loss).backward()</code> the gradients are
+  S× too large. Clipping their norm to 1.0 at that point makes the true norm 1/S, so
+  with S = 32768 the updates are ~3e-5 of what you intended. Always do
   <code>unscale_</code> → <code>clip</code> → <code>step</code>.</div>
 </div>
 <div class="qitem" data-answer="0">
-  <div class="qq">Summing 4096 fp16 values in [0, 0.01): an fp16 running total is off by 7.8%, an fp32 running total of the same fp16 inputs by 4e-6. What explains a 20,000× gap from identical inputs?</div>
+  <div class="qq">Adding up 4096 fp16 values in [0, 0.01), an fp16 running total is off by 7.8%, and an fp32 running total of the same fp16 inputs by 4e-6. What explains a 20,000× gap from identical inputs?</div>
   <div class="opts">
-    <div class="opt">Once the total passes 16, fp16's gap there (0.0156) exceeds twice the average addend, so most additions round away; the fp32 total never reaches that regime</div>
+    <div class="opt">Once the total passes 16, fp16's gap there (0.0156) is more than twice the average value added, so most additions round away; the fp32 total never reaches that point</div>
     <div class="opt">The fp16 inputs were rounded differently in the two runs</div>
     <div class="opt">fp16 overflows past 65504</div>
     <div class="opt">PyTorch uses pairwise summation only for fp32</div>
   </div>
-  <div class="expl"><b>The accumulator, not the data.</b> Rounding happens against the size of the running total. That
-  is why tensor cores accumulate in fp32, and why every sum in training (gradient accumulation, all-reduce, norm
+  <div class="expl"><b>The accumulator, not the data.</b> Rounding happens relative to the size of the running total. That
+  is why tensor cores add up in fp32, and why every sum in training (gradient accumulation, all-reduce, norm
   statistics) is kept wide.</div>
 </div>
 </div>
@@ -460,32 +460,32 @@ outlier r = 10,000   3.63%,  4.6% zero      2.59%,  0.17% zero</code></pre>
 </div></div>
 
 <div class="step"><div class="i">=</div><div>
-<b>Read it carefully, because it is not the int8 story.</b> fp8 is a <i>floating</i> format: e4m3 spans about
+<b>Read it carefully, because the int8 story is different.</b> fp8 is a <i>floating</i> format: e4m3 covers about
 15 binades between its smallest normal value and 448. A 100× outlier only shifts everything else down by
 about 7 binades, where the relative precision is the same, so per-tensor scaling costs almost nothing. At
-10<sup>4</sup>× the rest of the tensor is pushed into the subnormals and below, and per-tensor scaling starts
+10<sup>4</sup>×, the rest of the tensor is pushed into the subnormals and below, and per-tensor scaling starts
 deleting values. Fine-grained scaling exists for that tail: activation outliers in large models, and above all
-gradients, whose range across a tensor is enormous (§12.3). For an integer format, with no exponent at all, the
+gradients, whose range across a tensor is enormous (§12.3). For an integer format, which has no exponent at all, the
 same outlier would wreck per-tensor scaling at r = 100 (Chapter 18).
 </div></div>
 </div>
 
 <h3>Delayed scaling, and the clip it implies</h3>
 
-<p>Computing amax requires a pass over the tensor before you can cast it, which a fused kernel would rather
-avoid. NVIDIA's Transformer Engine introduced <b>delayed scaling</b>: use the maximum amax seen over the last few
+<p>Computing amax needs a pass over the tensor before you can cast it, and a fused kernel would rather
+avoid that. NVIDIA's Transformer Engine introduced <b>delayed scaling</b>: use the largest amax seen over the last few
 steps (an "amax history") to choose this step's scale, and record this step's amax for next time.
 <code>tfs.fp8.delayed_scale</code>: with a history of 3.1, 2.9 and 3.4 the scale is 448 / 3.4 = 131.76. If this
-step's tensor has a value of 5.0, it maps to 5.0 × 131.76 = 659 &gt; 448. PyTorch's cast to
-<code>float8_e4m3fn</code> <b>saturates</b> (659 and 449 both become 448, measured), so the value is silently
-clipped to 3.4, a 32% error. Delayed scaling trades a pass over the data for exposure to exactly this when activations
-grow quickly, which is one reason later recipes (DeepSeek-V3's per-tile scales, the MX formats) compute the
-scale from the current block, which is cheap when the block is only 32 or 128 values.</p>
+step's tensor contains a value of 5.0, it maps to 5.0 × 131.76 = 659 &gt; 448. PyTorch's cast to
+<code>float8_e4m3fn</code> <b>saturates</b> (659 and 449 both become 448, as measured), so the value is silently
+clipped to 3.4, a 32% error. Delayed scaling saves a pass over the data, but it is exposed to exactly this problem when activations
+grow quickly. That is one reason later recipes (DeepSeek-V3's per-tile scales, the MX formats) compute the
+scale from the current block, which is cheap when the block has only 32 or 128 values.</p>
 
 <h2>12.8 · When the weights themselves are bf16</h2>
 
-<p>§12.5 kept fp32 master weights because a small update added to a bf16 weight can vanish. Here is that
-measured, together with the two fixes that let some runs keep weights (or optimizer state) in bf16 to save the
+<p>§12.5 kept fp32 master weights because a small update added to a bf16 weight can vanish. Here is that effect
+measured, together with the two fixes that let some runs keep weights (or optimizer state) in bf16 and save
 4 bytes per parameter. Start a weight at 1.0 and add an update of 0.001 a thousand times. The right answer is
 2.0 (<code>tfs.fp8.bf16_accumulate</code>):</p>
 
@@ -494,15 +494,15 @@ stochastic rounding (mean of 20)    2.005
 Kahan-compensated bf16              2.0</code></pre>
 
 <p><b>Why plain bf16 never moves.</b> Between 1 and 2, bf16 values are 2<sup>−7</sup> = 0.0078 apart. An
-update of 0.001 is less than half that gap, so 1.0 + 0.001 rounds back to 1.0, every time. A thousand updates,
-zero progress. This is not a corner case: a learning rate of 10<sup>−4</sup> times a gradient-normalised Adam
-step is exactly this size relative to a weight of order 1.</p>
+update of 0.001 is less than half that gap, so 1.0 + 0.001 rounds back to 1.0 every time: a thousand updates and
+no progress. This is not a corner case. A learning rate of 10<sup>−4</sup> times a gradient-normalised Adam
+step is exactly this size relative to a weight of size about 1.</p>
 
-<p><b>Stochastic rounding</b> (Chapter 0 §0.8) rounds up with probability equal to how far the exact result
-lies toward the next value: 1.001 is 13% of the way from 1.0 to 1.0078, so it becomes 1.0078 with probability
+<p><b>Stochastic rounding</b> (Chapter 0 §0.8) rounds up with a probability equal to how far the exact result
+lies toward the next value. 1.001 is 13% of the way from 1.0 to 1.0078, so it becomes 1.0078 with probability
 0.13 and 1.0 otherwise. Each step is wrong, but <b>the expected value is exact</b>, so over many steps the
-weight drifts correctly (a single run ends at 1.906 here, the mean of 20 runs at 2.005). In bf16 it is a three-line
-bit trick: add a random 16-bit integer to the low half of the fp32 result and truncate.</p>
+weight drifts the right way (a single run ends at 1.906 here, and the mean of 20 runs at 2.005). In bf16 it is a
+three-line bit trick: add a random 16-bit integer to the low half of the fp32 result and truncate.</p>
 
 <pre><code>bits = (w.float() + u).view(torch.int32)
 r = torch.randint(0, 1 << 16, (), dtype=torch.int32)
@@ -510,16 +510,16 @@ w = ((bits + r) & -65536).view(torch.float32).to(torch.bfloat16)    # exact: low
 
 <p><b>Kahan summation</b> keeps a second bf16 number holding what the last rounding threw away, and adds it back
 into the next update. It is deterministic, exact here, and costs 2 extra bytes per parameter instead of the 4 of
-an fp32 master copy. Both techniques appear in memory-saving optimizer implementations; both show the same rule
+an fp32 master copy. Both techniques appear in memory-saving optimizer implementations, and both show the same rule
 as the rest of the chapter from a different angle: <b>the precision that matters is the precision of whatever
 accumulates</b>.</p>
 
 <div class="box math-note">
 <span class="t">Where precision meets the rest of the course</span>
 <p style="margin-bottom:0">Gradient accumulation and all-reduces are sums, and a bf16 running total of 64
-micro-batch gradients was off by 0.74% where fp32 was off by 1e-7 (<a href="ch10-backprop.html">Chapter 10
-§10.10</a>). FP8's speed advantage at cluster scale, and the question of which peak an MFU is quoted against,
-are in <a href="ch19-distributed.html">Chapter 19 §19.8</a>. And the effect of training precision on scaling
+micro-batch gradients was off by 0.74%, where fp32 was off by 1e-7 (<a href="ch10-backprop.html">Chapter 10
+§10.10</a>). The speed advantage of FP8 at cluster scale, and which peak an MFU figure is quoted against,
+are covered in <a href="ch19-distributed.html">Chapter 19 §19.8</a>. The effect of training precision on scaling
 laws, including why heavily over-trained models quantize worse, is in
 <a href="ch21-scaling.html">Chapter 21 §21.3</a>.</p>
 </div>
@@ -528,13 +528,13 @@ laws, including why heavily over-trained models quantize worse, is in
 <div class="qitem" data-answer="3">
   <div class="qq">A tensor has one channel 100× larger than the rest. How much worse is per-tensor e4m3 scaling than per-128-block scaling on the other channels?</div>
   <div class="opts">
-    <div class="opt">Catastrophically: most values flush to zero</div>
+    <div class="opt">Badly: most values flush to zero</div>
     <div class="opt">About 100×, the outlier ratio</div>
     <div class="opt">About 10×, one decimal digit</div>
-    <div class="opt">Barely: 2.64% vs 2.58%, because a floating format shifts the small values down in exponent without losing relative precision</div>
+    <div class="opt">Barely: 2.64% against 2.58%, because a floating format moves the small values down in exponent without losing relative precision</div>
   </div>
-  <div class="expl"><b>Exponent bits absorb moderate outliers.</b> e4m3 spans about 15 binades, so a 100× outlier costs
-  nothing measurable. At 10⁴× per-tensor scaling flushed 4.6% of the other values to zero against 0.17% per block.
+  <div class="expl"><b>Exponent bits absorb moderate outliers.</b> e4m3 covers about 15 binades, so a 100× outlier costs
+  nothing measurable. At 10⁴×, per-tensor scaling flushed 4.6% of the other values to zero, against 0.17% with blocks.
   An int8 format has no exponent and would fail at 100×.</div>
 </div>
 <div class="qitem" data-answer="0">
@@ -543,9 +543,9 @@ laws, including why heavily over-trained models quantize worse, is in
     <div class="opt">The scale is 448/3.4 = 131.8, so 5.0 maps to 659, which saturates to 448: the value is silently clipped</div>
     <div class="opt">The cast produces inf and the step is skipped</div>
     <div class="opt">The scale is recomputed automatically</div>
-    <div class="opt">Nothing; e4m3 can represent 659</div>
+    <div class="opt">Nothing, because e4m3 can represent 659</div>
   </div>
-  <div class="expl"><b>Stale scale, saturating cast.</b> e4m3's maximum is 448, and PyTorch's cast saturates rather than
+  <div class="expl"><b>An out-of-date scale and a saturating cast.</b> e4m3's maximum is 448, and PyTorch's cast saturates instead of
   overflowing. The 5.0 comes back as 3.4: a 32% error on the largest value in the tensor, with no warning.</div>
 </div>
 <div class="qitem" data-answer="2">
@@ -557,17 +557,17 @@ laws, including why heavily over-trained models quantize worse, is in
     <div class="opt">It overflows</div>
   </div>
   <div class="expl"><b>Precision, not range.</b> This is why master weights stay in fp32, or why pure-bf16 schemes use
-  stochastic rounding (correct on average: mean 2.005 over 20 runs) or Kahan compensation (exactly 2.0).</div>
+  stochastic rounding (correct on average: a mean of 2.005 over 20 runs) or Kahan compensation (exactly 2.0).</div>
 </div>
 <div class="qitem" data-answer="1">
   <div class="qq">Why is stochastic rounding acceptable for weight updates even though each rounded result is wrong?</div>
   <div class="opts">
     <div class="opt">The errors are always smaller than with round-to-nearest</div>
-    <div class="opt">It is unbiased: the expected value of each rounded update equals the exact one, so small updates accumulate correctly on average</div>
+    <div class="opt">It is unbiased: the expected value of each rounded update equals the exact one, so small updates add up correctly on average</div>
     <div class="opt">It only rounds the gradients, not the weights</div>
     <div class="opt">It uses more mantissa bits internally</div>
   </div>
-  <div class="expl"><b>Zero-mean error.</b> Each step's error is up to a full gap, but it is random with mean zero, so it
+  <div class="expl"><b>Errors with zero mean.</b> Each step's error can be up to a full gap, but it is random with a mean of zero, so it
   averages out across steps like minibatch noise. Round-to-nearest's error is deterministic and always in the same
   direction for a small update, so it never averages out.</div>
 </div>
@@ -590,18 +590,18 @@ and, every 25 steps, record the fraction of gradients below <span class="math">2
 fp16 start losing 1% of the signal?</b> Is that before or after the point where you would have called the
 run "working"?</p>
 <details class="reveal"><summary>What you should see, and the point of it</summary><div>
-<p style="margin-bottom:0">The two curves are mirror images: as loss falls, the lost fraction climbs.
-The reference run went 0.01% → 62.13% while loss went 5.60 → 0.0015. The lesson is that
-<b>there is no safe loss threshold you can check once</b> — the danger zone is wherever your model is
-heading. This is why the fix is structural (bf16, or dynamic scaling) rather than a tuned constant.</p>
+<p style="margin-bottom:0">The two curves mirror each other: as the loss falls, the lost fraction climbs.
+The reference run went from 0.01% → 62.13% while the loss went from 5.60 → 0.0015. The lesson is that
+<b>there is no safe loss value you can check once</b>: the danger is wherever your model is
+heading. That is why the fix is structural (bf16, or dynamic scaling) instead of a tuned constant.</p>
 </div></details>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">12.2</span><span class="ti">Break a softmax, then fix it</span><span class="lvl">code</span></div>
 <div class="eb">
-<p>Write a naive softmax with no max-subtraction and run it in fp16 on scores scaled by 1, 10, and 50.
-Find the scale at which it first returns <code>NaN</code>, then add the max-subtraction and confirm all
+<p>Write a naive softmax with no max subtraction and run it in fp16 on scores scaled by 1, 10 and 50.
+Find the scale at which it first returns <code>NaN</code>, then add the max subtraction and confirm that all
 three work. Finally, explain in one sentence why the subtraction changes nothing mathematically.</p>
 <pre><code>def softmax_naive(x):
     e = x.exp()
@@ -611,35 +611,35 @@ def softmax_stable(x):
     e = (x - x.amax(-1, keepdim=True)).exp()
     return e / e.sum(-1, keepdim=True)</code></pre>
 <details class="reveal"><summary>The one-sentence answer</summary><div>
-<p style="margin-bottom:0">Subtracting a constant <span class="math">c</span> from every logit multiplies
-numerator and denominator by <span class="math">e<sup>&minus;c</sup></span>, which cancels — so the
-softmax is <b>invariant to shifts</b>, and you are free to choose the shift that keeps the largest
+<p style="margin-bottom:0">Subtracting a constant <span class="math">c</span> from every logit multiplies the
+numerator and the denominator by <span class="math">e<sup>&minus;c</sup></span>, which cancels. So the
+softmax <b>ignores shifts</b>, and you are free to choose the shift that keeps the largest
 exponent at exactly <span class="math">e<sup>0</sup> = 1</span>. It costs one extra pass over the row,
 which is why <a href="ch17-flashattention.html">FlashAttention</a> works so hard to fuse it into the
-streaming loop rather than paying for it separately.</p>
+streaming loop instead of paying for it separately.</p>
 </div></details>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">12.3</span><span class="ti">Isolate the accumulator</span><span class="lvl">code</span></div>
 <div class="eb">
-<p>Reproduce the accumulation table in §12.5, then extend it: for
+<p>Reproduce the accumulation table in §12.5, then extend it. For
 <span class="math">n &isin; {64, 256, 1024, 4096, 16384}</span>, plot the fp16 running total against the
-exact sum. You will find it does not drift smoothly — it <b>stalls</b>. Predict the stalling point from the
-gap formula before you run it: at what total does the fp16 gap reach twice the average addend?</p>
+exact sum. You will find it does not drift smoothly; it <b>stalls</b>. Predict the stalling point from the
+gap formula before you run it: at what total does the fp16 gap reach twice the average value added?</p>
 <pre><code>x = torch.rand(n) * 0.01
 exact = x.double().sum()
 acc = torch.tensor(0., dtype=torch.float16)
 for v in x.half():                   # a real fp16 running total --
     acc = acc + v                    # x.half().sum(dtype=float16) is not one (see 12.5)
 same_data_fp32_acc = x.half().sum(dtype=torch.float32)</code></pre>
-<details class="reveal"><summary>The prediction</summary><div><p>The average addend is 0.005, so additions
-start vanishing once half a gap exceeds it: gap &gt; 0.01, i.e. the bucket <span class="math">[16, 32)</span>
-where the gap is 0.0156. Below 16 the total is roughly right; above it, it crawls. That is why the
+<details class="reveal"><summary>The prediction</summary><div><p>The average value added is 0.005, so additions
+start vanishing once half a gap is larger than it: a gap &gt; 0.01, that is the bucket <span class="math">[16, 32)</span>,
+where the gap is 0.0156. Below 16 the total is roughly right; above it, it barely moves. That is why the
 n = 4096 total stops near 19 instead of reaching 20.6.</p>
-<p style="margin-bottom:0">Then look up <b>pairwise summation</b>, which PyTorch uses internally: adding
+<p style="margin-bottom:0">Then look up <b>pairwise summation</b>, which PyTorch uses internally. Adding
 numbers in a balanced tree keeps every partial sum close in size to what it is being added to, so the
-"tiny addend, huge total" situation never arises and the error grows like
+"tiny value, huge total" situation never arises, and the error grows like
 <span class="math">O(log n)</span> instead of stalling.</p></div></details>
 </div></div>
 
@@ -654,12 +654,12 @@ Implement round-to-nearest-even truncation and check it against
     # round to nearest even on bit 16, then shift
     rounding = ((u >> 16) & 1) + 0x7FFF
     return ((u + rounding) >> 16).to(torch.int16)</code></pre>
-<p>Then answer: <b>why does this same trick not work for fp16?</b> Your answer should mention the
-exponent field specifically, and should explain why bf16 conversion overflows only above about 3.4e38 while
+<p>Then answer: <b>why does the same trick not work for fp16?</b> Your answer should mention the
+exponent field specifically, and explain why bf16 conversion overflows only above about 3.4e38, while
 fp16 conversion overflows above 65,520.</p>
-<p>Finally, find the one input class where this trick is wrong: a NaN whose payload lives only in the low
+<p>Finally, find the one kind of input where this trick is wrong: a NaN whose payload is only in the low
 16 bits, such as the pattern <code>0x7F800001</code>. Rounding and shifting turns it into
-<code>0x7F80</code> — <b>infinity</b>. Real conversion routines special-case NaN first.</p>
+<code>0x7F80</code>, which is <b>infinity</b>. Real conversion routines handle NaN as a special case first.</p>
 </div></div>
 
 <div class="exercise">
@@ -668,22 +668,22 @@ fp16 conversion overflows above 65,520.</p>
 <p>Take <code>tfs/train.py</code> and wrap the forward pass in
 <code>torch.autocast(device_type, dtype=torch.bfloat16)</code>. Run the character-level config from
 <a href="ch11-training.html">Exercise 11.1</a> both ways and compare <b>bits per byte</b>, not raw loss.
-Report: final bpb, wall-clock time, and peak memory.</p>
-<p>On most CPUs expect little or no speedup — the large gains come from GPU tensor cores (some recent CPUs have bf16 matrix units, and there you may see one). <b>That is the point of the
-exercise</b>: confirm that the numerics are unchanged to within run-to-run noise, so that when you later
-run it on a GPU you already know the accuracy question is settled and only the speed question is open.</p>
+Report the final bpb, the wall-clock time and the peak memory.</p>
+<p>On most CPUs, expect little or no speedup: the large gains come from GPU tensor cores (some recent CPUs have bf16 matrix units, and on those you may see one). <b>That is the point of the
+exercise</b>: confirm that the numbers are unchanged to within the noise between runs, so that when you later
+run it on a GPU you already know the accuracy question is settled and only the speed question remains.</p>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">12.6</span><span class="ti">Find where per-tensor fp8 breaks</span><span class="lvl">code</span></div>
 <div class="eb">
-<p>Reproduce §12.7's table with <code>tfs.fp8.quantize</code>, then sweep the outlier ratio r from 10 to 10<sup>6</sup>.
+<p>Reproduce the table in §12.7 with <code>tfs.fp8.quantize</code>, then sweep the outlier ratio r from 10 to 10<sup>6</sup>.
 Before running, predict from e4m3's range (smallest normal 2<sup>−6</sup>, smallest subnormal 2<sup>−9</sup>, max
 448) the r at which typical values (|x| ≈ 1) start falling into the subnormals under per-tensor scaling. Then repeat
 with an int8 quantizer (<code>round(x · 127 / amax)</code>) and compare the two curves.</p>
 <details class="reveal"><summary>The prediction</summary><div>
 <p style="margin-bottom:0">Per-tensor scaling maps amax ≈ 3r to 448, so a value of 1 lands at 448/(3r). It drops
-below the smallest normal, 2<sup>−6</sup>, once r &gt; 448 · 64 / 3 ≈ 9,600: right where the measured error starts
+below the smallest normal, 2<sup>−6</sup>, once r &gt; 448 · 64 / 3 ≈ 9,600, which is right where the measured error starts
 rising. int8 has no exponent, so its error on typical values grows in proportion to r from the start: at r = 100
 a value of 1 is quantised to about 0.4 of a step.</p>
 </div></details>
@@ -693,12 +693,12 @@ a value of 1 is quantised to about 0.4 of a step.</p>
 <div class="eh"><span class="n">12.7</span><span class="ti">Train with bf16 weights, three ways</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>Take the Chapter 11 character model and store its parameters in bf16 with <b>no</b> fp32 master copy. Write the
-AdamW update yourself and apply it three ways: plain bf16 addition, stochastic rounding, and Kahan compensation
-(the code is in <code>tfs/fp8.py</code>). Train 1,000 steps each at lr = 1e-4 and compare bits per byte with the
+AdamW update yourself and apply it in three ways: plain bf16 addition, stochastic rounding and Kahan compensation
+(the code is in <code>tfs/fp8.py</code>). Train 1,000 steps of each at lr = 1e-4, and compare the bits per byte with the
 fp32-master baseline.</p>
 <details class="reveal"><summary>What you should see</summary><div>
-<p style="margin-bottom:0">Plain bf16 stalls early: updates smaller than half a gap of each weight are lost, and
-with lr = 1e-4 that is most of them. Stochastic rounding and Kahan both track the fp32 baseline closely; Kahan is
+<p style="margin-bottom:0">Plain bf16 stalls early: updates smaller than half of each weight's gap are lost, and
+with lr = 1e-4 that is most of them. Stochastic rounding and Kahan both stay close to the fp32 baseline; Kahan is
 deterministic and costs one extra bf16 per parameter. The gap grows as the learning rate decays, which is the
 weight-side twin of §12.3's "it gets worse as things go well".</p>
 </div></details>
@@ -706,15 +706,15 @@ weight-side twin of §12.3's "it gets worse as things go well".</p>
 
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
-<li><a href="https://arxiv.org/abs/1710.03740">Micikevicius et al. 2017 — Mixed Precision Training</a> — the paper that introduced loss scaling and the fp32 master-weight copy.</li>
-<li><a href="https://docs.pytorch.org/docs/stable/amp.html">PyTorch AMP documentation</a> — <code>autocast</code>'s per-op dtype policy is worth reading in full; it encodes the fp32 list in §12.5.</li>
-<li><a href="https://arxiv.org/abs/2209.05433">Micikevicius et al. 2022 — FP8 Formats for Deep Learning</a> — where e4m3/e5m2 and the split-use argument come from.</li>
-<li><a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 Technical Report</a> — §3.3, fp8 training at scale with fine-grained scaling and fp32 accumulation.</li>
-<li><a href="https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html">Goldberg 1991 — What Every Computer Scientist Should Know About Floating-Point Arithmetic</a> — the classic; §1.4 on subnormals is directly relevant here.</li>
-<li>Reference code for §12.7–12.8: <code>tfs/fp8.py</code> · tests: <code>tests/test_training.py</code> (Ch 12 section)</li>
-<li><a href="https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/fp8_primer.html">NVIDIA Transformer Engine — FP8 primer</a> — delayed scaling and the amax history.</li>
-<li><a href="https://arxiv.org/abs/2310.10537">Rouhani et al. 2023 — Microscaling Data Formats for Deep Learning</a> — the MX block formats.</li>
-<li>Companion notebook: <code>notebooks/12_precision.ipynb</code> — reproduces the underflow trajectory, the loss-scale table, the matmul errors and the accumulation table.</li>
+<li><a href="https://arxiv.org/abs/1710.03740">Micikevicius et al. 2017, Mixed Precision Training</a>: the paper that introduced loss scaling and the fp32 master-weight copy.</li>
+<li><a href="https://docs.pytorch.org/docs/stable/amp.html">PyTorch AMP documentation</a>: <code>autocast</code>'s per-operation dtype policy is worth reading in full; it encodes the fp32 list in §12.5.</li>
+<li><a href="https://arxiv.org/abs/2209.05433">Micikevicius et al. 2022, FP8 Formats for Deep Learning</a>: the source of e4m3/e5m2 and of the case for using each in a different pass.</li>
+<li><a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 Technical Report</a>, §3.3: fp8 training at scale with fine-grained scaling and fp32 accumulation.</li>
+<li><a href="https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html">Goldberg 1991, What Every Computer Scientist Should Know About Floating-Point Arithmetic</a>: the classic; §1.4 on subnormals is directly relevant here.</li>
+<li>Reference code for §12.7 to 12.8: <code>tfs/fp8.py</code> · tests: <code>tests/test_training.py</code> (Ch 12 section)</li>
+<li><a href="https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/fp8_primer.html">NVIDIA Transformer Engine, FP8 primer</a>: delayed scaling and the amax history.</li>
+<li><a href="https://arxiv.org/abs/2310.10537">Rouhani et al. 2023, Microscaling Data Formats for Deep Learning</a>: the MX block formats.</li>
+<li>Companion notebook: <code>notebooks/12_precision.ipynb</code>, which reproduces the underflow trajectory, the loss-scale table, the matmul errors and the accumulation table.</li>
 </ul>
 
 </main>
