@@ -1,0 +1,2897 @@
+"""
+Build the companion notebooks that recompute every number a chapter states.
+
+    python tests/build_notebooks.py            # write all notebooks this script owns
+    python tests/build_notebooks.py 07 13      # only matching ones
+
+Each notebook is a list of (kind, source) cells, kind in {"md", "code"}. Every code
+cell ASSERTS the claim it checks, so `python tests/run_notebooks.py NN` fails the
+moment a chapter and the code disagree. Cells marked DISCREPANCY assert what the
+code measures and say, in the markdown above them, how the chapter text differs.
+
+The notebooks are written without outputs: run them (Jupyter, or
+tests/run_notebooks.py) to see the numbers.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import textwrap
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+NB_DIR = os.path.join(ROOT, "notebooks")
+
+# Same path setup as notebooks/20_moe.ipynb: works from the repo root or from notebooks/.
+SETUP = """\
+import math, sys, os
+sys.path.insert(0, os.path.abspath(".."))      # run from notebooks/
+sys.path.insert(0, os.path.abspath("."))       # or from the repo root
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+torch.manual_seed(0)
+"""
+
+# Course text as an offline corpus (chapters 1, 2, 5, 6): real English prose, no download.
+CORPUS_HELPER = '''\
+import re, html as _html
+def course_text(*names):
+    """Visible prose of course chapters: tags, code, scripts and SVG stripped."""
+    out = []
+    for name in names:
+        path = next(p for p in (os.path.join("course", name), os.path.join("..", "course", name))
+                    if os.path.exists(p))
+        s = open(path, encoding="utf-8").read()
+        s = re.search(r"<main.*?</main>", s, re.S).group(0)
+        s = re.sub(r"<(script|style|svg|pre)[^>]*>.*?</\\1>", " ", s, flags=re.S)
+        s = re.sub(r"<[^>]+>", " ", s)
+        out.append(re.sub(r"\\s+", " ", _html.unescape(s)))
+    return " ".join(out)
+'''
+
+NOTEBOOKS: dict[str, list[tuple[str, str]]] = {}
+
+
+def notebook(name: str):
+    def deco(fn):
+        NOTEBOOKS[name] = fn()
+        return fn
+    return deco
+
+
+def md(s: str) -> tuple[str, str]:
+    return ("md", textwrap.dedent(s).strip("\n"))
+
+
+def code(*parts: str) -> tuple[str, str]:
+    """Each part is dedented on its own, so a shared helper can prefix an indented cell."""
+    return ("code", "\n".join(textwrap.dedent(p).strip("\n") for p in parts))
+
+
+def to_ipynb(cells: list[tuple[str, str]]) -> dict:
+    out = []
+    for kind, src in cells:
+        lines = src.splitlines(keepends=True)
+        if kind == "md":
+            out.append({"cell_type": "markdown", "metadata": {}, "source": lines})
+        else:
+            out.append({"cell_type": "code", "metadata": {}, "source": lines,
+                        "outputs": [], "execution_count": None})
+    return {
+        "cells": out,
+        "metadata": {
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+            "language_info": {"name": "python", "version": "3.11"},
+        },
+        "nbformat": 4,
+        "nbformat_minor": 4,
+    }
+
+
+# ============================================================ notebooks
+# (one function per chapter, in chapter order)
+
+@notebook("03_tokenization")
+def _nb03():
+    return [
+        md("""
+        # Chapter 3 — Tokenization
+
+        Every number and worked example in Chapter 3, recomputed with `tfs/tokenizer.py` and the
+        chapter's own code. Each cell **asserts** what it checks, so `python tests/run_notebooks.py 03`
+        fails if the chapter and the code disagree. GPT-2's real tokenizer would need a download, so
+        the exercises that use it run on a byte-level BPE trained here on the course's own prose
+        (a small analogue: same shape of result, different exact counts).
+        """),
+        code(SETUP + "from collections import Counter\nfrom tfs.tokenizer import BPETokenizer, get_pair_counts, merge\n"),
+        md("""
+        ## 3.2 — the hand-worked example: `"low low low lower lowest"`
+
+        The chapter trains BPE on letters (`_` is a space). The same greedy rule — most frequent pair,
+        first-seen wins a tie (what `Counter.most_common` and the chapter's `max(counts, key=counts.get)`
+        both do) — on character tokens.
+        """),
+        code("""
+        seq = list("low low low lower lowest".replace(" ", "_"))
+        assert len(seq) == 24 and len(set(seq)) == 8              # 24 characters, vocab of 8
+        steps = []
+        for _ in range(4):
+            counts = Counter(zip(seq, seq[1:]))
+            (a, b), n = counts.most_common(1)[0]
+            top = counts.most_common(3)
+            seq = merge(seq, (a, b), a + b)
+            steps.append((a + b, n, len(seq), top))
+            print(f"merge {a!r:7}+{b!r:6} (count {n})  -> length {len(seq):2d}   top pairs {top}")
+        assert [s[0] for s in steps] == ["lo", "low", "_low", "_low_low"]
+        assert [s[1] for s in steps] == [5, 5, 4, 2]
+        assert [s[2] for s in steps] == [19, 14, 10, 9]                    # lengths after each merge
+        # step 1: (l,o) 5, (o,w) 5, (w,_) 3, (w,e) 2;  step 3: (_,low) 4 beats (low,_) 3, (low,e) 2
+        c0 = Counter(zip(list("low_low_low_lower_lowest"), list("low_low_low_lower_lowest")[1:]))
+        assert (c0["l", "o"], c0["o", "w"], c0["w", "_"], c0["w", "e"]) == (5, 5, 3, 2)
+        assert steps[2][3] == [(("_", "low"), 4), (("low", "_"), 3), (("low", "e"), 2)]
+        assert 8 + len(steps) == 12                                        # final vocab: 12 tokens
+        print(f"24 characters -> {len(seq)} tokens = {24 / len(seq):.2f}x compression")
+        assert round(24 / len(seq), 1) == 2.7
+        """),
+        md("""
+        ## 3.2 — the chapter's 40-line BPE, run as printed
+
+        Its `encode` replays merges in learned order; `tfs.tokenizer` instead applies whichever learned
+        merge has the lowest rank at each step. Both must give the same ids, and both must round-trip.
+        """),
+        code('''
+        def get_pair_counts_ch(ids):
+            return Counter(zip(ids, ids[1:]))
+
+        def train_bpe(text, vocab_size):
+            ids = list(text.encode("utf-8"))
+            merges = {}
+            for new_id in range(256, vocab_size):
+                counts = get_pair_counts_ch(ids)
+                if not counts:
+                    break
+                pair = max(counts, key=counts.get)
+                if counts[pair] < 2:
+                    break
+                ids = merge(ids, pair, new_id)
+                merges[pair] = new_id
+            return merges
+
+        def encode_ch(text, merges):
+            ids = list(text.encode("utf-8"))
+            for pair, new_id in merges.items():
+                ids = merge(ids, pair, new_id)
+            return ids
+
+        def decode_ch(ids, merges):
+            vocab = {i: bytes([i]) for i in range(256)}
+            for (a, b), new_id in merges.items():
+                vocab[new_id] = vocab[a] + vocab[b]
+            return b"".join(vocab[i] for i in ids).decode("utf-8", errors="replace")
+
+        text = "the theory of the theatre is the theme " * 40
+        merges = train_bpe(text, vocab_size=280)
+        ids = encode_ch("the theatre theme", merges)
+        print(len(ids), ids, repr(decode_ch(ids, merges)))
+        assert len("the theatre theme".encode()) == 17 and len(ids) < 17   # "far shorter than the 17 raw bytes"
+        assert decode_ch(ids, merges) == "the theatre theme"                # perfectly reversible
+        tok = BPETokenizer().train(text, vocab_size=280)
+        assert tok.merges == merges and tok.encode("the theatre theme") == ids   # same merges, same ids
+        '''),
+        md("""
+        ## 3.2 — why merge order matters (quiz 1)
+
+        `"the"` can only be formed after `"th"` exists. Applying the same merges in the wrong order gives a
+        different, inconsistent tokenization.
+        """),
+        code("""
+        rev = dict(reversed(list(merges.items())))                 # same merges, reversed order
+        wrong = encode_ch("the theatre theme", rev)
+        print("learned order", len(ids), "  reversed order", len(wrong))
+        assert wrong != ids and decode_ch(wrong, merges) == "the theatre theme"
+        """),
+        md("""
+        ## 3.2 — byte-level BPE never needs `<UNK>` (quiz 2), and Unicode's size
+
+        Any string falls back to its bytes. And text unlike the training corpus can need more tokens
+        than it has characters — counted in bytes, a Devanagari letter is 3 and an emoji is 4.
+        `unicodedata` (Unicode 15.1 in this Python) gives the "~150,000 assigned code points" figure:
+        characters that are neither unassigned, private-use nor surrogates.
+        """),
+        code("""
+        import unicodedata
+        for s in ["🤖 emoji", "बिल्ली चटाई पर बैठी", "\\x00\\xff corrupted"]:
+            e = tok.encode(s)
+            assert tok.decode(e) == s and max(e) < tok.vocab_size
+            print(f"{s!r:28} {len(s):3d} chars -> {len(e):3d} tokens")
+        assert len(tok.encode("🤖")) == 4 > len("🤖")             # more tokens than characters
+        assigned = sum(unicodedata.category(chr(c)) not in ("Cn", "Co", "Cs") for c in range(0x110000))
+        print("Unicode", unicodedata.unidata_version, "assigned characters:", assigned)
+        assert 140_000 < assigned < 160_000
+        """),
+        md("""
+        ## Pre-tokenization: the GPT-2 split
+
+        The `regex` package (for `\\p{L}`, `\\p{N}`) is not a dependency here, so this uses the standard
+        library equivalent on ASCII input: `[^\\W\\d_]` for letters, `\\d` for digits.
+
+        **DISCREPANCY.** The chapter's comment says the split is
+        `['Hello', ' world', "'s", ' ', '123', ' items', '!']`. The pattern's ` ?\\p{N}+` alternative takes
+        the leading space with the digits, exactly as ` ?\\p{L}+` does for words, so the real output has
+        `' 123'` as one piece: `['Hello', ' world', "'s", ' 123', ' items', '!']`.
+        """),
+        code('''
+        import re
+        try:
+            import regex
+            GPT2_PAT = regex.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)|\\s+""")
+        except ImportError:
+            GPT2_PAT = re.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?[^\\W\\d_]+| ?\\d+| ?[^\\s\\w]+|\\s+(?!\\S)|\\s+""")
+        pieces = GPT2_PAT.findall("Hello world's 123 items!")
+        print(pieces)
+        assert pieces == ["Hello", " world", "'s", " 123", " items", "!"]     # chapter prints ' ', '123'
+        assert all(len(GPT2_PAT.findall(s)) == 2 for s in ("dog.", "3cats"))  # never one token across categories
+        '''),
+        md("""
+        ## 3.3 / quiz — what a bigger vocabulary costs in parameters
+        """),
+        code("""
+        d = 4096
+        added = (256_000 - 32_000) * d
+        print(f"32k -> 256k at d=4096: {added:,} params per embedding matrix")
+        assert added == 224_000 * 4096 and round(added / 1e9, 1) == 0.9
+        tied = (128_000 - 32_000) * d
+        print(f"32k -> 128k, tied: {tied:,}   untied: {2 * tied:,}")
+        assert tied == 393_216_000 and round(2 * tied / 1e6) == 786
+        # "1000 tokens ~ 750 words ~ 1.5 pages": 0.75 words/token, 500 words/page
+        assert 1000 * 0.75 == 750 and 750 / 500 == 1.5
+        """),
+        md("""
+        ## Exercise 3.1 — train a BPE, read its merges, plot compression against vocab size
+
+        The corpus is the visible prose of Chapters 1 and 2 (≈27 kB); held-out text is Chapter 6. Training
+        once to the largest size and truncating the merge list gives exactly the tokenizer each smaller
+        vocabulary would have trained (BPE is greedy, so the first *n* merges never depend on later ones).
+        Other sessions edit these chapters, so the asserts check the *shape* of the result, not exact counts.
+        """),
+        code(CORPUS_HELPER, """
+        train_text = course_text("ch01-tensors.html", "ch02-matmul.html")[:30000]
+        held_out = course_text("ch06-mha.html")[:6000]
+        big = BPETokenizer().train(train_text, vocab_size=2000)
+        first = [big._vocab[256 + i] for i in range(30)]
+        print("first 30 merges:", first)
+        assert all(len(t) == 2 for t in first[:5])                 # frequent bigrams first ...
+        assert any(t in (b"the", b"the ", b" the") for t in first)  # ... then whole common words
+        assert any(b"ing" in big._vocab[i] for i in range(256, 256 + 200))   # ... and suffixes
+        all_merges = dict(big.merges)
+        ratios = {}
+        for V in (300, 500, 1000, 2000):
+            big.merges = {p: i for p, i in all_merges.items() if i < V}
+            big._build_vocab()
+            ratios[V] = big.compression_ratio(held_out)
+            print(f"vocab {V:5d} ({256 + len(big.merges):5d} used): {ratios[V]:.3f} bytes/token on held-out text")
+        big.merges = all_merges; big._build_vocab()
+        r = [ratios[V] for V in (300, 500, 1000, 2000)]
+        assert r == sorted(r)                                      # always improving ...
+        per_token = [(r[1] - r[0]) / 200, (r[2] - r[1]) / 500, (r[3] - r[2]) / 1000]
+        print("gain per added vocab entry:", [f"{g:.5f}" for g in per_token])
+        assert per_token[0] > per_token[1] > per_token[2]          # ... with diminishing returns
+        print(f"(training stopped at {len(all_merges)} merges: no pair occurs twice after that)")
+        """),
+        md("""
+        ## Exercise 3.2 and §3.5 — forensics and the trailing-space trap, with pre-tokenization
+
+        The tokenizer above runs BPE on raw text, so it learns merges like `"is "` with the space at the
+        *end*. Real tokenizers split with the GPT-2 regex first and run BPE inside each piece, which glues
+        the space to the *front* of the next word (`" is"`). This small trainer does exactly that, on the
+        same corpus, and the forensics below use it.
+        """),
+        code("""
+        def train_pretok(text, vocab_size):
+            words = Counter(GPT2_PAT.findall(text))
+            seqs = {w: list(w.encode("utf-8")) for w in words}
+            merges = {}
+            for new_id in range(256, vocab_size):
+                counts = Counter()
+                for w, n in words.items():
+                    for p in zip(seqs[w], seqs[w][1:]):
+                        counts[p] += n
+                if not counts:
+                    break
+                pair, f = counts.most_common(1)[0]
+                if f < 2:
+                    break
+                seqs = {w: merge(s, pair, new_id) for w, s in seqs.items()}
+                merges[pair] = new_id
+            t = BPETokenizer(); t.merges = merges; t._build_vocab()
+            return t
+
+        pre = train_pretok(train_text, 1000)
+        enc = lambda s: [i for piece in GPT2_PAT.findall(s) for i in pre._encode_ordinary(piece)]
+        lead = sum(pre._vocab[i][:1] == b" " for i in pre.merges.values())
+        trail = sum(pre._vocab[i][-1:] == b" " and len(pre._vocab[i]) > 1 for i in pre.merges.values())
+        print(f"pre-tokenized BPE: {lead} tokens start with a space, {trail} end with one")
+        assert lead > 100 and trail == 0
+        forms = {s: enc(s) for s in ("hello", " hello", "Hello", "HELLO")}
+        for s, e in forms.items():
+            print(f"{s!r:10} {e}  {[pre.decode([i]) for i in e]}")
+        assert len({tuple(e) for e in forms.values()}) == 4        # casing and leading space change the ids
+        assert len(enc("🤖")) >= 2                                   # an emoji costs several tokens
+        a, b = enc("The answer is"), enc("The answer is ")
+        print([pre.decode([i]) for i in a], "|", [pre.decode([i]) for i in b])
+        assert pre.decode([a[-1]]) == " is"                           # the space travels with the word ...
+        assert b[:-1] == a and pre.decode([b[-1]]) == " "             # ... so a trailing space is a lone token
+        """),
+        md("""
+        ## 3.5 — the multilingual tax, and Exercise 3.3's bill
+
+        An English-trained tokenizer has merges for English and none for Devanagari, so the Hindi sentence
+        stays near raw bytes (3 per letter). The ratio here is larger than the chapter's 3–7× because this
+        tokenizer saw no Hindi at all; the direction is the point.
+        """),
+        code("""
+        en, hi = "The cat sat on the mat", "बिल्ली चटाई पर बैठी"
+        ne, nh = len(big.encode(en)), len(big.encode(hi))
+        print(f"English {ne} tokens, Hindi {nh} tokens: {nh / ne:.1f}x")
+        assert nh / ne > 3
+        price = 3 / 1e6                                           # $3 per million input tokens
+        print(f"same meaning: ${ne * price * 1e6:.0f} vs ${nh * price * 1e6:.0f} per million copies")
+        assert nh * price > 3 * ne * price
+        """),
+    ]
+
+
+@notebook("04_embeddings")
+def _nb04():
+    return [
+        md("""
+        # Chapter 4 — Embeddings and the Residual Stream
+
+        Every number in Chapter 4, recomputed. Each cell **asserts** what it checks, so
+        `python tests/run_notebooks.py 04` fails if the chapter and the code disagree. GPT-2's weights
+        would need a download, so Exercise 4.2 (nearest neighbours) and the logit lens are not reproduced
+        here; Exercise 4.3 runs on this course's model (`tfs/model.py`) trained for a few seconds on the
+        bundled offline corpus.
+        """),
+        code(SETUP + "from tfs.model import Config, Model\n"),
+        md("## 4.1 — an embedding is a lookup: shapes and the GPT-2 table"),
+        code("""
+        V, C = 50257, 768
+        emb = nn.Embedding(V, C)
+        print(tuple(emb.weight.shape), f"{emb.weight.numel():,} parameters")
+        assert emb.weight.numel() == 38_597_376 and round(emb.weight.numel() / 1e6, 1) == 38.6
+        ids = torch.tensor([[15496, 995, 0], [464, 3797, 3332]])          # (B=2, T=3)
+        x = emb(ids)
+        assert ids.shape == (2, 3) and x.shape == (2, 3, 768)              # (B, T) -> (B, T, C)
+        onehot = torch.zeros(1, V); onehot[0, 15496] = 1.0
+        assert torch.allclose(onehot @ emb.weight, emb.weight[15496][None])  # identical answers
+        """),
+        md("## 4.1 — the worked example: the same row, two ways, and the waste"),
+        code("""
+        W = torch.arange(24, dtype=torch.float64).reshape(6, 4) / 10        # id i -> [0.4i, ..., 0.4i+0.3]
+        assert W[4].tolist() == [1.6, 1.7, 1.8, 1.9] and W[5].tolist() == [2.0, 2.1, 2.2, 2.3]
+        oh = torch.zeros(6, dtype=torch.float64); oh[3] = 1
+        print("matmul", (oh @ W).tolist(), " lookup", W[3].tolist())
+        assert torch.allclose(oh @ W, torch.tensor([1.2, 1.3, 1.4, 1.5], dtype=torch.float64))
+        assert torch.equal(oh @ W, W[3])
+        mults, zero = 6 * 4, 5 * 4
+        print(f"{zero} of {mults} multiplies by zero = {zero / mults:.0%}")
+        assert round(100 * zero / mults) == 83
+        gpt2 = 50257 * 768
+        print(f"GPT-2: matmul {gpt2:,} multiplies, lookup 768 reads -> {gpt2 // 768:,}x the arithmetic")
+        assert gpt2 == 38_597_376 and gpt2 // 768 == 50257 and 50257 - 1 == 50256
+        """),
+        md("""
+        ## 4.1 — the gradient reaches exactly one row per token, and what AdamW does afterwards
+
+        A token that appears once gets one gradient. Its row then keeps moving: on momentum, and from
+        weight decay, which shrinks it every step.
+
+        **DISCREPANCY (minor).** The chapter says the row "keeps drifting for a few hundred steps on
+        momentum". After the gradient stops, Adam's step is about m̂/√v̂, which decays like
+        (β₁/√β₂)ᵗ: under 1% of its first size after ~45 steps with PyTorch's default betas, and the
+        measurement below agrees. Momentum drift is over within tens of steps; what keeps moving the row
+        for hundreds of steps is weight decay (lr·λ·w every step).
+        """),
+        code("""
+        def rare_token_moves(weight_decay, betas, steps=400):
+            torch.manual_seed(0)
+            e = nn.Embedding(10, 4)
+            opt = torch.optim.AdamW(e.parameters(), lr=1e-2, weight_decay=weight_decay, betas=betas)
+            moves = []
+            for step in range(steps):
+                ids = torch.tensor([3]) if step == 0 else torch.tensor([1])   # token 3 appears once, ever
+                before = e.weight[3].detach().clone()
+                opt.zero_grad()
+                (e(ids) * torch.randn(1, 4)).sum().backward()
+                if step == 0:
+                    rows = (e.weight.grad.abs().sum(1) > 0).nonzero().flatten().tolist()
+                    assert rows == [3]                                     # exactly one row has a gradient
+                opt.step()
+                moves.append((e.weight[3].detach() - before).norm().item())
+            return moves
+
+        for betas in ((0.9, 0.999), (0.9, 0.95)):
+            m = rare_token_moves(0.0, betas)
+            gone = next(t for t, v in enumerate(m) if v < 0.01 * m[0])
+            print(f"betas {betas}: momentum drift falls below 1% of its first step after {gone} steps")
+            assert gone < 100                                              # tens of steps, not hundreds
+        m = rare_token_moves(0.1, (0.9, 0.95))
+        print(f"with weight decay 0.1: still moving {m[300]:.1e} per step at step 300")
+        assert m[300] > 1e-4                                               # decay keeps shrinking the row
+        """),
+        md("## 4.2 — weight tying: V·C parameters instead of 2·V·C"),
+        code("""
+        cfg = Config(vocab_size=1000, d_model=64, n_layer=2, n_head=4, n_kv_head=2, d_head=16, d_ff=128, max_T=64)
+        tied = Model(cfg)
+        untied = Model(Config(**{**cfg.__dict__, "tie_embed": False}))
+        n = lambda m: sum(p.numel() for p in m.parameters())
+        print("tied", n(tied), " untied", n(untied))
+        assert tied.head.weight is tied.embed.weight and tied.head.weight.shape == (1000, 64)  # both (V, C)
+        assert n(untied) - n(tied) == 1000 * 64 and n(tied) == cfg.n_params()
+        """),
+        md("## 4.3 — the residual stream has one shape on every line"),
+        code("""
+        shapes = []
+        hooks = [b.register_forward_hook(lambda mod, inp, out: shapes.append(tuple(out[0].shape)))
+                 for b in tied.blocks]
+        tied(torch.randint(0, 1000, (3, 17)))
+        for h in hooks: h.remove()
+        print(shapes)
+        assert shapes == [(3, 17, 64)] * cfg.n_layer                      # (B, T, C) after every block
+        """),
+        md("## 4.4 — why x + f(x): 0.9⁸⁰, and the 1 + f′(x) term"),
+        code("""
+        print(f"0.9**80 = {0.9 ** 80:.2e}")
+        assert round(0.9 ** 80, 4) == 0.0002
+        x = torch.tensor(2.0, requires_grad=True)
+        (x + torch.tanh(0.5 * x)).backward()
+        fprime = 0.5 * (1 - torch.tanh(torch.tensor(1.0)) ** 2)
+        assert torch.isclose(x.grad, 1 + fprime)                           # d(x + f)/dx = 1 + f'(x)
+        """),
+        md("## Quiz — how much of an 8B model is embedding tables?"),
+        code("""
+        table = 128256 * 4096
+        print(f"one table {table:,}; two {2 * table / 1e9:.2f} B = {2 * table / 8e9:.0%} of 8 B")
+        assert round(table / 1e6) == 525 and round(2 * table / 1e9, 2) == 1.05
+        assert round(100 * 2 * table / 8e9) == 13 and 2 * table / 1e9 > 1.0   # over 100% of a 1B model
+        """),
+        md("""
+        ## Exercise 4.1 — embedding = one-hot matmul, and the speed ratio
+
+        The chapter predicts the lookup is typically 100–1000× faster at V = 50,000. Timings depend on
+        the machine and its load: this notebook measured 120–1000× on a busy 8-core CPU. The assert is a
+        deliberately loose 30× so that a loaded machine does not fail it; the printed ratio is the result.
+        """),
+        code("""
+        import time
+        e10 = nn.Embedding(10, 4)
+        assert torch.equal(e10(torch.tensor([3])), F.one_hot(torch.tensor([3]), 10).float() @ e10.weight)
+        E = nn.Embedding(50000, 768)
+        ids = torch.randint(0, 50000, (8, 32))
+        def bench(fn, reps=5):
+            fn(); t = time.perf_counter()
+            for _ in range(reps): fn()
+            return (time.perf_counter() - t) / reps
+        with torch.no_grad():
+            assert torch.allclose(E(ids), F.one_hot(ids, 50000).float() @ E.weight)
+            t_lookup = bench(lambda: E(ids))
+            t_matmul = bench(lambda: F.one_hot(ids, 50000).float() @ E.weight)
+        print(f"lookup {t_lookup * 1e3:.3f} ms   one-hot matmul {t_matmul * 1e3:.1f} ms   ratio {t_matmul / t_lookup:,.0f}x")
+        assert t_matmul / t_lookup > 30
+        """),
+        md("""
+        ## Exercise 4.3 — break the residual stream
+
+        The same model with `x = attn(norm(x))` and `x = mlp(norm(x))` in every block (residual removed),
+        trained side by side on the bundled offline corpus. The no-residual model trains dramatically
+        worse, as the chapter says.
+
+        **DISCREPANCY.** Two of the exercise's predictions do not hold for this pre-norm (RMSNorm) model:
+        (1) the gap is not "marginal at 2 layers" — it is already large at 2 layers; (2) the no-residual
+        model's first-layer gradients are *not* orders of magnitude smaller — they are about as large or
+        larger. With a norm in front of every sublayer, each block rescales its input, so the gradient
+        does not vanish; what is lost is the identity path that carries each token's own embedding
+        forward. (The vanishing-gradient picture holds for an unnormalised stack — see the Chapter 10
+        notebook, Exercise 10.3.)
+        """),
+        code("""
+        from tfs.train import _fallback_corpus, get_batch
+        from tfs.tokenizer import CharTokenizer
+        text = _fallback_corpus()[:60000]
+        ctok = CharTokenizer(text)
+        data = torch.tensor(ctok.encode(text))
+
+        def no_residual(self, x, cos, sin, cache=None):
+            a, c = self.attn(self.n1(x), cos, sin, cache)
+            x = a                                       # was: x = x + a
+            x = self.mlp(self.n2(x))                    # was: x = x + self.mlp(self.n2(x))
+            return x, c
+
+        def run(n_layer, residual, steps=60):
+            torch.manual_seed(0)
+            m = Model(Config(vocab_size=ctok.vocab_size, d_model=48, n_layer=n_layer, n_head=4,
+                             n_kv_head=4, d_head=12, d_ff=128, max_T=64))
+            if not residual:
+                for b in m.blocks:
+                    b.forward = no_residual.__get__(b)
+            opt = torch.optim.AdamW(m.parameters(), lr=3e-3)
+            torch.manual_seed(1)
+            for step in range(steps):
+                x = get_batch(data, 16, 64)
+                _, loss, _ = m(x, targets=x)
+                opt.zero_grad(); loss.backward()
+                if step == 0:
+                    g0 = m.blocks[0].attn.q_proj.weight.grad.norm().item()
+                opt.step()
+            return loss.item(), g0
+
+        res = {(L, r): run(L, r) for L in (2, 4) for r in (True, False)}
+        for (L, r), (loss, g0) in res.items():
+            print(f"{L} layers  residual={r!s:5}  loss after 60 steps {loss:.3f}   block[0] grad {g0:.2e}")
+        for L in (2, 4):
+            assert res[L, False][0] > res[L, True][0] + 0.5            # dramatically worse, even at 2 layers
+            assert res[L, False][1] > 0.1 * res[L, True][1]            # first-layer grads NOT orders smaller
+        """),
+    ]
+
+
+@notebook("07_positions")
+def _nb07():
+    return [
+        md("""
+        # Chapter 7 — Position: Sinusoidal → Learned → RoPE → ALiBi
+
+        Every equation, worked example and exercise answer in Chapter 7, recomputed with
+        `tfs/model.py`'s RoPE (`build_rope_cache`, `rotate_half`, `apply_rope`). Each cell **asserts**
+        what it checks, so `python tests/run_notebooks.py 07` fails if the chapter and the code disagree.
+        """),
+        code(SETUP + "from tfs.model import build_rope_cache, rotate_half, apply_rope\n"),
+        md("""
+        ## 7.1 / Exercise 7.1 — attention is permutation-equivariant; RoPE and the causal mask break it
+        """),
+        code("""
+        torch.manual_seed(0)
+        B, T, d = 1, 6, 16
+        Wq, Wk, Wv = (torch.randn(d, d, dtype=torch.float64) / 4 for _ in range(3))
+        def attn(x, rope=False, causal=False):
+            q, k, v = (x @ Wq)[:, None], (x @ Wk)[:, None], (x @ Wv)[:, None]   # (B, 1, T, d)
+            if rope:
+                cos, sin = build_rope_cache(x.shape[1], d)
+                q, k = apply_rope(q, k, cos.double(), sin.double())
+            return F.scaled_dot_product_attention(q, k, v, is_causal=causal)[:, 0]
+        x = torch.randn(B, T, d, dtype=torch.float64)
+        perm = torch.randperm(T)
+        same = lambda kw: torch.allclose(attn(x, **kw)[:, perm], attn(x[:, perm], **kw))
+        print("no position, no mask:", same({}), "  + RoPE:", same({"rope": True}), "  + causal mask:", same({"causal": True}))
+        assert same({}) and not same({"rope": True}) and not same({"causal": True})
+        # and the per-position MLP cannot fix it: it commutes with any permutation
+        mlp = nn.Sequential(nn.Linear(d, 32), nn.GELU(), nn.Linear(32, d)).double()
+        assert torch.allclose(mlp(x)[:, perm], mlp(x[:, perm]))
+        """),
+        md("""
+        ## 7.2 — sinusoidal encoding: PE(pos + k) is a fixed linear map (a rotation) of PE(pos)
+        """),
+        code("""
+        def sinusoidal(T, d):
+            pos = torch.arange(T)[:, None]
+            i = torch.arange(0, d, 2)[None, :]
+            ang = pos / (10000 ** (i / d))
+            pe = torch.zeros(T, d)
+            pe[:, 0::2] = torch.sin(ang)
+            pe[:, 1::2] = torch.cos(ang)
+            return pe.double()
+        pe = sinusoidal(200, 16)
+        k = 7
+        w = 1 / 10000 ** (torch.arange(0, 16, 2).double() / 16)        # per-pair frequency
+        M = torch.zeros(16, 16, dtype=torch.float64)                    # block-diagonal 2x2 rotations by k*w
+        for j, a in enumerate(k * w):
+            c, s = torch.cos(a), torch.sin(a)
+            M[2 * j:2 * j + 2, 2 * j:2 * j + 2] = torch.tensor([[c, -s], [s, c]])
+        assert torch.allclose(pe[k:], pe[:-k] @ M, atol=1e-5)           # the same M for every position
+        print("PE[pos+7] == PE[pos] @ M for all", 200 - k, "positions")
+        """),
+        md("## 7.3 — a learned table has a hard ceiling (GPT-2: 1024 rows)"),
+        code("""
+        wpe = nn.Embedding(1024, 768)
+        assert wpe.weight.numel() == 1024 * 768                           # max_T * d parameters
+        try:
+            wpe(torch.tensor([1024])); raised = False
+        except IndexError:
+            raised = True
+        assert raised                                                      # position 1025 does not exist
+        cos, sin = build_rope_cache(40_000, 64)                             # RoPE: any position, no table
+        assert torch.isfinite(cos).all() and cos.shape == (40_000, 64)
+        """),
+        md("""
+        ## 7.4 — the 2-D case: Rₘᵀ Rₙ = Rₙ₋ₘ, so only the offset survives
+        """),
+        code("""
+        R = lambda a: torch.tensor([[math.cos(a), -math.sin(a)], [math.sin(a), math.cos(a)]], dtype=torch.float64)
+        for m, n in [(0, 3), (5, 2), (11, 40)]:
+            assert torch.allclose(R(m).T @ R(n), R(n - m))
+        assert torch.allclose(R(0.7).T @ R(0.7), torch.eye(2, dtype=torch.float64))   # orthogonal: length kept
+        """),
+        md("## 7.4 — the worked example (d_head = 8): frequencies, a rotating q, and the cancelling positions"),
+        code("""
+        theta = [10000 ** (-2 * i / 8) for i in range(4)]
+        for i, t in enumerate(theta):
+            print(f"pair i={i}: theta={t:.6f}   full turn every {2 * math.pi / t:,.2f} tokens")
+        assert [round(t, 6) for t in theta] == [1.0, 0.1, 0.01, 0.001]
+        assert [round(2 * math.pi / t, 2) for t in theta] == [6.28, 62.83, 628.32, 6283.19]
+        q1 = torch.tensor([1.0, 0.0], dtype=torch.float64)
+        rows = [(R(m) @ q1).tolist() for m in range(4)]
+        print([[round(v, 4) for v in r] for r in rows], [round(math.degrees(m), 1) for m in range(4)])
+        assert [[round(v, 4) for v in r] for r in rows] == [[1.0, 0.0], [0.5403, 0.8415], [-0.4161, 0.9093], [-0.99, 0.1411]]
+        assert [round(math.degrees(m), 1) for m in range(4)] == [0.0, 57.3, 114.6, 171.9]
+        q, k = torch.tensor([0.6, 0.8], dtype=torch.float64), torch.tensor([1.0, 0.0], dtype=torch.float64)
+        dots = [(R(m) @ q) @ (R(n) @ k) for m, n in [(0, 2), (1, 3), (5, 7), (10, 12)]]
+        print("offset 2:", [round(v.item(), 6) for v in dots], "  offset 3:", round(((R(1) @ q) @ (R(4) @ k)).item(), 6))
+        assert all(round(v.item(), 6) == 0.47775 for v in dots)
+        assert round(((R(1) @ q) @ (R(4) @ k)).item(), 6) == -0.481099
+        """),
+        md("""
+        ## The chapter's own code cell, in float32
+
+        **DISCREPANCY (wording).** The text says the four scores are "bit-identical because the gap was
+        always 2". Mathematically they are equal; computed in float32 (as the chapter's `rot` does, via
+        `torch.tensor`) they agree to ~3×10⁻⁸ but are *not* bit-identical. The chapter's own assert
+        (`< 1e-6`) is the right test; "bit-identical" is not.
+        """),
+        code("""
+        def rot(v, m, theta=1.0):
+            a = m * theta
+            return torch.tensor([v[0]*math.cos(a) - v[1]*math.sin(a),
+                                 v[0]*math.sin(a) + v[1]*math.cos(a)])
+        q, k = torch.tensor([0.6, 0.8]), torch.tensor([1.0, 0.0])
+        vals = [torch.dot(rot(q, m), rot(k, n)).item() for m, n in [(0, 2), (1, 3), (5, 7), (10, 12)]]
+        print([f"{v:.10f}" for v in vals])
+        assert all(round(v, 6) == 0.47775 for v in vals)                  # the printed claim
+        assert abs(torch.dot(rot(q, 0), rot(k, 2)) - torch.dot(rot(q, 10), rot(k, 12))) < 1e-6
+        assert len(set(vals)) > 1                                         # ... but not bit-identical
+        """),
+        md("""
+        ## Exercise 7.2 — the relative-position property for the real implementation (d = 64)
+
+        **Minor wording.** The chapter expects the three offset-3 scores to "agree to ~6 decimal places".
+        In float32 with scores around ±6 they agree to ~6 *significant figures* (differences of ~1e-5);
+        six decimal places is beyond float32 at that magnitude. The offset-4 score differs in the first digit.
+        """),
+        code("""
+        torch.manual_seed(0)
+        d = 64
+        cos, sin = build_rope_cache(200, d)
+        q, k = torch.randn(1, 1, 1, d), torch.randn(1, 1, 1, d)
+        def score(m, n):
+            qm = q * cos[m] + rotate_half(q) * sin[m]
+            kn = k * cos[n] + rotate_half(k) * sin[n]
+            return (qm * kn).sum().item()
+        s = [score(5, 8), score(50, 53), score(100, 103)]
+        print(s, score(5, 9))
+        assert max(s) - min(s) < 1e-4 * max(1.0, abs(s[0]))               # agree to ~6 significant digits
+        assert abs(score(5, 9) - s[0]) > 1e-3                              # offset 4 is different
+        # apply_rope on (B, nh, T, hd) does the same thing at every position
+        qq, kk = apply_rope(q.expand(1, 1, 200, d), k.expand(1, 1, 200, d), cos, sin)
+        assert abs((qq[0, 0, 5] * kk[0, 0, 8]).sum().item() - s[0]) < 1e-5
+        """),
+        md("""
+        ## 7.4 — two conventions, both correct: half-split (Llama/HF) vs adjacent pairs (the paper)
+
+        They differ by a fixed permutation of the feature axis, so one equals the other in a permuted
+        basis — and they are not interchangeable on the same weights.
+        """),
+        code("""
+        def rope_adjacent(x, pos, base=10000.0):
+            d = x.shape[-1]
+            inv = 1.0 / base ** (torch.arange(0, d, 2).float() / d)
+            a = pos[:, None].float() * inv                               # (T, d/2)
+            x1, x2 = x[..., 0::2], x[..., 1::2]
+            out = torch.empty_like(x)
+            out[..., 0::2] = x1 * a.cos() - x2 * a.sin()
+            out[..., 1::2] = x1 * a.sin() + x2 * a.cos()
+            return out
+        d, T = 16, 10
+        x = torch.randn(T, d)
+        cos, sin = build_rope_cache(T, d)
+        half = x * cos + rotate_half(x) * sin
+        P = torch.cat([torch.arange(0, d, 2), torch.arange(1, d, 2)])     # adjacent -> half-split layout
+        inv = torch.argsort(P)
+        assert torch.allclose(rope_adjacent(x[:, inv], torch.arange(T))[:, P], half, atol=1e-6)   # equivalent
+        assert not torch.allclose(rope_adjacent(x, torch.arange(T)), half, atol=1e-3)            # not interchangeable
+        print("half-split RoPE == adjacent-pair RoPE in the permuted basis; on the same weights they differ")
+        """),
+        md("""
+        ## 7.5 — ALiBi: a per-head linear distance penalty with geometric slopes
+        """),
+        code("""
+        n_head, T = 8, 6
+        slopes = torch.tensor([2 ** (-8 * (h + 1) / n_head) for h in range(n_head)])
+        print("slopes", slopes.tolist())
+        assert slopes[:3].tolist() == [0.5, 0.25, 0.125]                     # 1/2, 1/4, 1/8, ...
+        i, j = torch.arange(T)[:, None], torch.arange(T)[None, :]
+        bias = slopes[:, None, None] * (j - i)                                # (H, T, T)
+        assert (bias.masked_select((j <= i).expand(n_head, T, T)) <= 0).all()   # a penalty, never a bonus
+        assert torch.equal(bias[:, 3, 1], bias[:, 5, 3])                      # depends only on j - i
+        """),
+        md("""
+        ## Exercise 7.3 — the RoPE wavelength spectrum at d_head = 128, base 10,000 vs 500,000
+        """),
+        code("""
+        d = 128
+        for base, want_long, want_n in ((10_000, 5.4e4, 18), (500_000, 2.6e6, 32)):
+            wl = [2 * math.pi * base ** (2 * i / d) for i in range(d // 2)]
+            n_long = sum(w > 4096 for w in wl)
+            cut = (d / 2) * math.log(4096 / (2 * math.pi)) / math.log(base)     # the closed form
+            print(f"base {base:>7,}: shortest {wl[0]:.2f}, longest {wl[-1]:.3g} tokens, "
+                  f"{n_long}/64 pairs longer than 4096 (closed form: i > {cut:.2f})")
+            assert round(wl[0], 2) == 6.28 and round(wl[-1], -int(math.log10(want_long)) + 1) == want_long
+            assert n_long == want_n == sum(i > cut for i in range(d // 2))
+        """),
+    ]
+
+
+@notebook("08_the_block")
+def _nb08():
+    return [
+        md("""
+        # Chapter 8 — The Transformer Block
+
+        Every number in Chapter 8, recomputed with `tfs/model.py` (`RMSNorm`, `SwiGLU`, `Block`,
+        `Config.n_params`). Each cell **asserts** what it checks, so `python tests/run_notebooks.py 08`
+        fails if the chapter and the code disagree. Exercise 8.4 needs GPT-2's weights and is not
+        reproduced.
+        """),
+        code(SETUP + "from tfs.model import Config, Model, RMSNorm, SwiGLU\n"),
+        md("""
+        ## 8.2 — the worked example: LayerNorm and RMSNorm on x = [3, 1, 4, 8]
+
+        **DISCREPANCY (typo).** The chapter's code-cell comment prints the RMSNorm output as
+        `[ 0.633, 0.211, 0.843, 1.687]`; the prose above it (correctly) says `0.632`.
+        3 / √22.5 = 0.63246, which rounds to 0.632 with or without the 1e-5 epsilon.
+        """),
+        code("""
+        x = torch.tensor([3., 1., 4., 8.])
+        mu, var = x.mean(), x.var(unbiased=False)
+        assert mu.item() == 4 and var.item() == 6.5 and round(var.sqrt().item(), 4) == 2.5495
+        ln = (x - mu) / torch.sqrt(var + 1e-5)
+        ms = x.pow(2).mean()
+        assert ms.item() == 22.5 and round(ms.sqrt().item(), 4) == 4.7434
+        rms = x * torch.rsqrt(ms + 1e-5)
+        r3 = lambda t: [round(v, 3) for v in t.tolist()]
+        print("LN ", r3(ln), "  RMS", r3(rms))
+        assert r3(ln) == [-0.392, -1.177, 0.0, 1.569]
+        assert r3(rms) == [0.632, 0.211, 0.843, 1.687]                               # not 0.633
+        assert abs(ln.mean()) < 1e-6 and abs(ln.std(unbiased=False) - 1) < 1e-4
+        assert round(rms.mean().item(), 3) == 0.843 and abs(rms.pow(2).mean().sqrt() - 1) < 1e-4
+        cos = F.cosine_similarity(ln, rms, dim=0).item()
+        print(f"cosine(LN, RMS) = {cos:.4f}")
+        assert round(cos, 2) == 0.54
+        # the module in tfs/model.py gives the same RMSNorm
+        assert torch.allclose(RMSNorm(4, eps=1e-5)(x), rms, atol=1e-6)
+        # shift every element: LayerNorm is unchanged, RMSNorm moves
+        ln2 = (x + 10 - (x + 10).mean()) / torch.sqrt((x + 10).var(unbiased=False) + 1e-5)
+        assert torch.allclose(ln, ln2, atol=1e-5) and not torch.allclose(RMSNorm(4)(x + 10), RMSNorm(4)(x), atol=1e-2)
+        """),
+        md("""
+        ## 8.2 — how close LN and RMSNorm are on realistic vectors (d = 768)
+
+        The chapter: median cosine 0.9997 over 2000 random zero-mean vectors, worst case 0.994, and 0.45
+        once the mean is pushed 2σ off zero (1/√5 = 0.447 analytically).
+        """),
+        code("""
+        torch.manual_seed(0)
+        def cos_ln_rms(v):
+            l = F.layer_norm(v, (v.shape[-1],), eps=1e-5)
+            r = v * torch.rsqrt(v.pow(2).mean(-1, keepdim=True) + 1e-5)
+            return F.cosine_similarity(l, r, dim=-1)
+        c = cos_ln_rms(torch.randn(2000, 768))
+        c_shift = cos_ln_rms(torch.randn(2000, 768) + 2.0)
+        print(f"median {c.median():.4f}  worst {c.min():.4f}  shifted by 2 sigma: {c_shift.median():.3f}")
+        assert round(c.median().item(), 4) == 0.9997 and 0.99 < c.min().item() < 0.999
+        assert round(c_shift.median().item(), 2) == 0.45 and abs(c_shift.median().item() - 1 / math.sqrt(5)) < 0.01
+        """),
+        md("""
+        ## 8.2 — LayerNorm ≠ BatchNorm: a token's output never depends on the rest of the batch
+        """),
+        code("""
+        torch.manual_seed(0)
+        a, others = torch.randn(1, 5, 32), torch.randn(7, 5, 32)
+        lnm = nn.LayerNorm(32)
+        assert torch.allclose(lnm(a), lnm(torch.cat([a, others]))[:1], atol=1e-6)
+        bn = nn.BatchNorm1d(32).train()
+        alone = bn(a.reshape(-1, 32))
+        assert not torch.allclose(alone, bn(torch.cat([a, others]).reshape(-1, 32))[:5], atol=1e-3)
+        """),
+        md("""
+        ## 8.2 — pre-LN never normalises the stream, so its magnitude grows with depth (hence a final norm)
+        """),
+        code("""
+        torch.manual_seed(0)
+        m = Model(Config(vocab_size=256, d_model=64, n_layer=8, n_head=4, n_kv_head=2, d_head=16, d_ff=128, max_T=64))
+        rms_by_layer = []
+        hooks = [b.register_forward_hook(lambda mod, i, o: rms_by_layer.append(o[0].pow(2).mean().sqrt().item()))
+                 for b in m.blocks]
+        m(torch.randint(0, 256, (4, 64)))
+        for h in hooks: h.remove()
+        print("stream RMS after each block:", [f"{v:.5f}" for v in rms_by_layer])
+        assert rms_by_layer == sorted(rms_by_layer) and rms_by_layer[-1] > rms_by_layer[0]
+        assert isinstance(m.norm, RMSNorm)                     # the final norm before the LM head
+        """),
+        md("## 8.3 — the MLP is a per-position function: changing other tokens cannot change its output"),
+        code("""
+        cfg = Config(vocab_size=256, d_model=64, n_layer=1, n_head=4, n_kv_head=2, d_head=16, d_ff=172, max_T=64)
+        mlp = SwiGLU(cfg)
+        h = torch.randn(1, 10, 64)
+        h2 = h.clone(); h2[0, 3:] = torch.randn(7, 64)
+        assert torch.allclose(mlp(h)[0, :3], mlp(h2)[0, :3])
+        """),
+        md("## 8.3 — two-thirds of the model is in the MLP: 12C² per layer, GPT-2 small, Llama-2-7B"),
+        code("""
+        C = 768
+        attn, mlp4 = 4 * C * C, 8 * C * C
+        assert mlp4 == 2 * attn and attn + mlp4 == 12 * C * C
+        body = 12 * 12 * C ** 2
+        print(f"GPT-2 small: 12*12*768^2 = {body / 1e6:.1f}M + 38.6M embedding = {(body + 50257 * 768) / 1e6:.1f}M")
+        assert round(body / 1e6) == 85 and round((body + 50257 * 768) / 1e6) == 124
+        llama = Config(vocab_size=32000, d_model=4096, n_layer=32, n_head=32, n_kv_head=32, d_head=128,
+                       d_ff=11008, tie_embed=False)
+        per = 3 * 4096 * 11008
+        print(f"Llama-2-7B: {llama.n_params():,} params; MLP {per / 1e6:.2f}M/layer x32 = {32 * per / 1e9:.2f}B"
+              f" = {32 * per / llama.n_params():.1%} (of 6.7B: {32 * per / 6.7e9:.1%})")
+        assert llama.n_params() == 6_738_415_616
+        assert round(per / 1e6, 2) == 135.27 and round(4096 * 11008 / 1e6, 2) == 45.09
+        assert round(32 * per / 1e9, 2) == 4.33 and round(100 * 32 * per / 6.7e9) == 65
+        assert 11008 / 4096 == 2.6875 and 11008 % 256 == 0
+        """),
+        md("## Exercise 8.3 — `swiglu_ff_dim`, and Llama-2-70B's 28672"),
+        code("""
+        def swiglu_ff_dim(d_model, multiple_of=256, ffn_dim_multiplier=None):
+            hidden = int(2 * 4 * d_model / 3)
+            if ffn_dim_multiplier is not None:
+                hidden = int(ffn_dim_multiplier * hidden)
+            return multiple_of * ((hidden + multiple_of - 1) // multiple_of)
+        print(swiglu_ff_dim(4096), swiglu_ff_dim(8192), swiglu_ff_dim(8192, 4096, 1.3))
+        assert swiglu_ff_dim(4096) == 11008 and swiglu_ff_dim(8192) == 22016
+        assert swiglu_ff_dim(8192, multiple_of=4096, ffn_dim_multiplier=1.3) == 28672   # Llama-2-70B's config
+        # parameter match: SwiGLU at (8/3)C has the parameters of a GELU MLP at 4C
+        assert abs(3 * 4096 * swiglu_ff_dim(4096) / (2 * 4096 * 4 * 4096) - 1) < 0.01
+        """),
+        md("""
+        ## Exercise 8.1 — both norms on a random (4, 128, 512) input, verified and timed
+
+        The chapter: cosine typically > 0.98; RMSNorm "usually 20–40% faster in a pure-Python benchmark".
+        The speed ratio depends heavily on the machine and on how `var` is implemented; on this CPU the
+        hand-written RMSNorm is several times faster than the hand-written LayerNorm, while PyTorch's
+        fused `nn.LayerNorm` beats both. The assert is only that the hand-written RMSNorm is faster.
+        """),
+        code("""
+        import time
+        class LayerNorm(nn.Module):
+            def __init__(self, d, eps=1e-5):
+                super().__init__()
+                self.g = nn.Parameter(torch.ones(d)); self.b = nn.Parameter(torch.zeros(d)); self.eps = eps
+            def forward(self, x):
+                mu = x.mean(-1, keepdim=True)
+                var = x.var(-1, keepdim=True, unbiased=False)
+                return (x - mu) / torch.sqrt(var + self.eps) * self.g + self.b
+        torch.manual_seed(0)
+        x = torch.randn(4, 128, 512)
+        mine, ref, rn = LayerNorm(512), nn.LayerNorm(512), RMSNorm(512)
+        with torch.no_grad():
+            assert torch.allclose(mine(x), ref(x), atol=1e-5)
+            lo, ro = mine(x), rn(x)
+            assert lo.mean(-1).abs().max() < 1e-5 and (lo.std(-1, unbiased=False) - 1).abs().max() < 1e-3
+            assert (ro.pow(2).mean(-1).sqrt() - 1).abs().max() < 1e-3
+            cs = F.cosine_similarity(lo, ro, dim=-1)
+            print(f"cosine LN vs RMS: min {cs.min():.4f}")
+            assert cs.min() > 0.98
+            def bench(f, reps=200):
+                for _ in range(5): f(x)
+                t = time.perf_counter()
+                for _ in range(reps): f(x)
+                return (time.perf_counter() - t) / reps
+            t_ln, t_rms = bench(mine), bench(lambda v: v * torch.rsqrt(v.pow(2).mean(-1, keepdim=True) + 1e-6))
+        print(f"hand-written LN {t_ln * 1e3:.2f} ms   hand-written RMS {t_rms * 1e3:.2f} ms   ({t_ln / t_rms:.1f}x)")
+        assert t_rms < t_ln
+        """),
+        md("""
+        ## Exercise 8.2 — pre-LN vs post-LN gradients across 24 layers
+
+        Built with PyTorch's standard `nn.TransformerEncoderLayer` (`norm_first=False` is post-LN,
+        `True` is pre-LN; LayerNorm, default init), one forward + backward on random data, gradient norm
+        of each layer's attention input projection.
+
+        **DISCREPANCY (magnitude).** The direction matches the chapter: post-LN gradients are largest at
+        the top and smaller at layer 0, pre-LN gradients are roughly flat. But the size of the effect is
+        ~5–10×, not "2–4 orders of magnitude". (With this course's own init — weights at std 0.02 and
+        un-normalised embeddings — a post-LN variant does show a ~10³ ratio, but only because layer 0
+        alone sees the tiny raw embedding; layers 1–23 are flat. That is an init artefact, not geometric
+        decay.) The well-known result (Xiong et al. 2020) is the direction; the "2–4 orders" figure
+        should be softened or re-measured.
+        """),
+        code("""
+        def grad_profile(norm_first, L=24, d=64):
+            torch.manual_seed(0)
+            layer = nn.TransformerEncoderLayer(d, 4, 4 * d, dropout=0.0, batch_first=True, norm_first=norm_first)
+            enc = nn.TransformerEncoder(layer, L, enable_nested_tensor=False)
+            out = enc(torch.randn(8, 32, d))
+            if norm_first:
+                out = F.layer_norm(out, (d,))                 # pre-LN needs its final norm
+            (out @ torch.randn(d)).pow(2).mean().backward()
+            return [l.self_attn.in_proj_weight.grad.norm().item() for l in enc.layers]
+        post, pre = grad_profile(False), grad_profile(True)
+        print("post-LN", " ".join(f"{v:.1e}" for v in post[::4]), f"  top/bottom {post[-1] / post[0]:.1f}x")
+        print("pre-LN ", " ".join(f"{v:.1e}" for v in pre[::4]), f"  top/bottom {pre[-1] / pre[0]:.1f}x")
+        assert post[-1] / post[0] > 2                          # post-LN: smaller at layer 0 ...
+        assert post[-1] / post[0] < 100                        # ... but not by 2-4 orders of magnitude
+        assert 0.3 < pre[-1] / pre[0] < 3                      # pre-LN: roughly flat
+        """),
+    ]
+
+
+@notebook("10_backprop")
+def _nb10():
+    return [
+        md("""
+        # Chapter 10 — The Backward Pass, Derived
+
+        Every hand-derived gradient in Chapter 10, checked against autograd, plus every worked number and
+        exercise answer. Each cell **asserts** what it checks, so `python tests/run_notebooks.py 10` fails
+        if the chapter and the code disagree. Float64 throughout unless a cell says otherwise, as the
+        chapter recommends.
+        """),
+        code(SETUP + "torch.set_default_dtype(torch.float64)\n"),
+        md("## 10.1 — matmul: the shapes force dA = dC Bᵀ and dB = Aᵀ dC"),
+        code("""
+        A = torch.randn(4, 3, requires_grad=True); Bm = torch.randn(3, 5, requires_grad=True)
+        Cm = A @ Bm; g = torch.randn_like(Cm)
+        Cm.backward(g)
+        assert A.grad.shape == A.shape == (4, 3) and Bm.grad.shape == (3, 5)
+        assert torch.allclose(A.grad, g @ Bm.detach().T) and torch.allclose(Bm.grad, A.detach().T @ g)
+        """),
+        md("## 10.2 — the softmax Jacobian at x = [1.0, 2.0, 0.5]"),
+        code("""
+        x = torch.tensor([1.0, 2.0, 0.5])
+        s = x.softmax(0)
+        J_auto = torch.autograd.functional.jacobian(lambda t: t.softmax(0), x)
+        J_formula = torch.diag(s) - torch.outer(s, s)
+        print("s =", [round(v, 4) for v in s.tolist()])
+        print(J_formula.numpy().round(4))
+        assert [round(v, 4) for v in s.tolist()] == [0.2312, 0.6285, 0.1402]
+        assert torch.allclose(J_auto, J_formula)
+        assert J_formula.numpy().round(4).tolist() == [[0.1778, -0.1453, -0.0324],
+                                                       [-0.1453, 0.2335, -0.0881],
+                                                       [-0.0324, -0.0881, 0.1206]]
+        assert torch.allclose(J_formula, J_formula.T) and torch.allclose(J_formula.sum(1), torch.zeros(3))
+        """),
+        md("## 10.2 — the vector-Jacobian product, which is what actually runs"),
+        code("""
+        def softmax_backward(s, g):
+            return s * (g - (g * s).sum(-1, keepdim=True))
+        x = torch.tensor([1.0, 2.0, 0.5], requires_grad=True)
+        s = x.softmax(0); g = torch.tensor([0.3, -1.2, 0.7])
+        s.backward(g)
+        assert torch.allclose(x.grad, softmax_backward(s.detach(), g), atol=1e-6)
+        assert torch.allclose(x.grad, J_formula.T @ g)                     # = J^T g, never forming J
+        """),
+        md("## 10.3 — cross-entropy + softmax collapses to p − y (logits [2.0, 1.0, 0.1], class 0)"),
+        code("""
+        z = torch.tensor([[2.0, 1.0, 0.1]], requires_grad=True)
+        F.cross_entropy(z, torch.tensor([0])).backward()
+        p = z.detach().softmax(-1)[0]
+        y = torch.tensor([1.0, 0, 0])
+        print("p", [round(v, 4) for v in p.tolist()], " p - y", [round(v, 4) for v in (p - y).tolist()])
+        assert [round(v, 4) for v in p.tolist()] == [0.659, 0.2424, 0.0986]
+        assert [round(v, 4) for v in (p - y).tolist()] == [-0.341, 0.2424, 0.0986]
+        assert torch.allclose(z.grad[0], p - y)
+        """),
+        md("## 10.4 — RMSNorm's correction term, at x = [3, 1, 4, 8], g = [1, 0, 0, 0]"),
+        code("""
+        def rmsnorm_backward(x, g, gamma, eps=0.0):
+            d = x.shape[-1]
+            r = x.pow(2).mean(-1, keepdim=True).add(eps).sqrt()
+            gg = g * gamma
+            return (gg - x * (gg * x).sum(-1, keepdim=True) / (d * r ** 2)) / r
+        x = torch.tensor([3., 1., 4., 8.], requires_grad=True)
+        gamma = torch.ones(4); g = torch.tensor([1., 0., 0., 0.])
+        (x / x.pow(2).mean().sqrt() * gamma).backward(g)
+        print("autograd", [round(v, 6) for v in x.grad.tolist()])
+        assert round(x.pow(2).mean().sqrt().item(), 4) == 4.7434
+        assert [round(v, 6) for v in x.grad.tolist()] == [0.189737, -0.007027, -0.028109, -0.056218]
+        assert torch.allclose(x.grad, rmsnorm_backward(x.detach(), g, gamma), atol=1e-12)
+        print("dot(grad, x) =", torch.dot(x.grad, x.detach()).item())
+        assert abs(torch.dot(x.grad, x.detach())) < 1e-12                   # orthogonal to x
+        # and the same holds for the float32 module in tfs/model.py, with a learned gamma
+        from tfs.model import RMSNorm
+        xr = torch.randn(5, 16, dtype=torch.float32, requires_grad=True)
+        nrm = RMSNorm(16, eps=0.0).float()
+        with torch.no_grad(): nrm.g.uniform_(0.5, 1.5)
+        gr = torch.randn(5, 16, dtype=torch.float32)
+        nrm(xr).backward(gr)
+        assert torch.allclose(xr.grad, rmsnorm_backward(xr.detach(), gr, nrm.g.detach()), atol=1e-5)
+        """),
+        md("## 10.5 — attention backward: dQ, dK, dV against autograd (T = 4, d = 3)"),
+        code("""
+        def attention_backward(q, k, v, P, dO):
+            dk_ = q.shape[-1]
+            dV = P.transpose(-2, -1) @ dO
+            dP = dO @ v.transpose(-2, -1)
+            dS = P * (dP - (dP * P).sum(-1, keepdim=True))
+            dQ = dS @ k / dk_ ** 0.5
+            dK = dS.transpose(-2, -1) @ q / dk_ ** 0.5
+            return dQ, dK, dV
+        torch.manual_seed(0)
+        q, k, v = (torch.randn(4, 3, requires_grad=True) for _ in range(3))
+        P = (q @ k.T / 3 ** 0.5).softmax(-1)
+        O = P @ v
+        dO = torch.randn_like(O)
+        O.backward(dO)
+        mine = attention_backward(q.detach(), k.detach(), v.detach(), P.detach(), dO)
+        for auto, man in zip((q.grad, k.grad, v.grad), mine):
+            assert torch.allclose(auto, man, atol=1e-5)
+        print("dQ, dK, dV all match autograd")
+        """),
+        md("## 10.6 — the residual connection over depth: 0.9ᴸ, and 1 + f′"),
+        code("""
+        for L, want, weaker in ((20, 0.1216, 8), (50, 0.0052, 190), (100, 0.0000266, 37_600)):
+            print(f"{L:3d} layers: 0.9^{L} = {0.9 ** L:.7f}  ({1 / 0.9 ** L:,.0f}x weaker)")
+            assert round(0.9 ** L, 7 if L == 100 else 4) == want
+            assert abs(1 / 0.9 ** L - weaker) / weaker < 0.03            # 8x, ~190x, ~37,600x
+        x = torch.tensor(2.0, requires_grad=True)
+        (x + 0.3 * x ** 2).backward()
+        assert abs(x.grad.item() - 2.2) < 1e-12                           # 1 + f'(2) = 1 + 1.2
+        """),
+        md("## Exercise 10.1 — the chapter's `check` harness on every layer, including a linear layer"),
+        code("""
+        def check(fn_forward, manual_backward, *inputs):
+            ins = [t.clone().requires_grad_(True) for t in inputs]
+            out = fn_forward(*ins)
+            g = torch.randn_like(out)
+            out.backward(g)
+            mine = manual_backward(*[t.detach() for t in inputs], g)
+            for auto, man in zip([t.grad for t in ins], mine):
+                assert torch.allclose(auto, man, atol=1e-5), (auto, man)
+            return "ok"
+        torch.manual_seed(0)
+        X, W, b = torch.randn(6, 5), torch.randn(5, 4), torch.randn(4)
+        assert check(lambda x, w, b: x @ w + b, lambda x, w, b, g: (g @ w.T, x.T @ g, g.sum(0)), X, W, b) == "ok"
+        assert check(lambda x: x.softmax(-1), lambda x, g: (softmax_backward(x.softmax(-1), g),), torch.randn(3, 7)) == "ok"
+        ga = torch.rand(8) + 0.5
+        assert check(lambda x: x / x.pow(2).mean(-1, keepdim=True).sqrt() * ga,
+                     lambda x, g: (rmsnorm_backward(x, g, ga),), torch.randn(3, 8)) == "ok"
+        def attn_fwd(q, k, v):
+            return (q @ k.transpose(-2, -1) / q.shape[-1] ** 0.5).softmax(-1) @ v
+        def attn_bwd(q, k, v, g):
+            P = (q @ k.transpose(-2, -1) / q.shape[-1] ** 0.5).softmax(-1)
+            return attention_backward(q, k, v, P, g)
+        assert check(attn_fwd, attn_bwd, *(torch.randn(2, 6, 4) for _ in range(3))) == "ok"
+        print("linear, softmax, RMSNorm, attention: ok")
+        """),
+        md("""
+        ## Exercise 10.2 — gradient checking with central differences
+
+        **Minor correction.** The chapter says forward differences give ~1e-6 error and central
+        differences ~1e-12 at ε = 1e-6. The truncation errors are O(ε) and O(ε²), as stated, but in
+        float64 the central difference is limited by rounding, ~machine-ε/ε ≈ 1e-10: measured below it
+        lands at ~1e-11 to 1e-10, not 1e-12. Still four orders better than the forward difference, which
+        is the point. In float32 the same check is useless, as the chapter warns.
+        """),
+        code("""
+        def grad_check(f, x, eps=1e-6, dtype=torch.float64):
+            x = x.to(dtype)
+            num = torch.zeros_like(x)
+            for i in range(x.numel()):
+                xp, xm = x.clone(), x.clone()
+                xp.view(-1)[i] += eps; xm.view(-1)[i] -= eps
+                num.view(-1)[i] = (f(xp) - f(xm)) / (2 * eps)
+            xa = x.clone().requires_grad_(True); f(xa).backward()
+            return ((num - xa.grad).norm() / (num.norm() + xa.grad.norm())).item()
+        torch.manual_seed(0)
+        loss = lambda t: (t.softmax(-1) * torch.arange(6.0, dtype=t.dtype)).sum() + t.pow(2).mean().sqrt()
+        rel64 = grad_check(loss, torch.randn(6))
+        rel32 = grad_check(loss, torch.randn(6), eps=1e-3, dtype=torch.float32)
+        print(f"relative error: float64 {rel64:.1e}   float32 {rel32:.1e}")
+        assert rel64 < 1e-7 and rel32 > 1e-5
+        x1 = torch.tensor(1.0)
+        fwd = ((torch.sin(x1 + 1e-6) - torch.sin(x1)) / 1e-6 - math.cos(1)).abs().item()
+        cen = ((torch.sin(x1 + 1e-6) - torch.sin(x1 - 1e-6)) / 2e-6 - math.cos(1)).abs().item()
+        print(f"d sin/dx at 1: forward-difference error {fwd:.1e}, central {cen:.1e}")
+        assert 1e-7 < fwd < 1e-5 and cen < 1e-9 and fwd / cen > 1e3
+        """),
+        md("""
+        ## Exercise 10.3 — a 40-layer tanh stack, with and without the residual
+
+        Gradient of the loss with respect to each layer's input (the signal backprop carries).
+
+        **DISCREPANCY (init-dependent figure).** The chapter expects "4–6 orders of magnitude between
+        layer 40 and layer 1" without residuals. The size depends entirely on the weight scale, which the
+        exercise does not fix: with PyTorch's default `nn.Linear` init (std ≈ 1/√(3d)) the decay is
+        ~10 orders of magnitude; with std = 1/√d it is barely one. The qualitative result holds either way:
+        geometric decay without the residual, and with it the gradient does not decay at all (it grows a
+        little toward layer 1).
+        """),
+        code("""
+        def profile(residual, std=None, d=64, L=40):
+            torch.manual_seed(0)
+            Ws = [nn.Linear(d, d, bias=False) for _ in range(L)]
+            if std is not None:
+                for W in Ws: nn.init.normal_(W.weight, 0, std)
+            h = torch.randn(32, d, requires_grad=True); hs = []
+            for W in Ws:
+                hs.append(h); h.retain_grad()
+                h = h + torch.tanh(W(h)) if residual else torch.tanh(W(h))
+            (h @ torch.randn(d)).sum().backward()
+            return [t.grad.norm().item() for t in hs]                      # layer 1 ... layer 40
+        for name, std in (("default init", None), ("std 1/sqrt(d)", 1 / 8)):
+            plain, res = profile(False, std), profile(True, std)
+            orders = math.log10(plain[-1] / plain[0])
+            print(f"{name:14}: no residual, layer40/layer1 = 10^{orders:.1f};  residual: {res[0] / res[-1]:.1f}x")
+            assert res[0] >= res[-1]                                        # residual: no vanishing
+            if std is None:
+                assert orders > 6                                           # more than the chapter's 4-6
+            else:
+                assert orders < 4                                           # less than the chapter's 4-6
+        """),
+        md("""
+        ## Exercise 10.4 — break cross-entropy on purpose
+
+        `a` (logits) and `c` (`log(softmax)` then `nll_loss`) agree; `b` softmaxes twice. At ×50 the small
+        probabilities underflow to exactly 0, so `c` hits log(0) = −inf, while the fused `a` stays finite.
+        """),
+        code("""
+        torch.set_default_dtype(torch.float32)              # the failure is a float32 one
+        torch.manual_seed(0)
+        logits = torch.randn(4, 10, requires_grad=True)
+        target = torch.randint(0, 10, (4,))
+        def loss_and_grad(fn):
+            if logits.grad is not None: logits.grad = None
+            out = fn(); out.backward()
+            return out.item(), logits.grad.clone()
+        a, ga = loss_and_grad(lambda: F.cross_entropy(logits, target))
+        b, gb = loss_and_grad(lambda: F.cross_entropy(logits.softmax(-1), target))
+        c, gc = loss_and_grad(lambda: F.nll_loss(logits.softmax(-1).log(), target))
+        print(f"a {a:.4f}  b {b:.4f}  c {c:.4f};  |grad a - grad b| = {(ga - gb).norm():.3f}")
+        assert abs(a - c) < 1e-5 and torch.allclose(ga, gc, atol=1e-6)
+        assert abs(a - b) > 0.1 and (ga - gb).norm() > 0.1
+        assert b > math.log(10) - 0.2 * math.log(10)                       # double softmax: nearly uniform
+        big = (logits.detach() * 50).requires_grad_(True)
+        t_low = big.argmin(-1)                                              # targets whose probability underflows
+        a50 = F.cross_entropy(big, t_low)
+        c50 = F.nll_loss(big.softmax(-1).log(), t_low)
+        print(f"x50: a = {a50.item():.1f}   c = {c50.item()}   zeros in softmax: {(big.softmax(-1) == 0).sum().item()}")
+        assert (big.softmax(-1) == 0).any() and math.isinf(c50.item()) and math.isfinite(a50.item())
+        """),
+    ]
+
+
+@notebook("11_training")
+def _nb11():
+    return [
+        md("""
+        # Chapter 11 — Training a Transformer
+
+        Every number, table and worked example in Chapter 11, recomputed with `tfs/train.py` and
+        `tfs/model.py`. Each cell **asserts** what it checks, so `python tests/run_notebooks.py 11` fails if
+        the chapter and the code disagree.
+
+        The Tiny Shakespeare runs in Exercise 11.1 take ~14 CPU-minutes and a download, so their *table* is
+        checked for internal consistency (every bits-per-byte figure, every ratio, the parameter count) and
+        the experiments that matter — the double-shift bug, gradient accumulation, the planted bugs — run on
+        a tiny model and the bundled offline corpus (`tfs.train._fallback_corpus`) in seconds: a small
+        analogue with the same shape of result.
+        """),
+        code(SETUP, """
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+        from tfs.model import Config, Model
+        from tfs.train import lr_at, make_optimizer, bits_per_byte, get_batch, _fallback_corpus
+        from tfs.tokenizer import CharTokenizer
+        text = _fallback_corpus()[:80000]
+        ctok = CharTokenizer(text)
+        data = torch.tensor(ctok.encode(text))
+        def tiny(seed=0, **kw):
+            torch.manual_seed(seed)
+            c = dict(vocab_size=ctok.vocab_size, d_model=48, n_layer=2, n_head=4, n_kv_head=2, d_head=12,
+                     d_ff=128, max_T=128)
+            c.update(kw)
+            return Model(Config(**c))
+        """),
+        md("## 11.1 — reading the number: loss → perplexity"),
+        code("""
+        table = {10.37: 32_000, 6.0: 403, 4.0: 55, 3.0: 20, 2.0: 7.4, 1.5: 4.5}
+        for loss, ppl in table.items():
+            print(f"loss {loss:5.2f} -> perplexity {math.exp(loss):9,.1f}   (table: {ppl:,})")
+            assert abs(math.exp(loss) - ppl) / ppl < 0.01                     # within rounding
+        assert (round(math.exp(1.51), 1), round(math.exp(2.0), 1), round(math.exp(4.36), 1)) == (4.5, 7.4, 78.3)
+        assert round(math.exp(10.37)) == 31_888                                 # the worked example
+        """),
+        md("""
+        ## 11.1 — loss → bits per byte, and step 0 = ln V
+
+        `tfs.train.bits_per_byte` is the formula the chapter gives. The untrained model really does start
+        at ln V (here V = the bundled corpus's character set).
+
+        **DISCREPANCY (rounding).** The worked example's step 3 says ln(32000) = 10.374. It is 10.37349,
+        i.e. **10.373** to three places (10.37 to two, as the table above has it).
+        """),
+        code("""
+        rows = [("char run (V=65)", 1.51, 1.00, 2.178), ("BPE run (V=2048)", 4.36, 3.29, 1.912),
+                ("good modern LLM", 2.00, 4.00, 0.721)]
+        for name, loss, bpt, want in rows:
+            got = bits_per_byte(loss, bpt)
+            print(f"{name:18} loss {loss:.2f}  {bpt:.2f} B/tok -> {got:.3f} bpb")
+            assert round(got, 3) == want
+        assert round(4.36 / 1.51, 1) == 2.9                                # 2.9x the loss, better model
+        for V, want in ((65, 4.174), (32000, 10.373), (50257, 10.825)):     # chapter: 10.374
+            assert round(math.log(V), 3) == want
+        m = tiny()
+        x = get_batch(data, 16, 64)
+        with torch.no_grad():
+            _, l0, _ = m(x, targets=x)
+        print(f"untrained loss {l0.item():.3f} vs ln({ctok.vocab_size}) = {math.log(ctok.vocab_size):.3f}")
+        assert abs(l0.item() - math.log(ctok.vocab_size)) < 0.1
+        """),
+        md("""
+        ## 11.1 — "loss is not comparable across tokenizers"
+
+        **DISCREPANCY.** The box says a character-level model at loss 1.5 and a BPE-2048 model at loss 5.8
+        "can be the same quality — the BPE token is worth ~3.3 characters". By the chapter's own bpb
+        formula they are not: 1.5 nats/char is 2.16 bpb, while 5.8 nats per 3.3-byte token is 2.54 bpb
+        (17% worse). Equal quality at 3.3 bytes/token is a BPE loss of 1.5 × 3.3 ≈ **4.95**.
+        """),
+        code("""
+        char_bpb, bpe_bpb = bits_per_byte(1.5, 1.0), bits_per_byte(5.8, 3.3)
+        print(f"char 1.5 -> {char_bpb:.2f} bpb;  BPE 5.8 at 3.3 B/tok -> {bpe_bpb:.2f} bpb;  equal at {1.5 * 3.3:.2f}")
+        assert round(char_bpb, 2) == 2.16 and round(bpe_bpb, 2) == 2.54
+        assert abs(bits_per_byte(1.5 * 3.3, 3.3) - char_bpb) < 1e-12
+        """),
+        md("""
+        ## 11.2 — what the W in AdamW fixes
+
+        With L2 in the loss, the decay term λθ is divided by √v̂ with everything else, so a parameter with
+        large gradients is barely regularised. AdamW applies lr·λ·θ outside the adaptive step, the same for
+        every parameter. Two parameters, both at 1.0, gradient scales 0.01 and 10:
+        """),
+        code("""
+        def shrink(decoupled, g_scale, steps=200, lam=0.1, lr=1e-2):
+            def run(lam_):
+                w = torch.ones(1, requires_grad=True)
+                if decoupled:
+                    opt = torch.optim.AdamW([w], lr=lr, weight_decay=lam_)
+                else:
+                    opt = torch.optim.Adam([w], lr=lr, weight_decay=lam_)       # Adam's weight_decay IS L2
+                torch.manual_seed(0)
+                for _ in range(steps):
+                    opt.zero_grad()
+                    (w * g_scale * torch.randn(1)).sum().backward()
+                    opt.step()
+                return w.item()
+            return run(0.0) - run(lam)                                         # how far decay moved it
+        for g in (0.01, 10.0):
+            print(f"grad scale {g:5}: L2 shrink {shrink(False, g):.4f}   AdamW shrink {shrink(True, g):.4f}")
+        assert shrink(False, 0.01) > 50 * shrink(False, 10.0)                  # L2: big grads, ~no decay
+        assert abs(shrink(True, 0.01) - shrink(True, 10.0)) < 0.2 * shrink(True, 10.0)   # AdamW: the same
+        """),
+        md("## 11.2 — the parameter grouping, and the cost of Adam"),
+        code("""
+        m = tiny()
+        opt = make_optimizer(m, 3e-4)
+        decay, no_decay = opt.param_groups
+        assert decay["weight_decay"] == 0.1 and no_decay["weight_decay"] == 0.0
+        assert all(p.ndim >= 2 for p in decay["params"]) and all(p.ndim < 2 for p in no_decay["params"])
+        assert any(p is m.norm.g for p in no_decay["params"])                  # norm gains never decayed
+        assert opt.defaults["betas"] == (0.9, 0.95)
+        P = 7e9
+        print(f"7B: Adam m+v {8 * P / 1e9:.0f} GB, fp32 master {4 * P / 1e9:.0f} GB, fp32 grads {4 * P / 1e9:.0f} GB")
+        assert (8 * P, 4 * P) == (56e9, 28e9)
+        for b2, window in ((0.95, 20), (0.999, 1000)):
+            assert round(1 / (1 - b2)) == window                               # averaging window ~ 1/(1-beta2)
+        """),
+        md("## 11.3 — warmup + cosine: the chapter's `lr_at` and `tfs.train.lr_at` agree"),
+        code("""
+        def lr_at_ch(step, base_lr, warmup=2000, total=100_000, min_ratio=0.1):
+            if step < warmup:
+                return base_lr * (step + 1) / warmup
+            if step > total:
+                return base_lr * min_ratio
+            p = (step - warmup) / (total - warmup)
+            return base_lr * (min_ratio + (1 - min_ratio) * 0.5 * (1 + math.cos(math.pi * p)))
+        for s in (0, 999, 1999, 2000, 30_000, 51_000, 99_999, 100_000, 150_000):
+            assert abs(lr_at_ch(s, 6e-4) - lr_at(s, 6e-4, 2000, 100_000)) < 1e-15, s
+        assert lr_at(1999, 6e-4, 2000, 100_000) == 6e-4                          # warmup ends at base
+        assert abs(lr_at(51_000, 6e-4, 2000, 100_000) - 0.55 * 6e-4) < 1e-12      # halfway: (0.1+1)/2
+        assert lr_at(10**6, 6e-4, 2000, 100_000) == 6e-4 * 0.1                    # floor
+        """),
+        md("""
+        ## 11.4 — gradient accumulation: divide by ACC_STEPS, step once
+
+        Averaged micro-batch losses give exactly the full-batch gradient. Not dividing gives 8× the
+        gradient; zeroing inside the loop keeps only the last micro-batch.
+        """),
+        code("""
+        m = tiny()
+        torch.manual_seed(1)
+        xs = [get_batch(data, 4, 64) for _ in range(8)]
+        def grads(mode):
+            m.zero_grad(set_to_none=True)
+            if mode == "full":
+                _, l, _ = m(torch.cat(xs), targets=torch.cat(xs)); l.backward()
+            for x in xs if mode != "full" else []:
+                if mode == "zero_inside": m.zero_grad(set_to_none=True)
+                _, l, _ = m(x, targets=x)
+                (l / 8 if mode in ("divided", "zero_inside") else l).backward()
+            return torch.cat([p.grad.flatten() for p in m.parameters()])
+        full, div, undiv, last = grads("full"), grads("divided"), grads("undivided"), grads("zero_inside")
+        assert torch.allclose(div, full, atol=1e-6)
+        assert torch.allclose(undiv, 8 * full, atol=1e-5)
+        assert not torch.allclose(last, full, atol=1e-3)
+        assert 512 // 8 == 64                                                   # quiz: 64 micro-batches of 8
+        print("divided == full batch;  undivided == 8x;  zero_grad inside the loop == one micro-batch")
+        """),
+        md("""
+        ## 11.4 — what "forgot to divide by ACC_STEPS" does to the run
+
+        **DISCREPANCY.** The chapter says forgetting the division makes "your effective learning rate 8×
+        larger … and it diverges" (and the quiz: "a 64× larger effective learning rate"). That is true for
+        SGD. It is not true for Adam/AdamW, which the chapter uses: Adam's step m̂/(√v̂ + ε) is invariant to
+        a constant scale on the gradient, so the 8× gradient produces (up to ε) the *same* trajectory. And
+        with `clip_grad_norm_(…, 1.0)` in the loop, as in §11.4, the norm is clipped anyway. The bug matters
+        for SGD, for code that logs the loss, and for clipping thresholds — not as an 8× LR under AdamW.
+        """),
+        code("""
+        def accumulate_run(divide, opt_name, steps=8, ACC=4):
+            m = tiny()
+            opt = (torch.optim.AdamW(m.parameters(), lr=3e-3, weight_decay=0.0) if opt_name == "adamw"
+                   else torch.optim.SGD(m.parameters(), lr=0.5))
+            g = torch.Generator().manual_seed(1)
+            for _ in range(steps):
+                opt.zero_grad()
+                for _ in range(ACC):
+                    ix = torch.randint(len(data) - 65, (4,), generator=g)
+                    x = torch.stack([data[i:i + 64] for i in ix])
+                    _, l, _ = m(x, targets=x)
+                    (l / ACC if divide else l).backward()
+                opt.step()
+            return torch.cat([p.detach().flatten() for p in m.parameters()])
+        start = torch.cat([p.detach().flatten() for p in tiny().parameters()])
+        a, b = accumulate_run(True, "adamw"), accumulate_run(False, "adamw")
+        rel = ((a - b).norm() / (a - start).norm()).item()
+        print(f"AdamW: forgetting the division changes the trajectory by {rel:.1e} (relative)")
+        assert rel < 0.02
+        s1, s2 = accumulate_run(True, "sgd"), accumulate_run(False, "sgd")
+        ratio = ((s2 - start).norm() / (s1 - start).norm()).item()
+        print(f"SGD:   forgetting the division moves the weights {ratio:.1f}x as far (or diverges)")
+        assert not torch.isfinite(s2).all() or ratio > 2
+        """),
+        md("""
+        ## 11.5 — packing: `tfs.train.get_batch` returns one tensor
+
+        The chapter's §11.5 `get_batch` returns a pre-shifted `(x, y)` pair (the nanoGPT convention, for
+        a model that does *not* shift). `tfs.train.get_batch` returns one `(B, T)` tensor because
+        `Model.forward` shifts internally. Mixing the two conventions is exactly the §11.6 double-shift bug.
+        """),
+        code("""
+        x = get_batch(data, 3, 32)
+        assert x.shape == (3, 32) and x.dtype == torch.long
+        starts = [next(i for i in range(len(data) - 32) if torch.equal(data[i:i + 32], r)) for r in x]
+        assert all(torch.equal(data[s:s + 32], r) for s, r in zip(starts, x))     # contiguous slices, no padding
+        """),
+        md("""
+        ## 11.6 — the case study: labels shifted twice, and the memorisation test that catches it
+
+        The chapter's line from Shakespeare, memorised by a tiny model two ways: with the correct targets,
+        and with a pre-shifted `y` passed to a `forward` that shifts again. The buggy run's training loss is
+        just as low (the chapter measured it *lower*); only greedy generation exposes it.
+        """),
+        code("""
+        line = "First Citizen:\\nBefore we proceed any further, hear me speak.\\n\\n"
+        mt = CharTokenizer(line)
+        ld = torch.tensor(mt.encode(line * 6))
+        def memorise(double_shift, steps=150):
+            torch.manual_seed(0)
+            m = Model(Config(vocab_size=mt.vocab_size, d_model=64, n_layer=2, n_head=4, n_kv_head=2,
+                             d_head=16, d_ff=128, max_T=128))
+            opt = torch.optim.AdamW(m.parameters(), lr=3e-3)
+            for _ in range(steps):
+                ix = torch.randint(len(ld) - 66, (8,))
+                x = torch.stack([ld[i:i + 64] for i in ix])
+                y = torch.stack([ld[i + 1:i + 65] for i in ix]) if double_shift else x
+                _, loss, _ = m(x, targets=y)
+                opt.zero_grad(); loss.backward(); opt.step()
+            return m, loss.item()
+        P, N = 15, len(line) - 15
+        prompt = ld[:P][None]
+        for bug in (False, True):
+            m, loss = memorise(bug)
+            out = m.generate(prompt.clone(), N, temperature=0)[0, P:].tolist()
+            acc = sum(a == b for a, b in zip(out, ld[P:P + N].tolist())) / N
+            print(f"double_shift={bug!s:5}  train loss {loss:.4f}  chars correct {acc:4.0%}  {mt.decode(out)[:40]!r}")
+            if not bug:
+                good_loss, good_acc = loss, acc
+            else:
+                bad_loss, bad_acc, bad_model = loss, acc, m
+        assert good_acc == 1.0 and bad_acc < 0.5                        # generation exposes it ...
+        assert good_loss < 0.1 and bad_loss < 0.1                        # ... the loss curve does not
+        # the tell: teacher-forced, the buggy model's prediction at t is token t+2 (off by exactly one)
+        with torch.no_grad():
+            lg, _, _ = bad_model(ld[None, :64])
+        pred = lg[0].argmax(-1)
+        assert (pred[:-2] == ld[2:64]).float().mean() > 0.9 and (pred[:-1] == ld[1:64]).float().mean() < 0.5
+        """),
+        md("""
+        ## 11.6 — the overfit-one-batch test: loss must go to near zero
+        """),
+        code("""
+        m = tiny()
+        opt = torch.optim.AdamW(m.parameters(), lr=3e-3)
+        torch.manual_seed(2)
+        xb = get_batch(data, 8, 64)
+        for step in range(300):
+            _, loss, _ = m(xb, targets=xb)
+            opt.zero_grad(); loss.backward(); opt.step()
+        print(f"same batch, 300 steps: loss {loss.item():.4f}")
+        assert loss.item() < 0.1
+        """),
+        md("""
+        ## Exercise 11.1 — the measured table, checked for internal consistency
+
+        These are the chapter's own measurements (not re-run here). Every bits-per-byte figure must equal
+        val / ln 2 for the character run and val / (ln 2 · 3.29) for the BPE run, and the model size must
+        match the command's configuration (`tfs/train.py` builds `d_ff = 512` for `d_model = 192`).
+        Tiny Shakespeare is 1,115,394 characters; `make_dataset` trains on 90% of it.
+        """),
+        code("""
+        measured = {0: (4.242, 4.227, 6.10), 250: (1.734, 1.885, 2.72), 500: (1.459, 1.679, 2.42),
+                    1000: (1.321, 1.553, 2.24), 1250: (1.275, 1.512, 2.18), 1500: (1.221, 1.513, 2.18),
+                    2000: (1.089, 1.529, 2.21)}
+        for step, (tr, va, bpb) in measured.items():
+            assert round(bits_per_byte(va, 1.0), 2) == bpb, step
+        assert min(measured, key=lambda s: measured[s][1]) == 1250            # the best step
+        d = 192
+        cfg = Config(vocab_size=65, d_model=d, n_layer=6, n_head=6, n_kv_head=2, d_head=d // 6,
+                     d_ff=256 * round(int(8 * d / 3) / 256) or 256, max_T=256)
+        n = cfg.n_params()
+        print(f"model {n:,} params ({n / 1e6:.1f} M); tokens/param {0.9 * 1_115_394 / n:.2f}; "
+              f"nanoGPT 10.65 M is {10.65e6 / n:.1f}x larger")
+        assert cfg.d_ff == 512 and round(n / 1e6, 1) == 2.4
+        assert round(0.9 * 1_115_394 / n, 2) == 0.42 and round(10.65e6 / n, 1) == 4.5
+        char_bpb, bpe_bpb = bits_per_byte(1.512, 1.00), bits_per_byte(4.362, 3.29)
+        print(f"char {char_bpb:.2f} bpb, BPE {bpe_bpb:.2f} bpb: BPE loss {4.362 / 1.512:.1f}x larger, "
+              f"{1 - bpe_bpb / char_bpb:.0%} better")
+        assert (round(char_bpb, 2), round(bpe_bpb, 2)) == (2.18, 1.91)
+        assert round(4.362 / 1.512, 1) == 2.9 and round(100 * (1 - bpe_bpb / char_bpb)) == 12
+        """),
+        md("""
+        ## Exercise 11.3 — plant a bug, read its signature (tiny model, offline corpus, 80 steps each)
+
+        Reproduced as the chapter describes: removing the label shift or the causal mask gives an
+        implausibly low loss (the model is copying or peeking), far below what the honest run reaches.
+
+        **DISCREPANCY.** Two signatures do not reproduce, both because the chapter's descriptions assume
+        SGD-like behaviour while the loop uses AdamW: (3) forgetting `zero_grad()` does not make "effective
+        LR grow without bound … explodes to NaN" — Adam normalises the ever-growing accumulated gradient, so
+        the run degrades (stale gradients) and stalls above the honest run, but stays finite; (4) `lr=1.0`
+        spikes the loss far above ln V but did not produce NaN within the first steps here. Both are bugs
+        you would catch, but not by the NaN signature the table promises.
+        """),
+        code("""
+        import contextlib
+        _sdpa = F.scaled_dot_product_attention
+        @contextlib.contextmanager
+        def no_causal_mask():
+            F.scaled_dot_product_attention = lambda q, k, v, is_causal=False, **kw: _sdpa(q, k, v, is_causal=False, **kw)
+            try: yield
+            finally: F.scaled_dot_product_attention = _sdpa
+        def planted(bug, steps=80):
+            m = tiny()
+            opt = make_optimizer(m, 1.0 if bug == "lr=1.0" else 3e-3, weight_decay=0.0)
+            torch.manual_seed(3)
+            losses = []
+            ctx = no_causal_mask() if bug == "no causal mask" else contextlib.nullcontext()
+            with ctx:
+                for _ in range(steps):
+                    x = get_batch(data, 16, 64)
+                    logits, loss, _ = m(x, targets=x)
+                    if bug == "no label shift":
+                        loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), x.reshape(-1))
+                    if bug != "no zero_grad":
+                        opt.zero_grad()
+                    loss.backward(); opt.step()
+                    losses.append(loss.item())
+            return losses
+        runs = {b: planted(b) for b in ("honest", "no label shift", "no causal mask", "no zero_grad", "lr=1.0")}
+        for b, ls in runs.items():
+            print(f"{b:15} loss: start {ls[0]:.2f}  max {max(ls):6.2f}  end {ls[-1]:.3f}  any NaN: {any(map(math.isnan, ls))}")
+        honest = runs["honest"][-1]
+        assert runs["no label shift"][-1] < 0.1 < honest                      # crashes to ~0
+        assert runs["no causal mask"][-1] < 0.5 * honest                      # implausibly low
+        assert runs["no zero_grad"][-1] > honest and not any(map(math.isnan, runs["no zero_grad"]))
+        assert max(runs["lr=1.0"]) > 2 * math.log(ctok.vocab_size)           # a huge spike ...
+        assert not any(map(math.isnan, runs["lr=1.0"][:10]))                  # ... but no NaN in 10 steps
+        """),
+    ]
+
+
+@notebook("13_decoding")
+def _nb13():
+    return [
+        md("""
+        # Chapter 13 — Decoding and Sampling
+
+        Every number in Chapter 13, recomputed, and every sampler checked through `tfs.model.sample` (the
+        course's implementation, temperature → top-k → top-p → min-p). Each cell **asserts** what it checks,
+        so `python tests/run_notebooks.py 13` fails if the chapter and the code disagree. Exercises 13.2 and
+        13.3 use a tiny character model trained here for a few seconds on the bundled offline corpus instead
+        of the Chapter 11 Shakespeare model or GPT-2: a small analogue with the same shape of result.
+        """),
+        code(SETUP, """
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+        from tfs.model import Config, Model, sample
+        logits = torch.tensor([3., 2., 1., 0., -1.])          # mat floor rug sky idea
+        """),
+        md("## The worked example — one distribution, four samplers"),
+        code("""
+        r3 = lambda t: [round(v, 3) for v in t.tolist()]
+        p = logits.softmax(-1)
+        temps = {0.5: [0.865, 0.117, 0.016, 0.002, 0.0], 1.0: [0.636, 0.234, 0.086, 0.032, 0.012],
+                 2.0: [0.429, 0.26, 0.158, 0.096, 0.058]}
+        for T, want in temps.items():
+            print(f"T={T}", r3((logits / T).softmax(-1)))
+            assert r3((logits / T).softmax(-1)) == want
+        assert abs(p[0] / p[1] - math.e) < 1e-5                          # one logit unit = e x probability
+        p2 = (logits / 2).softmax(-1)
+        assert round(1 / p2[4].item()) == 17                               # "idea": 1 in 17 at T = 2
+        assert r3(p[:2] / p[:2].sum()) == [0.731, 0.269]                  # top-k = 2, renormalised
+        assert r3(p.cumsum(0)) == [0.636, 0.871, 0.957, 0.988, 1.0]
+        kept = int(((p.cumsum(0) - p) < 0.9).sum())
+        assert kept == 3                                                    # top-p 0.9 keeps mat, floor, rug
+        sure = torch.tensor([0.98, 0.01, 0.005, 0.005])
+        assert int(((sure.cumsum(0) - sure) < 0.9).sum()) == 1              # a confident model keeps 1
+        """),
+        md("""
+        ## Exercise 13.1 — `tfs.model.sample`: T = 0 is argmax, and each filter shrinks the support
+
+        20,000 draws per setting; the empirical support must be exactly what the worked example predicts,
+        and the frequencies must match the renormalised probabilities.
+        """),
+        code("""
+        torch.manual_seed(0)
+        L = logits.expand(20_000, 5)
+        def draws(**kw):
+            return sample(L, **kw).flatten()
+        assert (draws(temperature=0) == 0).all()
+        assert (draws(temperature=0, top_p=0.9) == 0).all()                 # quiz: T=0 decides everything
+        assert set(draws(top_k=2).tolist()) == {0, 1}
+        assert set(draws(top_p=0.9).tolist()) == {0, 1, 2}
+        assert set(draws(min_p=0.1).tolist()) == {0, 1, 2}                  # keep p >= 0.1 * 0.636
+        assert set(draws().tolist()) == {0, 1, 2, 3, 4}
+        freq = torch.bincount(draws(top_k=2), minlength=5).float() / 20_000
+        print("top-k=2 frequencies", r3(freq))
+        assert abs(freq[0] - 0.731) < 0.015 and abs(freq[1] - 0.269) < 0.015
+        freq = torch.bincount(draws(temperature=2.0), minlength=5).float() / 20_000
+        assert torch.allclose(freq, p2, atol=0.015)
+        # order matters: temperature before top-p. At T=2 the 0.9 nucleus is 4 tokens, not 3
+        assert set(draws(temperature=2.0, top_p=0.9).tolist()) == {0, 1, 2, 3}
+        """),
+        md("""
+        ## Temperature divides logits, not probabilities
+
+        Dividing the probabilities by T and renormalising is not a softer distribution — it is the same one.
+        """),
+        code("""
+        wrong = (p / 2.0) / (p / 2.0).sum()
+        assert torch.allclose(wrong, p) and not torch.allclose(p2, p)
+        """),
+        md("## Repetition penalty (applied to logits) and constrained decoding (mask to −inf)"),
+        code("""
+        lg = torch.tensor([2.0, -1.0, 0.5, 0.1])
+        pen = lg.clone()
+        for tok in {0, 1}:                                   # already generated
+            pen[tok] /= 1.1 if pen[tok] > 0 else 1 / 1.1
+        print(lg.tolist(), "->", [round(v, 4) for v in pen.tolist()])
+        assert pen[0] < lg[0] and pen[1] < lg[1]             # both logits pushed down, positive or negative
+        assert pen.softmax(-1)[0] < lg.softmax(-1)[0]        # (a probability is relative: the others rise)
+        allowed = torch.tensor([True, False, True, False])
+        cons = lg.masked_fill(~allowed, float("-inf"))
+        torch.manual_seed(0)
+        assert set(sample(cons.expand(5000, 4)).flatten().tolist()) <= {0, 2}   # invalid tokens: p = 0
+        """),
+        md("""
+        ## 13.3 — beam search finds a likelier sequence than greedy (and costs k×)
+
+        A toy two-step model where the greedy first choice leads to a flat second step. Beam search with
+        k = 2 finds the higher-probability sequence.
+        """),
+        code("""
+        step1 = torch.tensor([0.6, 0.4])                          # P(first token)
+        step2 = {0: torch.tensor([0.35, 0.35, 0.3]), 1: torch.tensor([0.9, 0.05, 0.05])}
+        greedy_first = int(step1.argmax())
+        greedy = (greedy_first, int(step2[greedy_first].argmax()))
+        seq_p = lambda s: (step1[s[0]] * step2[s[0]][s[1]]).item()
+        beams = sorted(((a, b) for a in (0, 1) for b in range(3)), key=seq_p, reverse=True)[:2]
+        print(f"greedy {greedy} p={seq_p(greedy):.3f}   beam best {beams[0]} p={seq_p(beams[0]):.3f}")
+        assert seq_p(beams[0]) > seq_p(greedy)
+        """),
+        md("""
+        ## Exercises 13.2 and 13.3 — temperature, diversity and surprisal on a tiny trained model
+
+        A character model trained for a few seconds on the offline corpus (an analogue of the Chapter 11
+        model). At each temperature: 250 generated characters, their distinct-trigram ratio, and the longest
+        repeated substring. Then the average −log p the model assigns to greedy text, nucleus text and
+        held-out real text (Holtzman et al.'s comparison).
+
+        On this tiny model the ordering matches the chapter (greedy ≪ nucleus < real text, and nucleus is the
+        closer of the two) but nucleus text is not *close* to the real-text value as it is for GPT-2: a
+        few-second model is over-confident on its own samples. The asserts check the ordering only.
+        """),
+        code("""
+        from tfs.train import _fallback_corpus, get_batch
+        from tfs.tokenizer import CharTokenizer
+        text = _fallback_corpus()
+        ctok = CharTokenizer(text)
+        data = torch.tensor(ctok.encode(text))
+        train, held = data[:300_000], data[300_000:]
+        torch.manual_seed(0)
+        lm = Model(Config(vocab_size=ctok.vocab_size, d_model=64, n_layer=2, n_head=4, n_kv_head=2, d_head=16,
+                          d_ff=192, max_T=512))
+        opt = torch.optim.AdamW(lm.parameters(), lr=3e-3)
+        for step in range(200):
+            x = get_batch(train, 16, 96)
+            _, loss, _ = lm(x, targets=x)
+            opt.zero_grad(); loss.backward(); opt.step()
+        print(f"tiny LM trained: loss {loss.item():.3f}")
+        def longest_repeat(s):
+            best = 0
+            for n in range(1, len(s)):
+                seen = {s[i:i + n] for i in range(len(s) - n + 1)}
+                if len(seen) == len(s) - n + 1:
+                    break
+                best = n
+            return best
+        prompt = held[:16][None]
+        stats = {}
+        for T in (0.1, 0.5, 0.8, 1.0, 1.3, 2.0):
+            torch.manual_seed(1)
+            out = ctok.decode(lm.generate(prompt.clone(), 250, temperature=T)[0, 16:].tolist())
+            tri = [out[i:i + 3] for i in range(len(out) - 2)]
+            stats[T] = (len(set(tri)) / len(tri), longest_repeat(out))
+            print(f"T={T:3}: distinct-trigram ratio {stats[T][0]:.2f}  longest repeat {stats[T][1]:3d}   {out[:50]!r}")
+        assert stats[0.1][0] < stats[1.0][0] < stats[2.0][0]                 # diversity rises with T
+        assert stats[0.1][1] > 3 * stats[2.0][1]                              # low T loops
+        """),
+        code("""
+        @torch.no_grad()
+        def surprisal(ids):                      # mean -log p per token, under the model
+            lg, _, _ = lm(ids[None])
+            return F.cross_entropy(lg[0, :-1], ids[1:]).item()
+        n = 300
+        torch.manual_seed(2)
+        greedy = lm.generate(prompt.clone(), n, temperature=0)[0]
+        nucleus = lm.generate(prompt.clone(), n, temperature=1.0, top_p=0.95)[0]
+        human = sum(surprisal(held[k * 500:(k + 1) * 500]) for k in range(4)) / 4     # 2000 real characters
+        s = {"greedy": surprisal(greedy), "top-p 0.95": surprisal(nucleus), "held-out text": human}
+        print({k: round(v, 3) for k, v in s.items()})
+        assert s["greedy"] < 0.5 * s["held-out text"]                        # far too likely to be "human"
+        assert abs(s["top-p 0.95"] - s["held-out text"]) < abs(s["greedy"] - s["held-out text"])
+        """),
+    ]
+
+
+@notebook("14_gpu")
+def _nb14():
+    return [
+        md("""
+        # Chapter 14 — The GPU: Memory, Tensor Cores, and the Roofline
+
+        Every number in Chapter 14 is arithmetic on a handful of hardware figures, so this notebook
+        recomputes all of them from those figures and **asserts** each printed value. There is no GPU here:
+        Exercises 14.2 and 14.4 are measured on this machine's CPU, which shows the same shapes (a rising
+        then flat FLOP/s curve; strided access costing more than contiguous) at CPU scale.
+        """),
+        code(SETUP, """
+        H100 = dict(flops=989.4e12, bw=3.35e12)
+        def roofline(flops, bytes_moved, peak_flops=989.4e12, bw=3.35e12):
+            t_compute, t_memory = flops / peak_flops, bytes_moved / bw
+            return dict(ai=flops / bytes_moved,
+                        bound="compute" if t_compute > t_memory else "memory",
+                        seconds=max(t_compute, t_memory), t_compute=t_compute, t_memory=t_memory,
+                        frac_of_peak=min(1.0, (flops / bytes_moved) / (peak_flops / bw)))
+        """),
+        md("## 14.1 — the ridge point, and how it moved across four chips"),
+        code("""
+        ridge = H100["flops"] / H100["bw"]
+        print(f"H100 ridge: {ridge:.1f} FLOP/byte")
+        assert round(ridge) == 295
+        chips = {"A100 80GB": (312, 2.04, 153), "H100 SXM5": (989, 3.35, 295), "H200 SXM": (989, 4.80, 206),
+                 "B200": (2250, 8.00, 281)}
+        for name, (tf, tb, want) in chips.items():
+            print(f"{name:10} {tf / tb:6.1f}")
+            assert round(tf / tb) == want
+        """),
+        md("## 14.2 — a square bf16 matmul has AI = n/3; the crossover is n ≈ 886"),
+        code("""
+        def matmul_ai(M, K, N, bytes_per=2):
+            return 2 * M * K * N / (bytes_per * (M * K + K * N + M * N))
+        table = {128: 42.7, 256: 85.3, 512: 170.7, 1024: 341.3, 4096: 1365.3}
+        for n, want in table.items():
+            ai = matmul_ai(n, n, n)
+            verdict = "COMPUTE" if ai > ridge else "MEMORY"
+            print(f"n={n:5d}  AI={ai:7.1f}  {verdict}-bound")
+            assert round(ai, 1) == want and abs(ai - n / 3) < 1e-9
+            assert (verdict == "COMPUTE") == (n >= 1024)
+        assert round(3 * ridge) == 886
+        assert round(100 * matmul_ai(512, 512, 512) / ridge) == 58          # 171/295 = 58% of peak
+        """),
+        md("## 14.3 — one decoded token of a 7B bf16 model: memory-bound by ~300×"),
+        code("""
+        P = 7e9
+        r = roofline(2 * P, 2 * P)                       # 14 GFLOP, 14 GB
+        print(f"AI {r['ai']:.0f}; memory {r['t_memory'] * 1e3:.3f} ms; compute {r['t_compute'] * 1e3:.3f} ms; "
+              f"{r['t_memory'] / r['t_compute']:.0f}x; ceiling {1 / r['t_memory']:.0f} tok/s; idle {1 - 1 / ridge:.1%}")
+        assert r["ai"] == 1 and r["bound"] == "memory"
+        assert round(r["t_memory"] * 1e3, 3) == 4.179 and round(r["t_compute"] * 1e3, 3) == 0.014
+        assert round(r["t_memory"] / r["t_compute"], -1) == 300 and round(1 / r["t_memory"]) == 239
+        assert round(100 * (1 - 1 / ridge), 1) == 99.7
+        pre = roofline(2 * P * 2048, 2 * P)
+        print(f"prefill 2048: AI {pre['ai']:.0f}; memory {pre['t_memory'] * 1e3:.3f} ms; compute {pre['t_compute'] * 1e3:.3f} ms")
+        assert pre["ai"] == 2048 and pre["bound"] == "compute" and round(pre["t_compute"] * 1e3, 3) == 28.979
+        """),
+        md("## 14.3 — decode batching: AI = B, and the fraction of peak it can reach"),
+        code("""
+        want = {1: 0.3, 8: 2.7, 32: 10.8, 128: 43.3, 256: 86.7, 295: 99.9}
+        for B, pct in want.items():
+            r = roofline(2 * P * B, 2 * P)
+            print(f"batch {B:3d}: AI {r['ai']:.0f}  {100 * r['frac_of_peak']:5.1f}% of peak")
+            assert r["ai"] == B and round(100 * r["frac_of_peak"], 1) == pct
+        """),
+        md("## 14.4 — tensor-core alignment: vocab padding and head sizes"),
+        code("""
+        assert 50304 % 64 == 0 and 50304 == 64 * math.ceil(50257 / 64)          # nanoGPT's padded vocab
+        assert 4096 // 32 == 128 and 768 // 12 == 64 and 2560 // 32 == 80
+        for d_head in (64, 80, 96, 128, 192, 256):
+            assert d_head % 16 == 0                                            # all tensor-core friendly
+        assert 80 == 5 * 16
+        """),
+        md("""
+        ## 14.5 — coalescing: how many 128-byte lines one warp's load touches
+
+        32 threads each read one 4-byte word at `stride × thread` (in words).
+        """),
+        code("""
+        def lines_per_warp(stride, word=4, line=128):
+            return len({(t * stride * word) // line for t in range(32)})
+        for s, want in ((1, 1), (2, 2), (4, 4), (32, 32)):
+            print(f"stride {s:2d}: {lines_per_warp(s)} lines, {100 / lines_per_warp(s):.0f}% of fetched bytes used")
+            assert lines_per_warp(s) == want
+        assert 32 * 4 == 128
+        """),
+        md("""
+        ## 14.6 — fusion, and the T×T score matrix FlashAttention never writes
+
+        **DISCREPANCY (minor).** §14.6 calls shared memory "~7× the bandwidth of HBM"; with the table's own
+        figures (~20 TB/s vs 3.35 TB/s) that is **~6×**. The "128 MB per head" for T = 8192 is in MiB
+        (134 MB in decimal units) — consistent with the course's other figures, just binary.
+        """),
+        code("""
+        unfused_trips, fused_trips = 3, 1
+        assert unfused_trips / fused_trips == 3                             # same FLOPs, 3x the intensity
+        S = 8192 * 8192 * 2                                                  # bf16 scores, one head
+        print(f"T=8192 scores: {S / 2**20:.0f} MiB = {S / 1e6:.0f} MB, vs a 50 MB L2; SRAM/HBM = {20 / 3.35:.1f}x")
+        assert S == 128 * 2**20 and S / 1e6 > 50
+        assert round(20 / 3.35) == 6                                         # chapter: ~7x
+        """),
+        md("""
+        ## Exercise 14.1 — the roofline calculator on one decode step of a d = 4096 block (B = T = 1)
+
+        bf16 weights and activations; SwiGLU with d_ff = 11008 (Llama-2-7B), MHA projections 4096×4096.
+        Element-wise ops do a few FLOPs per element. Everything is memory-bound, and the time is almost
+        entirely the seven weight matrices; the norms, residual adds and softmax are a rounding error.
+        """),
+        code("""
+        d, ff = 4096, 11008
+        ops = {f"attn {n}": (2 * d * d, 2 * d * d + 4 * d) for n in ("q", "k", "v", "o")}
+        ops.update({f"swiglu {n}": (2 * d * ff, 2 * d * ff + 2 * (d + ff)) for n in ("gate", "up", "down")})
+        ops["rmsnorm x2"] = (2 * 4 * d, 2 * 3 * 2 * d)
+        ops["residual add x2"] = (2 * d, 2 * 3 * 2 * d)
+        ops["softmax (ctx 1)"] = (5, 2 * 2)
+        res = {k: roofline(f, b) for k, (f, b) in ops.items()}
+        for k, r in sorted(res.items(), key=lambda kv: -kv[1]["seconds"]):
+            print(f"{k:16} AI {r['ai']:6.2f}  {r['bound']:7}  {r['seconds'] * 1e6:8.3f} us")
+        assert all(r["bound"] == "memory" for r in res.values())
+        total = sum(r["seconds"] for r in res.values())
+        tiny_ops = sum(res[k]["seconds"] for k in ("rmsnorm x2", "residual add x2", "softmax (ctx 1)"))
+        print(f"block decode step {total * 1e6:.1f} us; norm/add/softmax share {tiny_ops / total:.3%}")
+        assert tiny_ops / total < 0.01
+        """),
+        md("""
+        ## Exercise 14.2 — find this CPU's ridge empirically
+
+        Achieved FLOP/s rises with n and then flattens. On this CPU the knee is at a few hundred — far below
+        a GPU's ~886, because a CPU's compute-to-bandwidth ratio is much smaller.
+        """),
+        code("""
+        import time
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+        achieved = {}
+        for n in (64, 128, 256, 512, 1024):
+            a, b = torch.randn(n, n), torch.randn(n, n)
+            for _ in range(3): a @ b
+            reps = max(3, int(1e8 / n ** 3))
+            t = time.perf_counter()
+            for _ in range(reps): a @ b
+            achieved[n] = 2 * n ** 3 / ((time.perf_counter() - t) / reps)
+            print(f"n={n:5d}  {achieved[n] / 1e9:7.1f} GFLOP/s")
+        assert achieved[1024] > 5 * achieved[64]                          # rises ...
+        assert achieved[1024] < 3 * achieved[512]                         # ... then flattens
+        """),
+        md("""
+        ## Exercise 14.3 — 70B on 8×H100: does the compute-bound decode batch fit?
+
+        Assumes Llama-70B's 80 layers (the exercise gives 8 KV heads and d_head = 128) and bf16 cache.
+        """),
+        code("""
+        agg_flops, agg_bw = 7912e12, 26.8e12
+        B_star = agg_flops / agg_bw
+        kv_per_seq = 2 * 80 * 8 * 128 * 2 * 8192                           # K and V, layers, heads, d, bytes, ctx
+        free = 8 * 80e9 - 140e9
+        fits = free / kv_per_seq
+        print(f"compute-bound at B ~ {B_star:.0f}; KV/seq {kv_per_seq / 1e9:.2f} GB; "
+              f"{free / 1e9:.0f} GB free holds {fits:.0f} sequences")
+        assert round(B_star) == 295 and round(kv_per_seq / 1e9, 2) == 2.68
+        assert fits < B_star                                                # it does not fit: hence GQA/MLA/paging
+        """),
+        md("""
+        ## Exercise 14.4 — the cost of a bad layout (CPU)
+
+        Summing every 16th float of a 256 MB array versus a contiguous run of the same number of floats.
+        Same useful bytes; the strided read pulls a whole cache line for every element it uses.
+        """),
+        code("""
+        x = torch.randn(8192 * 8192)
+        def bench(fn, reps=5):
+            fn(); t = time.perf_counter()
+            for _ in range(reps): fn()
+            return (time.perf_counter() - t) / reps
+        n = x.numel() // 16
+        assert x[::16].numel() == x[:n].numel()
+        t_strided, t_contig = bench(lambda: x[::16].sum()), bench(lambda: x[:n].sum())
+        print(f"strided {t_strided * 1e3:.2f} ms, contiguous {t_contig * 1e3:.2f} ms: {t_strided / t_contig:.1f}x")
+        assert t_strided > 1.5 * t_contig                                  # measured 3.5-7.7x on this CPU
+        """),
+    ]
+
+
+@notebook("18_serving")
+def _nb18():
+    return [
+        md("""
+        # Chapter 18 — Serving at Scale
+
+        Every number in Chapter 18, recomputed, plus small simulations of the three systems ideas:
+        PagedAttention's allocator, continuous batching, and speculative decoding's exactness guarantee.
+        Each cell **asserts** what it checks, so `python tests/run_notebooks.py 18` fails if the chapter and
+        the code disagree. Speculative decoding runs on two toy bigram "models" instead of GPT-2 small and
+        large (Exercise 18.1's analogue: the guarantee is about distributions, so any pair of models tests it).
+        """),
+        code(SETUP),
+        md("## 18.1 — contiguous reservation wastes what the sequence never uses"),
+        code("""
+        print(f"200 of 4096 reserved tokens used: {1 - 200 / 4096:.1%} wasted")
+        assert round(100 * (1 - 200 / 4096)) == 95
+        """),
+        md("""
+        ## Exercise 18.2 — a block allocator, simulated on 1000 lognormal requests
+
+        `BlockManager` with `allocate`, `append`, `free` and copy-on-write `fork`. Request lengths are
+        lognormal with mean 300, capped at 4096; contiguous allocation reserves 4096 per request.
+
+        **DISCREPANCY.** The chapter expects contiguous allocation to waste "70–90%" with these lengths.
+        Reserving 4096 for sequences averaging ~300 tokens wastes 1 − 300/4096 ≈ **93%** — above the stated
+        range by construction (the range would fit a reservation of ~1000–3000, or a mean of ~400–1200).
+        Paged allocation wastes under 3%, as the chapter says.
+        """),
+        code("""
+        class BlockManager:
+            def __init__(self, total_blocks, block_size=16):
+                self.bs, self.free_list = block_size, list(range(total_blocks))
+                self.ref = {}                    # physical block -> reference count
+                self.tables, self.lens = {}, {}  # seq -> [physical blocks], seq -> tokens
+            def _new(self):
+                b = self.free_list.pop(); self.ref[b] = 1; return b
+            def allocate(self, seq, n_tokens):
+                self.tables[seq] = [self._new() for _ in range(-(-n_tokens // self.bs))]
+                self.lens[seq] = n_tokens
+            def append(self, seq):
+                t = self.tables[seq]
+                if self.lens[seq] % self.bs == 0:
+                    t.append(self._new())                      # need a fresh block
+                elif self.ref[t[-1]] > 1:                      # copy-on-write: last block is shared
+                    self.ref[t[-1]] -= 1; t[-1] = self._new()
+                self.lens[seq] += 1
+            def fork(self, parent, child):
+                self.tables[child] = list(self.tables[parent]); self.lens[child] = self.lens[parent]
+                for b in self.tables[child]: self.ref[b] += 1
+            def free(self, seq):
+                for b in self.tables.pop(seq):
+                    self.ref[b] -= 1
+                    if self.ref[b] == 0: del self.ref[b]; self.free_list.append(b)
+                del self.lens[seq]
+            def used_blocks(self):
+                return len(self.ref)
+
+        bm = BlockManager(100)
+        bm.allocate("a", 40)                                   # 3 blocks
+        bm.fork("a", "b")
+        assert bm.used_blocks() == 3                           # a shared prefix costs nothing extra
+        bm.append("b")                                         # b writes into the shared last block -> copy
+        assert bm.used_blocks() == 4 and bm.tables["a"][:2] == bm.tables["b"][:2]
+        bm.free("a"); bm.free("b")
+        assert bm.used_blocks() == 0 and len(bm.free_list) == 100
+
+        torch.manual_seed(0)
+        sigma = 1.0
+        mu = math.log(300) - sigma ** 2 / 2                    # lognormal with mean 300
+        lens = torch.distributions.LogNormal(mu, sigma).sample((1000,)).round().clamp(1, 4096).long()
+        bm = BlockManager(10**6)
+        for i, n in enumerate(lens.tolist()):
+            bm.allocate(i, 1)
+            for _ in range(n - 1): bm.append(i)               # grow one token at a time, on demand
+        used = lens.sum().item()
+        paged_waste = 1 - used / (bm.used_blocks() * 16)
+        contig_waste = 1 - used / (4096 * len(lens))
+        print(f"mean length {lens.float().mean():.0f}; contiguous wastes {contig_waste:.1%}, paged wastes {paged_waste:.1%}")
+        assert paged_waste < 0.03
+        assert contig_waste > 0.90                             # chapter says 70-90%
+        """),
+        md("""
+        ## 18.2 — static vs continuous batching, counted in slot-steps
+
+        8 slots, 64 requests with skewed lengths. Static batching holds a batch until its longest member
+        finishes; continuous batching refills a slot the step it frees.
+        """),
+        code("""
+        torch.manual_seed(1)
+        req = torch.distributions.LogNormal(math.log(100), 1.2).sample((64,)).round().clamp(1, 4000).long().tolist()
+        slots = 8
+        static_steps = sum(max(req[i:i + slots]) for i in range(0, len(req), slots))
+        import heapq
+        finish = [0] * slots
+        for n in req:                                          # each request takes the earliest free slot
+            t = heapq.heappop(finish) if len(finish) == slots else 0
+            heapq.heappush(finish, t + n)
+        continuous_steps = max(finish)
+        print(f"static {static_steps} steps, continuous {continuous_steps} steps: {static_steps / continuous_steps:.1f}x")
+        assert static_steps / continuous_steps > 2                  # the chapter: typically 2-4x
+        assert 32 - 4 == 28                                         # seq A in the diagram: done at 4, idle 28
+        """),
+        md("## 18.3 — the worked example: how many drafted tokens survive (α = 0.7, k = 4)"),
+        code("""
+        def expected_tokens(alpha, k):
+            return (1 - alpha ** (k + 1)) / (1 - alpha)
+        a, k = 0.7, 4
+        dist = [a ** i * (1 - a) for i in range(k)] + [a ** k]
+        print("accept exactly 0..4:", [round(p, 4) for p in dist])
+        assert [round(p, 4) for p in dist] == [0.3, 0.21, 0.147, 0.1029, 0.2401]
+        assert abs(sum(dist) - 1) < 1e-12
+        E = sum(i * p for i, p in enumerate(dist)) + 1             # + the corrected / bonus token
+        assert abs(E - expected_tokens(a, k)) < 1e-12 and round(E, 2) == 2.77
+        table = {0.3: (1.39, 1.43, 1.43), 0.5: (1.75, 1.94, 2.00), 0.7: (2.19, 2.77, 3.20), 0.9: (2.71, 4.10, 6.13)}
+        for al, row in table.items():
+            got = tuple(round(expected_tokens(al, kk), 2) for kk in (2, 4, 8))
+            print(f"alpha {al}: k=2,4,8 -> {got}")
+            assert got == row
+        assert round(expected_tokens(0.7, 4), 2) == 2.77 and round(expected_tokens(0.9, 8), 2) == 6.13
+        assert expected_tokens(0.3, 8) - expected_tokens(0.3, 4) < 0.01
+        """),
+        md("""
+        ## Exercise 18.1 — speculative decoding is exact (verified with a chi-squared test)
+
+        Two random bigram models over 6 tokens: a target p(·|prev) and a deliberately different draft
+        q(·|prev). Accept a drafted token with probability min(1, p/q); on rejection sample from
+        normalise(max(0, p − q)); if all k survive, take a bonus token from p. Compare the next-token
+        distribution after a fixed context with plain sampling from the target.
+        """),
+        code("""
+        torch.manual_seed(0)
+        V = 6
+        Pt = (torch.randn(V, V) * 1.5).softmax(-1)               # target: row = previous token
+        Qd = (torch.randn(V, V) * 1.5).softmax(-1)               # draft
+        def spec_step(prev, k=4):
+            out, cur, drafts, qs = [], prev, [], []
+            for _ in range(k):                                    # 1. draft k tokens
+                t = torch.multinomial(Qd[cur], 1).item(); drafts.append(t); qs.append(Qd[cur]); cur = t
+            ctx = [prev] + drafts
+            accepted = 0
+            for i, t in enumerate(drafts):                        # 2-3. verify left to right
+                p_i = Pt[ctx[i]]
+                if torch.rand(1).item() < min(1.0, (p_i[t] / qs[i][t]).item()):
+                    out.append(t); accepted += 1
+                else:
+                    resid = (p_i - qs[i]).clamp(min=0)
+                    out.append(torch.multinomial(resid / resid.sum(), 1).item())
+                    return out, accepted
+            out.append(torch.multinomial(Pt[drafts[-1]], 1).item())   # bonus token
+            return out, accepted
+        N = 20_000
+        firsts, acc = torch.zeros(V), 0
+        for _ in range(N):
+            o, a_ = spec_step(0)
+            firsts[o[0]] += 1; acc += a_
+        expected = Pt[0] * N
+        chi2 = ((firsts - expected) ** 2 / expected).sum().item()
+        print(f"chi-squared = {chi2:.2f} on 5 dof (p = 0.001 critical value 20.5)")
+        assert chi2 < 20.5                                       # indistinguishable from the target
+        naive = ((Qd[0] * N - expected) ** 2 / expected).sum().item()
+        assert naive > 1000                                      # while the draft itself is far off
+        alpha_theory = torch.minimum(Pt, Qd).sum(-1)             # P(accept) per context = sum min(p, q)
+        print(f"acceptance from context 0: theory {alpha_theory[0]:.3f}")
+        """),
+        md("## 18.4 — why weight quantization speeds up decode"),
+        code("""
+        P = 70e9
+        bf16, int4 = 2 * P, 0.5 * P
+        print(f"70B: {bf16 / 1e9:.0f} GB -> {int4 / 1e9:.0f} GB per forward; decode bound improves {bf16 / int4:.0f}x")
+        assert (bf16 / 1e9, int4 / 1e9) == (140, 35) and bf16 / int4 == 4
+        """),
+        md("## Quiz — 1000 users sharing a 2000-token system prompt: prefix caching"),
+        code("""
+        without, with_cache = 1000 * 2000, 2000
+        print(f"prefill tokens: {without:,} without prefix caching, {with_cache:,} with it")
+        assert without / with_cache == 1000
+        """),
+    ]
+
+
+@notebook("19_distributed")
+def _nb19():
+    return [
+        md("""
+        # Chapter 19 — Distributed Training: DP, TP, PP, ZeRO
+
+        Every number in Chapter 19, recomputed, with the collectives and schedules *simulated* in-process
+        rather than taken from formulas: a ring all-reduce whose bytes are counted, a pipeline schedule whose
+        idle slots are counted, and tensor parallelism done with plain tensor slices. Each cell **asserts**
+        what it checks, so `python tests/run_notebooks.py 19` fails if the chapter and the code disagree.
+        Exercise 19.3 (a real multi-process `gloo` all-reduce) is not run here; the ring simulation stands in.
+        """),
+        code(SETUP),
+        md("## 19.1 — 16 bytes per parameter"),
+        code("""
+        per_param = {"bf16 weights": 2, "bf16 grads": 2, "fp32 master": 4, "Adam m": 4, "Adam v": 4}
+        assert sum(per_param.values()) == 16 and per_param["fp32 master"] + 8 == 12
+        for P, gb in ((1e9, 16), (7e9, 112), (70e9, 1120), (671e9, 10_736)):
+            print(f"{P / 1e9:5.0f}B params -> {16 * P / 1e9:7,.0f} GB  ({math.ceil(16 * P / 80e9)} x 80 GB GPUs)")
+            assert 16 * P / 1e9 == gb
+        assert 16e9 <= 80e9 < 112e9 and math.ceil(1120 / 80) == 14 and math.ceil(10_736 / 80) == 135  # "134+"
+        assert round(16 * 671e9 / 1e12, 1) == 10.7 and 14 / 16 == 7 / 8   # 7/8 is training machinery
+        """),
+        md("""
+        ## 19.2 — ring all-reduce, simulated: every GPU sends 2(N−1)/N of the buffer
+
+        Reduce-scatter (N−1 steps) then all-gather (N−1 steps), each GPU passing one chunk to its neighbour
+        per step. The result must be the sum everywhere, and the bytes each GPU sends are counted.
+        """),
+        code("""
+        def ring_allreduce(bufs):
+            N = len(bufs)
+            chunks = [list(b.chunk(N)) for b in bufs]
+            chunks = [[c.clone() for c in row] for row in chunks]
+            sent = [0] * N
+            for step in range(N - 1):                       # reduce-scatter
+                msgs = [(r, (r - step) % N, chunks[r][(r - step) % N].clone()) for r in range(N)]
+                for r, idx, data in msgs:
+                    chunks[(r + 1) % N][idx] += data; sent[r] += data.numel()
+            for step in range(N - 1):                       # all-gather
+                msgs = [(r, (r + 1 - step) % N, chunks[r][(r + 1 - step) % N].clone()) for r in range(N)]
+                for r, idx, data in msgs:
+                    chunks[(r + 1) % N][idx] = data; sent[r] += data.numel()
+            return [torch.cat(row) for row in chunks], sent
+        S = 1024 * 1024
+        rows = {2: 1.0, 4: 1.5, 8: 1.75, 64: 1.9688, 512: 1.9961}
+        for N, mult in rows.items():
+            if N <= 8:
+                bufs = [torch.randn(S) for _ in range(N)]
+                out, sent = ring_allreduce(bufs)
+                total = sum(bufs)
+                assert all(torch.allclose(o, total, atol=1e-4) for o in out)
+                assert all(s == 2 * (N - 1) * S // N for s in sent)            # counted, not assumed
+            m = 2 * (N - 1) / N
+            print(f"N={N:4d}  multiplier {m:.4f}  7B bf16 grads: {14 * m:.1f} GB per GPU per step")
+            assert round(m, 4) == mult and round(14 * m, 1) == {2: 14.0, 4: 21.0, 8: 24.5, 64: 27.6, 512: 27.9}[N]
+        assert round(100 * (rows[512] / rows[64] - 1)) == 1                     # 64 -> 512 GPUs: +1%
+        """),
+        md("## 19.3 — ZeRO: bytes per parameter on each GPU, and the floors"),
+        code("""
+        stages = {"DDP": lambda N: 16, "ZeRO-1": lambda N: 4 + 12 / N, "ZeRO-2": lambda N: 2 + 14 / N,
+                  "ZeRO-3": lambda N: 16 / N}
+        want = {"DDP": (16, 16, 16, 16), "ZeRO-1": (16, 5.5, 4.19, 4.02), "ZeRO-2": (16, 3.75, 2.22, 2.03),
+                "ZeRO-3": (16, 2.0, 0.25, 0.03)}
+        for name, f in stages.items():
+            got = tuple(round(f(N), 2) for N in (1, 8, 64, 512))
+            print(f"{name:7} {got}")
+            assert got == want[name]
+        assert stages["ZeRO-1"](10**9) - 4 < 1e-6 and stages["ZeRO-2"](10**9) - 2 < 1e-6   # floors 4 and 2
+        assert round(7e9 * stages["ZeRO-3"](64) / 1e9, 1) == 1.8 and 7e9 * 16 / 1e9 == 112
+        """),
+        md("""
+        ## 19.4 / Exercise 19.4 — tensor parallelism with plain tensors
+
+        Column-split W₁, row-split W₂, one sum. Then the wrong way round.
+
+        **Minor wording.** The exercise asks to verify the split is "bit-identical" to the unsplit MLP,
+        but its own code uses `allclose`, which is correct: the two partial sums add the same products in a
+        different order, so in floating point the result agrees to ~1e-7 but is generally not
+        bit-identical. (§19.3 says the same of ZeRO-3 vs DDP; that one *is* exact because ZeRO-3 only
+        moves parameters, it does not split a reduction.)
+        """),
+        code("""
+        torch.manual_seed(0)
+        act = F.gelu
+        x, W1, W2 = torch.randn(8, 64), torch.randn(64, 256) / 8, torch.randn(256, 64) / 16
+        W1_a, W1_b = W1.chunk(2, dim=1)                    # column split
+        W2_a, W2_b = W2.chunk(2, dim=0)                    # row split
+        y = act(x @ W1_a) @ W2_a + act(x @ W1_b) @ W2_b    # the "all-reduce"
+        ref = act(x @ W1) @ W2
+        print(f"max |TP - unsplit| = {(y - ref).abs().max():.2e}   bit-identical: {torch.equal(y, ref)}")
+        assert torch.allclose(y, ref, atol=1e-5)
+        x_a, x_b = x.chunk(2, dim=1); R_a, R_b = W1.chunk(2, dim=0)          # the wrong way: row-split W1
+        wrong = (act(x_a @ R_a) + act(x_b @ R_b)) @ W2
+        assert not torch.allclose(wrong, ref, atol=1e-2)                    # gelu(a) + gelu(b) != gelu(a + b)
+        assert torch.allclose((x_a @ R_a + x_b @ R_b), x @ W1, atol=1e-5)   # fine BEFORE the nonlinearity
+        """),
+        md("## 19.4 — the TP bill: 2 all-reduces forward, 2 backward, of a 134 MB activation"),
+        code("""
+        act_bytes = 8 * 2048 * 4096 * 2
+        print(f"activation {act_bytes / 1e6:.1f} MB")
+        assert round(act_bytes / 1e6, 1) == 134.2
+        for tp, want in ((2, 0.54), (4, 0.81), (8, 0.94)):
+            per_layer = 4 * 2 * (tp - 1) / tp * act_bytes
+            print(f"TP={tp}: {per_layer / 1e9:.2f} GB per layer per step")
+            assert round(per_layer / 1e9, 2) == want
+        assert round(80 * 4 * 2 * 7 / 8 * act_bytes / 1e9) == 75 and 900 / 50 == 18
+        """),
+        md("""
+        ## 19.5 — the pipeline bubble, by counting idle slots in a simulated schedule
+
+        A dependency-driven simulation: stage s may run forward(j) once stage s−1 has; backward(j) once stage
+        s+1 has and its own forward(j) is done; each stage runs its tasks in GPipe order (all forwards, then
+        all backwards). Idle fraction = 1 − busy / (span × p).
+        """),
+        code("""
+        def simulate(p, m, chunks=1, backward=True):
+            # one 'chunk-stage' per (gpu, chunk); a microbatch visits chunk-stages 0..p*chunks-1, stage c on GPU c % p
+            S, unit = p * chunks, 1.0 / chunks
+            order = {g: [] for g in range(p)}
+            groups = [list(range(i, min(i + p, m))) for i in range(0, m, p)] if chunks > 1 else [list(range(m))]
+            for grp in groups:                                   # Megatron-style interleaved forward order
+                for r in range(chunks):
+                    for j in grp:
+                        for g in range(p):
+                            order[g].append(("F", j, r * p + g))
+            if backward:
+                for grp in groups:
+                    for r in reversed(range(chunks)):
+                        for j in grp:
+                            for g in range(p):
+                                order[g].append(("B", j, r * p + g))
+            done, free_at, busy = {}, [0.0] * p, [0.0] * p
+            pending = {g: list(order[g]) for g in range(p)}
+            while any(pending.values()):
+                progressed = False
+                for g in range(p):
+                    while pending[g]:
+                        kind, j, c = pending[g][0]
+                        deps = [("F", j, c - 1)] if kind == "F" and c > 0 else []
+                        if kind == "B":
+                            deps = [("F", j, c)] + ([("B", j, c + 1)] if c < S - 1 else [("F", j, S - 1)])
+                        if not all(d in done for d in deps):
+                            break
+                        start = max([free_at[g]] + [done[d] for d in deps])
+                        done[(kind, j, c)] = free_at[g] = start + unit
+                        busy[g] += unit; pending[g].pop(0); progressed = True
+                assert progressed, "deadlock"
+            span = max(free_at)
+            return 1 - sum(busy) / (span * p), span
+        # the naive diagram: 4 stages, 1 batch, forward + backward
+        assert simulate(4, 1)[0] == 0.75
+        for p_, m_, want in ((4, 1, 0.75), (4, 8, 0.2727), (4, 32, 0.0857), (8, 8, 0.4667), (8, 32, 0.1795), (8, 128, 0.0519)):
+            sim = simulate(p_, m_)[0]
+            print(f"p={p_} m={m_:3d}  simulated {sim:.4f}   (p-1)/(m+p-1) {(p_ - 1) / (m_ + p_ - 1):.4f}")
+            assert round(sim, 4) == want == round((p_ - 1) / (m_ + p_ - 1), 4)
+        for p_ in (2, 4, 8, 16):                                   # Exercise 19.2's sweep (forward-only, fast)
+            for m_ in (1, 2, 3, 7, 16, 33, 128):
+                assert abs(simulate(p_, m_, backward=False)[0] - (p_ - 1) / (m_ + p_ - 1)) < 1e-12
+        """),
+        md("""
+        ## 19.5 — the "under 10%" rule, and the quiz's 8 stages × 8 microbatches
+
+        **DISCREPANCY (minor).** For p = 8 the quiz says you need "about 72" microbatches to get the bubble
+        under 10%. The chapter's own rule m > 9(p−1) gives **m ≥ 64** (64 → 9.9%); 72 (= 9p) gives 8.9%.
+        "Roughly ten per stage" would be 80. The three numbers should agree.
+        """),
+        code("""
+        bubble = lambda p, m: (p - 1) / (m + p - 1)
+        assert round(bubble(8, 8), 4) == 0.4667 and abs(bubble(8, 8) - 7 / 15) < 1e-12
+        m_min = next(m for m in range(1, 1000) if bubble(8, m) < 0.10)
+        print(f"p=8: first m under 10% is {m_min} ({bubble(8, m_min):.2%}); m=72 gives {bubble(8, 72):.2%}")
+        assert m_min == 9 * 7 + 1 == 64
+        assert all((bubble(p, m) < 0.1) == (m > 9 * (p - 1)) for p in range(2, 17) for m in range(1, 300))
+        """),
+        md("""
+        ## Exercise 19.2 — interleaved schedules: what "(p−1)/(vm)" measures
+
+        The simulator above with v chunks per GPU (each 1/v of a stage's work). Counting idle time, the bubble
+        *time* falls by exactly v: (p−1)/v per GPU instead of p−1.
+
+        **DISCREPANCY (definitions).** §19.5 and Exercise 19.2 say interleaving "cuts the bubble to
+        (p−1)/(vm)", comparing it with (p−1)/(m+p−1). Those are two different quantities: (p−1)/(vm) is
+        bubble time divided by *ideal compute time* (Narayanan et al.'s definition; for v = 1 it is (p−1)/m),
+        while (p−1)/(m+p−1) is the *idle fraction of total time*, which is what Exercise 19.2's `bubble()`
+        computes. In the idle-fraction convention the interleaved bubble is **(p−1)/(vm+p−1)**. The cost of
+        v is v× as many cross-GPU boundary messages per microbatch (pv − 1 instead of p − 1).
+        """),
+        code("""
+        for p_, m_, v in ((4, 8, 2), (4, 16, 4), (8, 16, 2), (8, 32, 4)):
+            frac, span = simulate(p_, m_, chunks=v, backward=False)
+            ideal = m_                                                  # each GPU's work: m microbatches x 1 stage
+            bubble_over_ideal = (span - ideal) / ideal
+            print(f"p={p_} m={m_:2d} v={v}: idle fraction {frac:.4f}  bubble/ideal {bubble_over_ideal:.4f}  "
+                  f"(p-1)/(vm) {(p_ - 1) / (v * m_):.4f}  (p-1)/(vm+p-1) {(p_ - 1) / (v * m_ + p_ - 1):.4f}")
+            assert abs(bubble_over_ideal - (p_ - 1) / (v * m_)) < 1e-9
+            assert abs(frac - (p_ - 1) / (v * m_ + p_ - 1)) < 1e-9
+            assert abs(simulate(p_, m_, backward=False)[1] - m_ - (p_ - 1)) < 1e-9   # v=1 bubble: p-1
+            assert (p_ * v - 1) / (p_ - 1) > v - 1                                    # ~v x the boundary messages
+        """),
+        md("## 19.6 — the 1024-GPU mesh, and activation checkpointing's √L"),
+        code("""
+        assert 8 * 16 * 8 == 1024
+        L = 64
+        def stored(L, k):                 # checkpoint every L/k layers: k boundaries + one segment's interior
+            return k + L / k
+        best_k = min(range(1, L + 1), key=lambda k: stored(L, k))
+        print(f"L={L}: best checkpoint count {best_k}, memory {stored(L, best_k):.0f} layer-activations vs {L}")
+        assert best_k == int(math.sqrt(L)) and stored(L, best_k) == 2 * math.sqrt(L)
+        """),
+        md("""
+        ## Exercise 19.1 — a 70B plan on 256 H100s (80 layers, 4M-token batch at 8192)
+
+        One consistent plan, checked against the constraints the chapter names. (Activations are not
+        estimated here; that needs a per-layer activation model the chapter does not give.)
+        """),
+        code("""
+        state = 16 * 70e9
+        min_gpus = math.ceil(state / 80e9)
+        TP = 8                                                     # one node; NVLink domain
+        PP = 4                                                     # 80 layers -> 20 per stage
+        DP = 256 // (TP * PP)
+        seqs = 4 * 2**20 // 8192                                   # sequences per global batch
+        m = seqs // DP                                             # microbatches of 1 sequence per pipeline
+        print(f"state {state / 1e9:.0f} GB -> >= {min_gpus} GPUs; TP {TP} x PP {PP} x DP {DP} = {TP * PP * DP}; "
+              f"{seqs} seqs/batch, m = {m} microbatches, bubble {bubble(PP, m):.1%}; "
+              f"state per GPU {state / (TP * PP) / 1e9:.0f} GB (DDP over DP) or {state / 256 / 1e9:.1f} GB (ZeRO-3)")
+        assert min_gpus == 14 and TP <= 8 and 80 % PP == 0 and TP * PP * DP == 256
+        assert m > 9 * (PP - 1) and bubble(PP, m) < 0.10
+        assert state / (TP * PP) < 80e9                            # fits before activations
+        """),
+    ]
+
+
+@notebook("21_scaling")
+def _nb21():
+    return [
+        md("""
+        # Chapter 21 — Scaling Laws and Long Context
+
+        Every number in Chapter 21, recomputed from the Hoffmann et al. fit the chapter quotes, plus the
+        long-context arithmetic. Each cell **asserts** what it checks, so `python tests/run_notebooks.py 21`
+        fails if the chapter and the code disagree. Exercises 21.1 and 21.2 run on tiny models of this
+        course's architecture trained for seconds on the bundled offline corpus (a small analogue of the
+        Tiny Shakespeare runs); Exercise 21.3 needs a real long-context model and is not reproduced.
+        """),
+        code(SETUP, """
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+        E, A, B_, a, b = 1.69, 406.4, 410.7, 0.34, 0.28                 # Hoffmann et al. 2022
+        def loss(N, D): return E + A / N ** a + B_ / D ** b
+        def optimal_20(C):                                                 # C = 6ND with D = 20N
+            N = math.sqrt(C / 120); return N, C / (6 * N)
+        """),
+        md("## 21.1 — the worked example: was GPT-3 the right size?"),
+        code("""
+        C = 3.14e23
+        N_opt, D_opt = optimal_20(C)
+        print(f"N* = {N_opt / 1e9:.1f} B, D* = {D_opt / 1e9:,.0f} B tokens")
+        assert round(N_opt / 1e9, 1) == 51.2 and round(D_opt / 1e9) == 1023
+        as_built, opt, llama = loss(175e9, 300e9), loss(N_opt, D_opt), loss(8e9, 15e12)
+        print(f"GPT-3 {as_built:.4f}   compute-optimal {opt:.4f}   Llama-3-8B {llama:.4f}")
+        assert (round(as_built, 4), round(opt, 4), round(llama, 4)) == (2.0023, 1.961, 1.9485)
+        assert opt < as_built and llama < as_built
+        assert round(175 / (N_opt / 1e9), 1) == 3.4 and round(D_opt / 300e9, 1) == 3.4
+        assert round(300 / 175, 1) == 1.7 and round(175 / 8) == 22
+        """),
+        md("## 21.1 — the ridge across budgets, the tokens-per-parameter table, the quiz"),
+        code("""
+        ridge = {1e21: (2.9, 58, 2.335), 1e22: (9.1, 183, 2.146), 1e23: (28.9, 577, 2.012), 1e25: (289, 5774, 1.851)}
+        for C, (n, d, l) in ridge.items():
+            N, D = optimal_20(C)
+            print(f"C={C:.0e}  N*={N / 1e9:6.1f}B  D*={D / 1e9:6.0f}B  loss {loss(N, D):.3f}")
+            assert round(N / 1e9, 1 if N < 1e11 else 0) == n and round(D / 1e9) == d and round(loss(N, D), 3) == l
+        assert round(math.sqrt(10), 1) == 3.2                                # 10x compute -> ~3.2x each
+        for (P, T, want) in ((175e9, 300e9, 1.7), (70e9, 1.4e12, 20), (7e9, 2e12, 286), (8e9, 15e12, 1875), (4e9, 36e12, 9000)):
+            assert round(T / P, 1 if want < 10 else 0) == want
+        assert round(1875 / 20) == 94
+        N, D = optimal_20(1e23)
+        assert round(N / 1e9) == 29 and round(D / 1e9, -1) == 580          # quiz: ~29B / ~580B
+        assert 0.8 < (70e9 * 1.4e12) / (280e9 * 300e9) < 1.25 and 280 / 70 == 4   # ~same compute, 4x smaller
+        print(f"Chinchilla 6ND = {6 * 70e9 * 1.4e12:.2e}, Gopher 6ND = {6 * 280e9 * 300e9:.2e}")
+        """),
+        md("""
+        ## The fit's own optimum is not at 20 tokens per parameter
+
+        **DISCREPANCY (method).** The worked example imposes D = 20N and calls the result "compute-optimal"
+        for the Hoffmann fit; the derivation box says "because α ≈ β, N* ∝ C^0.5". With the quoted
+        constants α = 0.34 ≠ β = 0.28, minimising L(N, C/6N) exactly gives N* ∝ C^(β/(α+β)) = C^0.45 and
+        D* ∝ C^0.55, so the ratio is not pinned: ~50 tokens/param at 10²¹ FLOPs, **~87 at GPT-3's budget**
+        (N* ≈ 24.5 B, D* ≈ 2.1 T, loss 1.954 — lower than the 1.9610 the example reports as optimal), and ~122
+        at 10²⁵. The 20-tokens-per-parameter rule comes from Hoffmann et al.'s other two estimation
+        approaches, not from this parametric fit (Besiroglu et al. 2024 discuss the mismatch). The
+        conclusion — GPT-3 was too big for its data — survives; the numbers labelled "optimal" are the
+        20-tok/param point, not the fit's minimum.
+        """),
+        code("""
+        G = (a * A / (b * B_)) ** (1 / (a + b))
+        def argmin(C):
+            N = G * (C / 6) ** (b / (a + b)); return N, C / (6 * N)
+        for C in (1e21, 3.14e23, 1e25):
+            N, D = argmin(C)
+            grid = min(loss(n, C / (6 * n)) for n in torch.logspace(8, 13, 4001).tolist())
+            print(f"C={C:.2e}: argmin N={N / 1e9:7.1f}B D={D / 1e9:8.0f}B  {D / N:5.0f} tok/param  loss {loss(N, D):.4f}"
+                  f"  (D=20N point: {loss(*optimal_20(C)):.4f})")
+            assert abs(loss(N, D) - grid) < 1e-6                         # it really is the minimum
+            assert loss(N, D) < loss(*optimal_20(C))
+        N, D = argmin(3.14e23)
+        assert round(N / 1e9, 1) == 24.5 and round(D / N) == 87 and round(loss(N, D), 3) == 1.954
+        assert round(b / (a + b), 2) == 0.45
+        """),
+        md("## 21.2 — position interpolation and NTK-aware base scaling, the numbers"),
+        code("""
+        scale = 4096 / 32768
+        assert scale == 1 / 8 and 32767 * scale == 4095.875                # "position 32767 -> 4095.9"
+        base_new = 10000 * 8 ** (128 / 126)
+        print(f"NTK base for s=8, d=128: {base_new:,.0f}")
+        assert round(base_new, -2) == 82_700
+        """),
+        md("""
+        ## 21.2 — sliding-window attention: O(T·W) work, and a receptive field that grows with depth
+
+        With `mask = (i - j < W) & (j <= i)` each layer reaches W − 1 tokens back, so L layers reach
+        L·(W − 1) — the chapter's "n_layer × W", to within one token per layer.
+        """),
+        code("""
+        T, W, L = 64, 4, 5
+        i, j = torch.arange(T)[:, None], torch.arange(T)[None, :]
+        mask = ((i - j < W) & (j <= i)).float()
+        assert mask.sum() == sum(min(t + 1, W) for t in range(T))          # ~T*W entries, not T^2
+        reach = torch.eye(T)
+        for _ in range(L):
+            reach = (mask @ reach).clamp(max=1)
+        back = (T - 1) - reach[T - 1].nonzero().min().item()
+        print(f"{L} layers of window {W}: last token sees {back} tokens back (L*(W-1) = {L * (W - 1)})")
+        assert back == L * (W - 1)
+        """),
+        md("""
+        ## Exercise 21.1 — a scaling curve from tiny models
+
+        Four widths of this course's model trained for the same number of tokens on the offline corpus.
+        Loss falls smoothly with N, as the chapter expects; the fitted exponent is printed, not asserted —
+        the chapter's point is that it will *not* be 0.34 at this scale on this data.
+        """),
+        code("""
+        from tfs.model import Config, Model, build_rope_cache
+        from tfs.train import _fallback_corpus, get_batch
+        from tfs.tokenizer import CharTokenizer
+        text = _fallback_corpus()
+        ctok = CharTokenizer(text)
+        data = torch.tensor(ctok.encode(text))
+        train, val = data[:350_000], data[350_000:]
+        def train_model(d, steps=150, T=64):
+            torch.manual_seed(0)
+            m = Model(Config(vocab_size=ctok.vocab_size, d_model=d, n_layer=2, n_head=4, n_kv_head=2,
+                             d_head=d // 4, d_ff=2 * d, max_T=T))
+            opt = torch.optim.AdamW(m.parameters(), lr=3e-3)
+            torch.manual_seed(1)
+            for _ in range(steps):
+                x = get_batch(train, 16, T)
+                _, l, _ = m(x, targets=x)
+                opt.zero_grad(); l.backward(); opt.step()
+            m.eval()
+            with torch.no_grad():
+                g = torch.Generator().manual_seed(0)
+                ix = torch.randint(len(val) - T - 1, (32,), generator=g)
+                xv = torch.stack([val[k:k + T] for k in ix])
+                vl = m(xv, targets=xv)[1].item()
+            n = sum(p.numel() for name, p in m.named_parameters() if "embed" not in name)
+            return m, n, vl
+        runs = {d: train_model(d) for d in (16, 32, 48, 64)}
+        for d, (_, n, vl) in runs.items():
+            print(f"d_model {d:3d}: {n:7,} non-embedding params  val loss {vl:.3f}")
+        Ns = torch.tensor([float(r[1]) for r in runs.values()]); Ls = torch.tensor([r[2] for r in runs.values()])
+        slope = torch.linalg.lstsq(torch.stack([Ns.log(), torch.ones(4)], 1), Ls.log()[:, None]).solution[0].item()
+        print(f"log-log slope of loss vs N: {slope:.3f}")
+        assert all(Ls[k + 1] < Ls[k] for k in range(3))                   # bigger is better, smoothly
+        """),
+        md("""
+        ## Exercise 21.2 — extend the context of a model trained at T = 64
+
+        The largest model above, evaluated at 128 and 256 tokens with (a) no change, (b) position
+        interpolation, (c) NTK-aware base scaling — by swapping the RoPE tables `tfs.model.Model` holds as
+        buffers. Loss is reported separately on the first 64 positions (the trained range) and the last 64.
+        YaRN is not implemented here.
+
+        The chapter's shape reproduces: (a) degrades on positions past 64 and gets worse with length;
+        (b) PI is worse than (a) even inside the trained range — the price of compressing every frequency;
+        (c) NTK keeps the trained range intact and degrades least past it.
+        """),
+        code("""
+        lm = runs[64][0]
+        cfg = lm.cfg
+        def set_rope(T, base=10000.0, pos_scale=1.0):
+            inv = 1.0 / (base ** (torch.arange(0, cfg.d_head, 2).float() / cfg.d_head))
+            f = torch.outer(torch.arange(T).float() * pos_scale, inv)
+            e = torch.cat((f, f), -1)
+            lm.cos, lm.sin, cfg.max_T = e.cos(), e.sin(), T
+        @torch.no_grad()
+        def ev(T, **kw):
+            set_rope(T, **kw)
+            g = torch.Generator().manual_seed(0)
+            ix = torch.randint(len(val) - T - 1, (16,), generator=g)
+            xv = torch.stack([val[k:k + T] for k in ix])
+            lg, _, _ = lm(xv)
+            nll = F.cross_entropy(lg[:, :-1].transpose(1, 2), xv[:, 1:], reduction="none")
+            return nll[:, :63].mean().item(), nll[:, -64:].mean().item()
+        res = {}
+        for T in (128, 256):
+            s = T / 64
+            res[T] = {"none": ev(T), "PI": ev(T, pos_scale=1 / s), "NTK": ev(T, base=10000 * s ** (cfg.d_head / (cfg.d_head - 2)))}
+            for k, (first, last) in res[T].items():
+                print(f"T={T}  {k:4}: loss on positions <64 {first:.3f}   last 64 positions {last:.3f}")
+        set_rope(64); base_loss = ev(64)[0]
+        assert torch.allclose(lm.cos, build_rope_cache(64, cfg.d_head)[0])
+        for T in (128, 256):
+            r = res[T]
+            assert r["none"][1] > r["none"][0] + 0.05                        # (a) degrades past the trained length
+            assert r["PI"][0] > r["none"][0] + 0.1                           # (b) PI hurts the trained range
+            assert abs(r["NTK"][0] - r["none"][0]) < 0.15                    # (c) NTK leaves it ~intact ...
+            assert r["NTK"][1] < r["none"][1]                                # ... and degrades less past it
+        assert res[256]["none"][1] > res[128]["none"][1]                     # worse the further you go
+        """),
+    ]
+
+
+@notebook("23_sft_rlhf")
+def _nb23():
+    return [
+        md("""
+        # Chapter 23 — SFT, RLHF, and PPO
+
+        Every number in Chapter 23, recomputed, and the mechanisms it describes checked on small analogues:
+        prompt masking on a tiny model (`tfs/model.py`, whose loss uses `ignore_index=-100`), a
+        Bradley–Terry reward model trained on synthetic preference data with a planted length bias, PPO's
+        clipped objective under autograd, and best-of-N against a biased reward. Each cell **asserts** what
+        it checks, so `python tests/run_notebooks.py 23` fails if the chapter and the code disagree. Nothing
+        here uses a public preference dataset or a pretrained LM; the analogues are stated as such.
+        """),
+        code(SETUP, "torch.set_num_threads(min(4, torch.get_num_threads()))\n"),
+        md("## 23.3 — the worked example: the reward-model loss on four pairs"),
+        code("""
+        rows = [(2, 1, 0.7311, 0.3133), (5, 1, 0.9820, 0.0181), (1, 1, 0.5, 0.6931), (1, 2, 0.2689, 1.3133)]
+        grads = []
+        for rw, rl, p_want, l_want in rows:
+            p = 1 / (1 + math.exp(-(rw - rl)))
+            print(rw, rl, round(p, 4), round(-math.log(p), 4))
+            assert (round(p, 4), round(-math.log(p), 4)) == (p_want, l_want)
+            gap = torch.tensor(float(rw - rl), requires_grad=True)
+            (-F.logsigmoid(gap)).backward(); grads.append(abs(gap.grad.item()))
+        assert grads.index(max(grads)) == 3 and grads[1] < 0.02          # backwards: largest; confident: ~none
+        assert abs(rows[2][3] - math.log(2)) < 1e-4                         # no opinion = ln 2
+        # Bradley-Terry: e^rw / (e^rw + e^rl) is the logistic of the difference
+        rw, rl = torch.tensor(2.0), torch.tensor(1.0)
+        assert torch.isclose(rw.exp() / (rw.exp() + rl.exp()), torch.sigmoid(rw - rl))
+        # only differences are identified: shift every reward by 100 and nothing changes
+        assert abs((1 / (1 + math.exp(-(2 - 1)))) - (1 / (1 + math.exp(-(102 - 101))))) < 1e-12
+        r = torch.randn(64, 2)
+        assert torch.allclose(F.logsigmoid(r[:, 0] - r[:, 1]), F.logsigmoid((r[:, 0] + 100) - (r[:, 1] + 100)))
+        """),
+        md("""
+        ## 23.2 — prompt masking with label −100
+
+        Masked positions contribute nothing to the loss or the gradient: changing what the masked labels
+        *would* have been changes nothing, and the loss is the mean over response tokens only.
+        """),
+        code("""
+        from tfs.model import Config, Model
+        torch.manual_seed(0)
+        m = Model(Config(vocab_size=50, d_model=32, n_layer=1, n_head=2, n_kv_head=2, d_head=16, d_ff=64, max_T=32))
+        ids = torch.randint(0, 50, (2, 12))
+        labels = ids.clone(); labels[:, :7] = -100                     # 7 prompt tokens, 5 response tokens
+        logits, loss, _ = m(ids, targets=labels)
+        manual = F.cross_entropy(logits[:, 6:-1].reshape(-1, 50), ids[:, 7:].reshape(-1))
+        assert torch.allclose(loss, manual)                             # mean over the 5 response targets
+        lg = logits.detach().requires_grad_(True)
+        F.cross_entropy(lg[:, :-1].reshape(-1, 50), labels[:, 1:].reshape(-1), ignore_index=-100).backward()
+        assert lg.grad[:, :6].abs().sum() == 0 and lg.grad[:, 6:-1].abs().sum() > 0   # no gradient from the prompt
+        """),
+        md("""
+        ## Exercise 23.1 — SFT with and without masking (toy chat, tiny model)
+
+        Conversations `U: 3+4=?\\nA: 7\\n` (answers mod 10), packed four to a sequence. Both models are
+        trained identically except for the mask. The unmasked model learns the *whole* conversation, so
+        after its answer it confidently starts another user turn; the masked model was never trained to
+        produce `U`, so it does not. (100 steps is too few for either model to learn the arithmetic itself;
+        answer accuracy is printed, not asserted. The chapter's "converges more slowly" claim is not tested.)
+        """),
+        code("""
+        from tfs.tokenizer import CharTokenizer
+        import random
+        rng = random.Random(0)
+        def example():
+            a, b = rng.randrange(10), rng.randrange(10)
+            return f"U: {a}+{b}=?\\nA: ", f"{(a + b) % 10}\\n"
+        chat = CharTokenizer("U: 0123456789+=?\\nA")
+        def batch(B, masked, k=4):
+            ids, lab = [], []
+            for _ in range(B):
+                s, l = [], []
+                for _ in range(k):
+                    p, r = example()
+                    pi, ri = chat.encode(p), chat.encode(r)
+                    s += pi + ri; l += ([-100] * len(pi) if masked else pi) + ri
+                ids.append(s); lab.append(l)
+            return torch.tensor(ids), torch.tensor(lab)
+        def sft(masked, steps=100):
+            torch.manual_seed(0)
+            mm = Model(Config(vocab_size=chat.vocab_size, d_model=48, n_layer=2, n_head=4, n_kv_head=2,
+                              d_head=12, d_ff=128, max_T=64))
+            opt = torch.optim.AdamW(mm.parameters(), lr=3e-3)
+            for _ in range(steps):
+                x, y = batch(8, masked)
+                _, l, _ = mm(x, targets=y)
+                opt.zero_grad(); l.backward(); opt.step()
+            return mm.eval()
+        @torch.no_grad()
+        def probe(mm):
+            correct, p_user = 0, 0.0
+            for a in range(10):
+                for b in range(10):
+                    ctx = torch.tensor([chat.encode(f"U: {a}+{b}=?\\nA: ")])
+                    out = mm.generate(ctx.clone(), 1, temperature=0)[0, -1].item()
+                    correct += chat.decode([out]) == str((a + b) % 10)
+                    after = torch.tensor([chat.encode(f"U: {a}+{b}=?\\nA: {(a + b) % 10}\\n")])
+                    p_user += mm(after)[0][0, -1].softmax(-1)[chat.stoi["U"]].item()
+            return correct / 100, p_user / 100
+        res = {mk: probe(sft(mk)) for mk in (True, False)}
+        for mk, (acc, pu) in res.items():
+            print(f"masked={mk!s:5}  answers correct {acc:.0%}   P(next turn starts with 'U') {pu:.3f}")
+        assert res[False][1] > 0.9                                       # unmasked: writes the user's turn
+        assert res[True][1] < 0.5 * res[False][1]                         # masked: was never taught to
+        """),
+        md("""
+        ## Exercise 23.2 — a Bradley–Terry reward model, and the biases it learns
+
+        Synthetic responses with three features: true quality, length, and bulleted formatting. The
+        simulated annotators prefer quality but also, like the real ones the chapter describes, longer and
+        bulleted answers. A linear reward model trained with the Bradley–Terry loss inherits both biases.
+        """),
+        code("""
+        torch.manual_seed(0)
+        def responses(n):
+            q, ln, bul = torch.randn(n), torch.randn(n), (torch.rand(n) < 0.5).float()
+            return torch.stack([q, ln, bul], 1)
+        true_w = torch.tensor([1.5, 0.8, 0.5])              # annotators: quality, length bias, format bias
+        def pairs(n):
+            a, b = responses(n), responses(n)
+            pref_a = torch.rand(n) < torch.sigmoid((a - b) @ true_w)
+            chosen = torch.where(pref_a[:, None], a, b); rejected = torch.where(pref_a[:, None], b, a)
+            return chosen, rejected
+        ch, rj = pairs(4000)
+        rm = nn.Linear(3, 1, bias=False)
+        opt = torch.optim.Adam(rm.parameters(), lr=0.05)
+        for _ in range(300):
+            loss = -F.logsigmoid(rm(ch) - rm(rj)).mean()
+            opt.zero_grad(); loss.backward(); opt.step()
+        w = rm.weight.detach()[0]
+        tch, trj = pairs(2000)
+        acc = (rm(tch) > rm(trj)).float().mean().item()
+        X = responses(2000); r = rm(X).detach()[:, 0]
+        corr_len = torch.corrcoef(torch.stack([r, X[:, 1]]))[0, 1].item()
+        bullet_gain = (rm(X * torch.tensor([1, 1, 0]) + torch.tensor([0, 0, 1.0])) - rm(X * torch.tensor([1, 1, 0]))).mean().item()
+        print(f"learned weights {[round(v, 2) for v in w.tolist()]}  held-out ranking accuracy {acc:.0%}")
+        print(f"corr(reward, length) = {corr_len:.2f}; reformatting with bullets adds {bullet_gain:+.2f} reward")
+        assert acc > 0.7 and corr_len > 0.3 and bullet_gain > 0.2
+        assert torch.allclose(w, true_w, atol=0.25)                      # it learned the annotators' biases
+        """),
+        md("""
+        ## 23.4 — PPO's clipped surrogate under autograd
+
+        **DISCREPANCY (precision).** The chapter says "if the probability ratio moves more than ε away from
+        1, the objective is clipped and the gradient vanishes". That is only half the rule. `min(ρÂ,
+        clip(ρ)Â)` clips only in the direction the advantage favours: with Â > 0 the gradient vanishes for
+        ρ > 1 + ε (but not for ρ < 1 − ε); with Â < 0 it vanishes for ρ < 1 − ε, while for ρ > 1 + ε the
+        unclipped term is the minimum and the gradient is still there — a bad action whose probability rose
+        keeps being pushed down.
+        """),
+        code("""
+        def clip_grad(rho, adv, eps=0.2):
+            r = torch.tensor(rho, requires_grad=True)
+            torch.min(r * adv, r.clamp(1 - eps, 1 + eps) * adv).backward()
+            return r.grad.item()
+        cases = {(1.1, +1): 1.0, (1.3, +1): 0.0, (0.7, +1): 1.0, (0.9, -1): -1.0, (0.7, -1): 0.0, (1.3, -1): -1.0}
+        for (rho, adv), want in cases.items():
+            g = clip_grad(rho, adv)
+            print(f"ratio {rho}  advantage {adv:+d}  -> gradient {g:+.1f}")
+            assert g == want
+        """),
+        md("""
+        ## 23.4 — the KL term, and four models in memory
+
+        KL(π‖π_ref) ≥ 0 with equality only at π = π_ref; four 7B bf16 models are 56 GB of weights.
+        """),
+        code("""
+        torch.manual_seed(0)
+        for _ in range(100):
+            p, q = torch.randn(10).softmax(-1), torch.randn(10).softmax(-1)
+            assert (p * (p / q).log()).sum() >= 0
+        assert abs((p * (p / p).log()).sum()) < 1e-7
+        assert 4 * 7e9 * 2 / 1e9 == 56
+        """),
+        md("""
+        ## Exercise 23.3 — best-of-N against a biased reward: reward rises, true quality turns over
+
+        Candidates have true quality q and a length ℓ. The reward model scores q + 1.0·ℓ (the length bias
+        it learned above); humans dislike rambling, so true quality is q − 0.3·ℓ². Picking the best of N by
+        reward is a KL-free optimiser against the reward model. This is a constructed analogue: the
+        turnover appears because the reward model's error is correlated with something that hurts true
+        quality — which is the chapter's mechanism, not a measurement of a real model. Where the peak lands
+        depends on the penalty constant: 0.3 puts it in the chapter's N = 16–64 range; a weaker penalty
+        (0.25) moves it past N = 256.
+        """),
+        code("""
+        torch.manual_seed(0)
+        trials = 4000
+        out = {}
+        for N in (1, 4, 16, 64, 256):
+            q, ln = torch.randn(trials, N), torch.randn(trials, N)
+            reward = q + 1.0 * ln
+            pick = reward.argmax(1, keepdim=True)
+            out[N] = (reward.gather(1, pick).mean().item(), (q - 0.3 * ln ** 2).gather(1, pick).mean().item())
+            print(f"N={N:3d}  mean reward {out[N][0]:5.2f}   true quality {out[N][1]:5.2f}")
+        rewards = [out[N][0] for N in out]; quality = [out[N][1] for N in out]
+        assert rewards == sorted(rewards)                                  # reward: monotone in N
+        peak = list(out)[quality.index(max(quality))]
+        assert peak in (16, 64) and quality[-1] < max(quality)            # quality peaks mid-range, then falls
+        """),
+    ]
+
+
+@notebook("25_grpo")
+def _nb25():
+    return [
+        md("""
+        # Chapter 25 — DPO Variants, GRPO, and RLVR
+
+        Every number and code cell in Chapter 25, recomputed, using `tfs/dpo.py` (`dpo_loss`, `simpo_loss`)
+        where it applies. Each cell **asserts** what it checks, so `python tests/run_notebooks.py 25` fails
+        if the chapter and the code disagree. Exercise 25.2 (GRPO on GSM8K with an instruct model) becomes a
+        small analogue: GRPO on a verifiable toy task (addition mod 10) with a tabular policy, which
+        reproduces the three behaviours the exercise asks about — learning from group-relative advantages,
+        doing nothing from a 0% start, and the fraction of groups dynamic sampling would filter.
+        """),
+        code(SETUP, "from tfs.dpo import dpo_loss, simpo_loss\n"),
+        md("""
+        ## 25.1 — IPO targets a finite margin; DPO's sigmoid only bottoms out at infinity
+        """),
+        code("""
+        beta = 0.1
+        h = torch.linspace(-5, 60, 6501, dtype=torch.float64, requires_grad=True)
+        ipo = (h - 1 / (2 * beta)) ** 2
+        dpo = -F.logsigmoid(beta * h)
+        assert abs(h[ipo.argmin()].item() - 1 / (2 * beta)) < 0.02          # IPO minimum at h = 1/(2 beta) = 5
+        dpo.sum().backward()
+        assert (h.grad < 0).all()                                            # DPO: always pushing the margin up
+        print(f"IPO optimum at h = {h[ipo.argmin()].item():.2f};  DPO gradient at h=60 still {h.grad[-1].item():.2e}")
+        # dpo_loss in tfs/dpo.py is this sigmoid on beta * h
+        pc, pr, rc, rr = (torch.tensor([v]) for v in (-10.0, -14.0, -11.0, -12.0))
+        l, *_ = dpo_loss(pc, pr, rc, rr, beta=beta)
+        assert torch.isclose(l, -F.logsigmoid(beta * torch.tensor((-10 + 14) - (-11 + 12.0))))
+        """),
+        md("""
+        ## 25.1 — SimPO is length-normalised and reference-free; DPO's summed log-prob grows with length
+
+        A response repeated twice has the same per-token log-probability but twice the summed log-prob.
+        """),
+        code("""
+        per_token = torch.tensor([-0.5, -1.0, -0.8])
+        short, long_ = per_token.sum(), per_token.repeat(2).sum()
+        assert torch.isclose(long_, 2 * short)                              # DPO sees a different number
+        assert torch.isclose(short / 3, long_ / 6)                           # SimPO sees the same average
+        lc, lr_ = torch.tensor([-12.0]), torch.tensor([-18.0])
+        s1 = simpo_loss(lc, lr_, torch.tensor([6.0]), torch.tensor([9.0]))
+        s2 = simpo_loss(2 * lc, 2 * lr_, torch.tensor([12.0]), torch.tensor([18.0]))
+        assert torch.isclose(s1, s2)                                         # doubling both lengths: no change
+        manual = -F.logsigmoid(torch.tensor(2.0 * (-12 / 6) - 2.0 * (-18 / 9) - 0.5))
+        assert torch.isclose(s1, manual)                                     # beta/|y| log pi, margin gamma
+        """),
+        md("""
+        ## 25.1 — ORPO's odds ratio
+        """),
+        code("""
+        def log_odds(p): return math.log(p / (1 - p))
+        pw, pl = 0.6, 0.2
+        l_or = -math.log(1 / (1 + math.exp(-(log_odds(pw) - log_odds(pl)))))
+        print(f"odds ratio {(pw / (1 - pw)) / (pl / (1 - pl)):.1f}  ->  L_OR = {l_or:.4f}")
+        assert abs((pw / (1 - pw)) / (pl / (1 - pl)) - 6.0) < 1e-12 and l_or < math.log(2)
+        assert abs(-math.log(1 / (1 + math.exp(-(log_odds(0.3) - log_odds(0.3))))) - math.log(2)) < 1e-12
+        """),
+        md("""
+        ## 25.2 — the RLVR reward function, as printed
+
+        `extract_boxed` is not defined in the chapter; this is the obvious one.
+        """),
+        code(r'''
+        import re
+        def extract_boxed(s):
+            m = re.search(r"\\boxed\{(.*?)\}", s)
+            return m.group(1) if m else None
+        ground_truth = {"2+2": "4"}
+        def reward(prompt, completion):
+            r = 0.1 if re.search(r"<think>.*?</think>.*?\\boxed\{.*?\}", completion, re.S) else 0.0
+            if extract_boxed(completion) == ground_truth[prompt]:
+                r += 1.0
+            return r
+        cases = {"<think>2 and 2</think> so \\boxed{4}": 1.1, "\\boxed{4}": 1.0,
+                 "<think>hmm</think>\n\\boxed{5}": 0.1, "four": 0.0}
+        for c, want in cases.items():
+            print(f"{reward('2+2', c):.1f}  <- {c!r}")
+            assert abs(reward("2+2", c) - want) < 1e-12
+        '''),
+        md("""
+        ## 25.3 — the worked example: three groups of 8
+        """),
+        code("""
+        def advantages(rewards):
+            r = torch.tensor(rewards, dtype=torch.float)
+            return (r - r.mean()) / (r.std(unbiased=False) + 1e-4)
+        A_ = advantages([1, 0, 1, 0, 1, 0, 0, 1])
+        Bz = advantages([1] * 8)
+        Cc = advantages([0, 0, 0, 1, 0, 0, 0, 0])
+        print([round(v, 3) for v in A_.tolist()], Bz.tolist(), [round(v, 3) for v in Cc.tolist()])
+        assert torch.allclose(A_, torch.tensor([1., -1, 1, -1, 1, -1, -1, 1]), atol=1e-3)
+        assert Bz.abs().sum() < 1e-3 and advantages([0] * 8).abs().sum() < 1e-3   # all-right = all-wrong = 0
+        r = torch.tensor([0., 0, 0, 1, 0, 0, 0, 0])
+        assert round(r.mean().item(), 3) == 0.125 and round(r.std(unbiased=False).item(), 4) == 0.3307
+        assert round(Cc[3].item(), 3) == 2.645 and all(round(v, 3) == -0.378 for i, v in enumerate(Cc.tolist()) if i != 3)
+        """),
+        md("""
+        ## The chapter's two code cells disagree on the standard deviation
+
+        **DISCREPANCY (code consistency).** `advantages()` z-scores with `r.std(unbiased=False)`, which gives
+        the worked example's +2.645 / −0.378. The `grpo_step` sketch below it uses `rewards.std()`, which in
+        PyTorch is Bessel-corrected (divide by G − 1): for the same group that gives **+2.474 / −0.353**, and
+        group A gives ±0.935 instead of ±1. Either convention trains, but the sketch does not reproduce the
+        worked numbers; one of the two should change.
+        """),
+        code("""
+        rr_ = torch.tensor([0., 0, 0, 1, 0, 0, 0, 0])
+        sketch = (rr_ - rr_.mean()) / (rr_.std() + 1e-4)                      # as in grpo_step
+        print([round(v, 3) for v in sketch.tolist()])
+        assert round(sketch[3].item(), 3) == 2.474 and round(sketch[0].item(), 3) == -0.353
+        ga = torch.tensor([1., 0, 1, 0, 1, 0, 0, 1])
+        assert round(((ga - ga.mean()) / (ga.std() + 1e-4))[0].item(), 3) == 0.935
+        """),
+        md("""
+        ## 25.3 — the k3 KL estimator in `grpo_step` is non-negative and unbiased
+
+        With samples from π, E[exp(log π_ref − log π) − (log π_ref − log π) − 1] = KL(π‖π_ref).
+        """),
+        code("""
+        torch.manual_seed(0)
+        pi, ref = torch.randn(20).softmax(-1), torch.randn(20).softmax(-1)
+        x = torch.multinomial(pi, 400_000, replacement=True)
+        d = ref.log()[x] - pi.log()[x]
+        k3 = d.exp() - d - 1
+        exact = (pi * (pi / ref).log()).sum()
+        print(f"k3 estimate {k3.mean():.4f}   exact KL {exact:.4f}")
+        assert (k3 >= 0).all() and abs(k3.mean() - exact) < 0.01
+        """),
+        md("""
+        ## Exercise 25.2 (analogue) — GRPO on a verifiable task
+
+        Prompts are pairs (a, b); the answer is (a + b) mod 10; reward 1 if correct. The policy is a table of
+        logits, one row per prompt, sampled G = 8 times per prompt. Loss = −mean(Â · log π(answer)) with the
+        worked example's advantages (on-policy, so the PPO ratio is 1), plus β = 0.04 times the k3 KL to the
+        starting policy.
+        """),
+        code("""
+        prompts = [(a, b) for a in range(10) for b in range(10)]
+        truth = torch.tensor([(a + b) % 10 for a, b in prompts])
+        def grpo(init_logits, steps=60, G=8, beta=0.04, lr=0.5, n_prompts=32, seed=0):
+            torch.manual_seed(seed)
+            logits = init_logits.clone().requires_grad_(True)
+            ref = init_logits.clone()
+            opt = torch.optim.Adam([logits], lr=lr)
+            acc, filtered, zero_grad_steps = [], [], 0
+            for _ in range(steps):
+                idx = torch.randperm(100)[:n_prompts]
+                logp = logits[idx].log_softmax(-1)                          # (P, 10)
+                ans = torch.multinomial(logp.exp().detach(), G, replacement=True)   # (P, G)
+                rew = (ans == truth[idx, None]).float()
+                adv = (rew - rew.mean(1, keepdim=True)) / (rew.std(1, unbiased=False, keepdim=True) + 1e-4)
+                lp = logp.gather(1, ans)
+                d = ref[idx].log_softmax(-1).gather(1, ans) - lp
+                loss = -(adv * lp - beta * (d.exp() - d - 1)).mean()
+                opt.zero_grad(); loss.backward()
+                if logits.grad.abs().max() < 1e-6: zero_grad_steps += 1
+                opt.step()
+                filtered.append(((rew.sum(1) == 0) | (rew.sum(1) == G)).float().mean().item())
+                acc.append(logits.detach().softmax(-1)[torch.arange(100), truth].mean().item())
+            return acc, filtered, zero_grad_steps
+        acc, filtered, _ = grpo(torch.zeros(100, 10))
+        print(f"expected accuracy: start {acc[0]:.0%} -> step 20 {acc[20]:.0%} -> end {acc[-1]:.0%}")
+        assert acc[-1] > 0.9 and acc[-1] > acc[0] + 0.5
+        """),
+        md("""
+        **A 0% start does nothing**, exactly as the practical note says: every group is all-wrong, every
+        advantage is zero, and with β = 0 the gradient is exactly zero at every step.
+        """),
+        code("""
+        hopeless = torch.zeros(100, 10)
+        hopeless[torch.arange(100), truth] = -30.0                     # the right answer is never sampled
+        acc0, filt0, zero_steps = grpo(hopeless, steps=20, beta=0.0)
+        print(f"0% start: accuracy {acc0[0]:.1e} -> {acc0[-1]:.1e}; zero-gradient steps {zero_steps}/20; filtered {filt0[0]:.0%}")
+        assert zero_steps == 20 and acc0[-1] == acc0[0] and filt0[0] == 1.0
+        """),
+        md("""
+        **Dynamic sampling.** The share of groups that come back all-correct or all-wrong (and would be
+        filtered) is p⁸ + (1 − p)⁸ for a prompt answered correctly with probability p: high at the very
+        start, lowest around p = 0.5, and back in the chapter's 20–60% band once the model is decent
+        (p ≈ 0.85–0.93). In the run above it was 43% at the uniform start (p = 0.1) and climbs toward 100%
+        as the policy converges.
+        """),
+        code("""
+        frac = lambda p, G=8: p ** G + (1 - p) ** G
+        print({p: round(frac(p), 3) for p in (0.1, 0.5, 0.8, 0.85, 0.9, 0.94, 0.97)})
+        assert round(frac(0.1), 2) == 0.43 and frac(0.5) < 0.01
+        assert all(0.2 <= frac(p) <= 0.6 for p in (0.85, 0.9, 0.93))
+        assert abs(filtered[0] - frac(0.1)) < 0.15 and filtered[-1] > 0.6
+        """),
+        md("## 25.3 — models in memory: PPO 4, GRPO 3 (and the reward may be a program)"),
+        code("""
+        ppo = {"policy", "reference", "reward model", "value model"}
+        grpo_models = ppo - {"value model"}
+        assert len(ppo) == 4 and len(grpo_models) == 3
+        """),
+    ]
+
+
+# ============================================================ END NOTEBOOKS
+
+
+def main() -> int:
+    filters = sys.argv[1:]
+    names = [n for n in NOTEBOOKS if not filters or any(f in n for f in filters)]
+    if not names:
+        print("no matching notebooks")
+        return 1
+    for name in names:
+        path = os.path.join(NB_DIR, name + ".ipynb")
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(to_ipynb(NOTEBOOKS[name]), f, indent=1, ensure_ascii=False)
+            f.write("\n")
+        n_assert = sum(src.count("assert ") for kind, src in NOTEBOOKS[name] if kind == "code")
+        print(f"  wrote notebooks/{name}.ipynb  ({len(NOTEBOOKS[name])} cells, {n_assert} asserts)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
