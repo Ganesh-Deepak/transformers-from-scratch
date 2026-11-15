@@ -13,27 +13,27 @@
 
 <h1>23 · SFT, LoRA, RLHF, and PPO</h1>
 <p class="lead">
-A pretrained model is a text predictor, not an assistant. Ask it a question and it may well produce five more
-questions — because that's what documents containing questions look like. This part of the course is about
-closing the gap between "models the internet" and "does what you asked." This chapter covers the first half of
-the toolkit: <b>supervised fine-tuning</b>, the way almost everyone actually runs it (<b>LoRA</b>, on a fraction
-of the memory), the <b>data recipes</b> modern post-training is built from, and <b>RLHF with PPO</b>, derived
-down to the per-token rewards and the advantage estimator.
+A pretrained model predicts text. It is not an assistant. Ask it a question and it may well produce five more
+questions, because that is what documents with questions in them look like. This part of the course closes the gap
+between "models the internet" and "does what you asked". This chapter covers the first half of
+the toolkit: <b>supervised fine-tuning</b>; the way almost everyone actually runs it (<b>LoRA</b>, in a fraction
+of the memory); the <b>data recipes</b> that modern post-training is built from; and <b>RLHF with PPO</b>, worked out
+all the way to the per-token rewards and the advantage estimator.
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; SFT is the training loop with different data<br><a href="ch12-precision.html">Ch&nbsp;12</a> &mdash; bf16 weights, fp32 master copies, the 16 bytes per parameter<br><a href="ch18-serving.html">Ch&nbsp;18</a> &mdash; batching, for multi-LoRA serving<div class="sep"></div><span class="k">Leads to</span><a href="ch24-dpo.html">Ch&nbsp;24</a> &mdash; DPO removes most of this machinery<br><a href="ch25-grpo.html">Ch&nbsp;25</a> &mdash; and RLVR removes the reward model too<br><a href="ch26-evaluation.html">Ch&nbsp;26</a> &mdash; how you know any of it worked<div class="sep"></div><span class="k">Why this chapter</span>A pretrained model predicts text. It does not answer questions. This is the gap. The LoRA, GAE and KL numbers are computed by <code>tfs/lora.py</code> and <code>tfs/rl.py</code> and asserted in <code>tests/test_posttraining.py</code>.</div>
 
 <div class="box intuition">
 <span class="t">The whole chapter in six sentences</span>
-<p style="margin-bottom:0"><b>SFT is pretraining on curated conversations, with the loss masked to the
-assistant's tokens.</b> <b>LoRA freezes the model and trains a low-rank update BA beside each weight</b>,
-cutting the trainable parameters of an 8B model to 0.5% and its fine-tuning memory from 128 GB to 17 GB
-(6.4 GB with a 4-bit base). <b>Modern SFT data is mostly generated</b>: by the model itself and filtered
+<p style="margin-bottom:0"><b>SFT is pretraining on chosen conversations, with the loss masked to the
+assistant's tokens.</b> <b>LoRA freezes the model and trains a low-rank update BA beside each weight.</b> That
+cuts the trainable parameters of an 8B model to 0.5% and its fine-tuning memory from 128 GB to 17 GB
+(6.4 GB with a 4-bit base). <b>Most modern SFT data is generated</b>, either by the model itself and then filtered
 (rejection sampling), or by a stronger teacher (distillation), ideally on the student's own samples.
 <b>Preferences are easier to give than demonstrations</b>, and a Bradley-Terry reward model turns them into a
 score. <b>PPO maximises that score minus a KL penalty</b>, which in practice is paid token by token as a
 shaped reward. <b>GAE turns those per-token rewards and a learned value function into advantages</b>,
-trading bias for variance with one parameter λ.</p>
+trading bias for variance with one parameter, λ.</p>
 </div>
 
 <h2>23.1 · The pipeline</h2>
@@ -50,13 +50,13 @@ trading bias for variance with one parameter λ.</p>
 </table>
 </div>
 
-<p>Stages 2–4 together are <b>post-training</b>. They use a few percent of pretraining's compute and decide
-most of what a user experiences. Stages 2 and 3 are this chapter and the next; stage 4 is Chapter 25; whether
+<p>Stages 2 to 4 together are <b>post-training</b>. They use a few percent of the compute of pretraining, yet they decide
+most of what a user experiences. Stages 2 and 3 are this chapter and the next, stage 4 is Chapter 25, and whether
 any of it worked is Chapter 26.</p>
 
 <h2>23.2 · Supervised fine-tuning</h2>
 
-<p>Mechanically, SFT is <b>identical to pretraining</b> — same loss, same optimizer. Two differences:</p>
+<p>Mechanically, SFT is <b>identical to pretraining</b>: the same loss and the same optimizer. There are two differences:</p>
 
 <pre><code># 1. The data is formatted with a chat template (Chapter 3)
 text = tokenizer.apply_chat_template([
@@ -71,45 +71,45 @@ labels[:len(prompt_ids)] = -100     # -100 = ignore_index in F.cross_entropy
 
 <div class="box gotcha">
 <span class="t">Masking the prompt matters more than people expect</span>
-<p style="margin-bottom:0">If you train on prompt tokens too, the model spends capacity learning to
-<i>generate user questions</i> — a task you never want it to perform. It also dilutes the gradient signal on
+<p style="margin-bottom:0">If you train on the prompt tokens too, the model spends capacity learning to
+<i>generate user questions</i>, a task you never want it to do. It also waters down the gradient signal on
 what you actually care about. Always mask, and always print a decoded example with the masked positions
-marked before launching a run.</p>
+marked before you start a run.</p>
 </div>
 
 <h3>Why SFT isn't enough</h3>
 
 <ul>
-<li><b>It can only imitate, never exceed.</b> SFT's ceiling is the quality of your demonstrations. If your
+<li><b>It can only imitate, never do better.</b> SFT can only be as good as your demonstrations. If your
 annotators write mediocre answers, you get a mediocre model.</li>
-<li><b>"Good" is easier to judge than to produce.</b> Writing an excellent response is expensive; comparing
-two responses is cheap. Preference data is far more scalable than demonstration data.</li>
+<li><b>"Good" is easier to judge than to produce.</b> Writing an excellent response is expensive, but comparing
+two responses is cheap. Preference data scales far better than demonstration data.</li>
 <li><b>There is no signal about what to avoid.</b> SFT only ever says "do this". It never says "not that",
-so there's no gradient pushing away from unhelpful or unsafe outputs.</li>
+so no gradient pushes away from unhelpful or unsafe outputs.</li>
 </ul>
 
 <div class="box intuition">
 <span class="t">The core argument for preference learning</span>
-<p style="margin-bottom:0">For most of what we want from an assistant — helpfulness, tone, honesty about
-uncertainty — we cannot write down a loss function, and we cannot reliably produce optimal demonstrations.
-But we <b>can</b> reliably say which of two responses is better. Preference optimisation is the machinery
-for turning that comparison signal into a gradient. Before we get there, two practical questions every
-fine-tuning run has to answer first: how to fit it in memory (23.3), and where the data comes from (23.4).</p>
+<p style="margin-bottom:0">For most of what we want from an assistant (helpfulness, tone, honesty about
+uncertainty) we cannot write down a loss function, and we cannot reliably produce ideal demonstrations.
+But we <b>can</b> reliably say which of two responses is better. Preference optimisation turns that
+comparison into a gradient. Before we get there, every fine-tuning run has two practical questions to answer
+first: how to fit it in memory (23.3), and where the data comes from (23.4).</p>
 </div>
 
 <h2>23.3 · LoRA: fine-tuning a sliver of the model</h2>
 
 <p>Full fine-tuning updates every weight, so it needs every weight's gradient and optimizer state. Chapter 12
-counted the bill for AdamW in mixed precision: a bf16 weight (2 bytes), its bf16 gradient (2), an fp32 master
-copy (4) and Adam's two moments (4 + 4), <b>16 bytes per parameter</b> before a single activation. For an
-8-billion-parameter model that is 128 GB, more than one 80 GB GPU. Yet the change fine-tuning makes is small:
-the model already knows the language, and we are adjusting its behaviour. Hu et al. (2021) bet that the
-<i>update</i> has low rank, and it does, well enough to make this the default way to fine-tune.</p>
+added up the bill for AdamW in mixed precision: a bf16 weight (2 bytes), its bf16 gradient (2), an fp32 master
+copy (4) and Adam's two moments (4 + 4). That is <b>16 bytes per parameter</b> before a single activation. For an
+8-billion-parameter model it is 128 GB, more than one 80 GB GPU holds. Yet fine-tuning makes only a small change.
+The model already knows the language, and we are adjusting its behaviour. Hu et al. (2021) bet that the
+<i>update</i> has low rank. It does, well enough to make this the default way to fine-tune.</p>
 
 <h3>The update ΔW = BA</h3>
 
 <p>Freeze the pretrained weight <code>W</code> of shape (out, in). Next to it, learn two thin matrices: A of
-shape (r, in) and B of shape (out, r), with a rank r of 8 to 64 against an in and out of thousands. The layer
+shape (r, in) and B of shape (out, r). The rank r is 8 to 64, while in and out are in the thousands. The layer
 computes</p>
 
 <div class="mathblock">
@@ -118,8 +118,8 @@ h = W x + s · B (A x) &nbsp;&nbsp;&nbsp;&nbsp; s = α / r
 </div>
 
 <p>Follow the shapes for one token. x is (in). <code>A x</code> is (r): the input squeezed through r
-directions. <code>B (A x)</code> is (out). The update is never materialised as an (out, in) matrix during
-training: two thin matmuls cost r·(in + out) multiply-adds per token instead of in·out.</p>
+directions. <code>B (A x)</code> is (out). The update is never built as an (out, in) matrix during
+training. Two thin matmuls cost r·(in + out) multiply-adds per token instead of in·out.</p>
 
 <pre><code>class LoRALinear(nn.Module):                                   # tfs/lora.py
     def __init__(self, base: nn.Linear, r=8, alpha=16.0, rslora=False):
@@ -152,45 +152,45 @@ training: two thin matmuls cost r·(in + out) multiply-adds per token instead of
 
 <ul>
 <li><b>B = 0 makes ΔW = 0</b>, so at step 0 the wrapped model is <i>exactly</i> the pretrained model. Fine-tuning
-starts from what you downloaded, not from a randomly perturbed copy of it.</li>
+starts from what you downloaded, not from a randomly disturbed copy of it.</li>
 <li><b>A random keeps the gradient alive.</b> ∂L/∂B depends on A x, which is nonzero, so B moves on the first
-step. ∂L/∂A depends on B, so A receives exactly zero gradient at step 0 and starts learning at step 1.</li>
+step. ∂L/∂A depends on B, so A gets exactly zero gradient at step 0 and starts learning at step 1.</li>
 <li><b>Both zero is a trap.</b> Each gradient would be proportional to a zero matrix, forever. It is a saddle
-point that plain gradient descent never leaves, the same shape of bug as Chapter 20's top-1 router.</li>
+point that plain gradient descent never leaves, the same kind of bug as the top-1 router in Chapter 20.</li>
 </ul>
 
-<p>The tests check all three: the outputs are bit-identical at init, <code>A.grad</code> is exactly zero and
+<p>The tests check all three. The outputs are bit-identical at init, <code>A.grad</code> is exactly zero and
 <code>B.grad</code> is not after one backward pass, and with both zero neither gradient ever moves.</p>
 
 <h3>Rank, alpha, and rsLoRA</h3>
 
-<p>The scale s = α/r exists so that you can change r without re-tuning the learning rate, in principle. In
-practice people set α = 16 or α = 2r and sweep r. Here is the catch Kalajdzievski (2023) pointed out. Each
+<p>The scale s = α/r is meant to let you change r without re-tuning the learning rate. In
+practice people set α = 16 or α = 2r and sweep r. Kalajdzievski (2023) pointed out the catch. Each
 entry of B(Ax) is a sum over r terms. If the entries of A and B have a fixed scale, the variance of that sum
-grows like r and its standard deviation like √r. Multiplying by α/r leaves an update whose size shrinks like
-1/√r: <b>raising the rank makes each adapter learn less</b>, which is why many people found that rank 256 was
+grows like r and its standard deviation like √r. Multiplying by α/r then leaves an update whose size shrinks like
+1/√r. So <b>raising the rank makes each adapter learn less</b>, which is why many people found that rank 256 was
 no better than rank 8. <b>rsLoRA</b> scales by α/√r instead, and the update size stops depending on r. The
-test measures it: from r = 4 to r = 64 the update shrinks 4× (= √16) with α/r and stays within 10% with
-α/√r. With α = 16 and r = 16 the two scales are 1.0 and 4.0. PEFT exposes it as
+test measures it. From r = 4 to r = 64 the update shrinks 4× (= √16) with α/r, and stays within 10% with
+α/√r. With α = 16 and r = 16 the two scales are 1.0 and 4.0. PEFT offers it as
 <code>use_rslora=True</code>.</p>
 
 <h3>Which matrices to adapt</h3>
 
-<p>The original paper adapted only W<sub>q</sub> and W<sub>v</sub> of attention and found that, at a fixed
-parameter budget, spreading rank over more matrices beat concentrating it. Later work moved the default to
-<b>every linear layer</b>: QLoRA (Dettmers et al. 2023) found that adapting all of them was needed to match
-full fine-tuning, and Thinking Machines' "LoRA Without Regret" study (Schulman et al. 2025) found the MLP
-matrices matter most, and that LoRA's best learning rate is roughly 10× the full fine-tuning one. Two cautions
-from Biderman et al. (2024), "LoRA Learns Less and Forgets Less": on large-scale continued training (new
-programming languages, lots of mathematics) LoRA falls clearly short of full fine-tuning, and it also
-forgets less of what the base model knew. Use it for adapting behaviour and style, for most SFT and RL, and
-reach for full fine-tuning when you are teaching a lot of new knowledge.</p>
+<p>The original paper adapted only W<sub>q</sub> and W<sub>v</sub> of attention. It found that, for a fixed
+parameter budget, spreading rank over more matrices beat putting it all in a few. Later work moved the default to
+<b>every linear layer</b>. QLoRA (Dettmers et al. 2023) found that adapting all of them was needed to match
+full fine-tuning. Thinking Machines' "LoRA Without Regret" study (Schulman et al. 2025) found that the MLP
+matrices matter most, and that LoRA's best learning rate is roughly 10× the one for full fine-tuning. Biderman et al. (2024),
+"LoRA Learns Less and Forgets Less", add two cautions. On large-scale continued training (new
+programming languages, lots of mathematics) LoRA falls clearly short of full fine-tuning. It also
+forgets less of what the base model knew. Use LoRA to adapt behaviour and style, for most SFT and RL, and
+switch to full fine-tuning when you are teaching a lot of new knowledge.</p>
 
 <div class="example">
 <span class="t">Worked example — LoRA on Llama-3-8B, every number computed</span>
-<p>Llama-3-8B: vocab 128,256, d_model 4096, 32 layers, 32 query heads and 8 KV heads of 128, SwiGLU with
-d_ff 14,336, untied embeddings. <code>llama_param_counts</code> gives <b>8,030,261,248</b> parameters: 6.98 B
-in the block Linears, 1.05 B in the embedding and output head, 266 k in norms.</p>
+<p>Llama-3-8B has vocab 128,256, d_model 4096, 32 layers, 32 query heads and 8 KV heads of 128, SwiGLU with
+d_ff 14,336, and untied embeddings. <code>llama_param_counts</code> gives <b>8,030,261,248</b> parameters: 6.98 B
+in the block Linears, 1.05 B in the embedding and output head, and 266 k in norms.</p>
 
 <div class="step"><div class="i">1</div><div>
 <b>Adapter parameters per block at r = 16</b>, r·(in + out) per matrix:
@@ -220,46 +220,46 @@ QLoRA fits on a laptop GPU.
 <div class="step"><div class="i">3</div><div>
 <b>The same for Llama-3-70B</b> (8192 wide, 80 layers, d_ff 28,672; 70.55 B parameters, 207 M adapter
 parameters at r = 16): <b>1,129 GB</b> full, <b>144 GB</b> LoRA, <b>43 GB</b> QLoRA. QLoRA is what put
-70B fine-tuning on a single 48–80 GB GPU.
+70B fine-tuning on a single GPU of 48 to 80 GB.
 </div></div>
 
-<p style="margin-bottom:0"><b>What LoRA does not save.</b> Activations: the backward pass still runs through
+<p style="margin-bottom:0"><b>What LoRA does not save.</b> First, activations. The backward pass still runs through
 every frozen layer to reach the adapters, so activation memory is unchanged and needs the usual gradient
-checkpointing. And most of the compute: per token, training costs about 6N FLOPs (Ch 21), of which 2N computes
-the weight gradients that LoRA skips. LoRA trains at roughly 4N, a third less compute, not 99% less.</p>
+checkpointing. Second, most of the compute. Per token, training costs about 6N FLOPs (Ch 21), of which 2N computes
+the weight gradients that LoRA skips. So LoRA trains at roughly 4N: a third less compute, not 99% less.</p>
 </div>
 
 <h3>QLoRA: a 4-bit base under a 16-bit adapter</h3>
 
-<p>QLoRA (Dettmers et al. 2023) stores the frozen base in <b>NF4</b>, a 4-bit format whose 16 levels are placed
+<p>QLoRA (Dettmers et al. 2023) stores the frozen base in <b>NF4</b>, a 4-bit format whose 16 levels sit
 at the quantiles of a normal distribution, because pretrained weights are roughly normal (Chapter 0 builds
-block-scaled formats from scratch). Each block of 64 weights shares one scale; <b>double quantisation</b> then
-stores those scales in 8 bits with a second-level fp32 scale per 256 blocks. The cost per weight is
-4 + 8/64 + 32/(64·256) = <b>4.127 bits</b>. During the forward and backward pass each block is dequantised to
-bf16 on the fly; the adapters and all of their optimizer state stay in 16/32-bit. The quality loss from the 4-bit
-base is small because the adapter, trained on top of the quantised weights, learns to compensate.</p>
+block-scaled formats from scratch). Each block of 64 weights shares one scale. <b>Double quantisation</b> then
+stores those scales in 8 bits, with a second-level fp32 scale per 256 blocks. The cost per weight is
+4 + 8/64 + 32/(64·256) = <b>4.127 bits</b>. During the forward and backward pass each block is converted back to
+bf16 on the fly, and the adapters and all their optimizer state stay in 16/32-bit. The 4-bit
+base costs little quality, because the adapter is trained on top of the quantised weights and learns to make up for them.</p>
 
 <h3>Merging, swapping, and DoRA</h3>
 
 <p>After training, <code>merge()</code> folds the update into the weight, W' = W + s·BA, and the model is an
 ordinary dense model again with <b>zero inference overhead</b>. <code>unmerge()</code> subtracts it, so one
-base can switch between adapters; the test checks that merged and unmerged outputs agree and that unmerging
-restores W. Merging into a quantised base is lossy (you would have to re-quantise W'), so a QLoRA adapter is
+base can switch between adapters. The test checks that merged and unmerged outputs agree and that unmerging
+restores W. Merging into a quantised base loses information (you would have to re-quantise W'), so a QLoRA adapter is
 usually merged into the bf16 original.</p>
 
-<p><b>DoRA</b> (Liu et al. 2024) decomposes each weight into a magnitude and a direction,
-W' = m · (W + s·BA) / ‖W + s·BA‖ with the norm taken per output row, learns the magnitude vector m directly and
-the direction with LoRA. Full fine-tuning tends to change magnitude and direction somewhat independently, while
-plain LoRA couples them; DoRA reports consistent gains over LoRA at the same rank, merges just like LoRA, and
-costs a little more memory in training. <code>dora_weight</code> implements the formula; with m initialised
-to the row norms of W it equals W at step 0, which the tests check.</p>
+<p><b>DoRA</b> (Liu et al. 2024) splits each weight into a magnitude and a direction,
+W' = m · (W + s·BA) / ‖W + s·BA‖, with the norm taken per output row. It learns the magnitude vector m directly and
+the direction with LoRA. Full fine-tuning tends to change magnitude and direction somewhat separately, while
+plain LoRA ties them together. DoRA reports steady gains over LoRA at the same rank, merges just like LoRA, and
+costs a little more memory in training. <code>dora_weight</code> implements the formula. With m set at the start
+to the row norms of W, it equals W at step 0, which the tests check.</p>
 
 <h3>Serving many adapters at once</h3>
 
 <p>An adapter for the 8B model above is 41.9 M parameters, <b>83.9 MB</b> in bf16, <b>191× smaller</b> than the
-16.1 GB base. A provider can therefore keep one base model on a GPU and thousands of customers' adapters in
+16.1 GB base. So a provider can keep one base model on a GPU and thousands of customers' adapters in
 memory, and serve a batch in which <i>every request uses a different adapter</i>. This is the continuous-batching
-problem of Chapter 18 with a twist: the base matmul is shared and batched over all requests, and only the thin
+problem of Chapter 18 with a twist. The base matmul is shared and batched over all requests, and only the thin
 r-wide part is gathered per request.</p>
 
 <pre><code>def multi_lora_linear(x, W, As, Bs, adapter_ids, s):   # x: (N, in), one row per request
@@ -269,9 +269,9 @@ r-wide part is gathered per request.</p>
     low = torch.einsum("nri,ni->nr", A, x)               # (N, r)
     return base + s * torch.einsum("nor,nr->no", B, low) # (N, out)</code></pre>
 
-<p>The adapter path adds 2·41.9 M FLOPs per token to the base Linears' 2·6.98 G, <b>0.60%</b>. Punica (Chen et
+<p>The adapter path adds 2·41.9 M FLOPs per token to the 2·6.98 G of the base Linears, which is <b>0.60%</b>. Punica (Chen et
 al. 2023) and S-LoRA (Sheng et al. 2023) wrote the gather-matmul kernels and paged adapter memory that make
-this fast; vLLM and SGLang ship them. The test checks the batched function against merging each request's
+this fast, and vLLM and SGLang ship them. The test checks the batched function against merging each request's
 adapter separately.</p>
 
 <div class="quiz" data-title="Checkpoint 1 — LoRA">
@@ -293,10 +293,10 @@ adapter separately.</p>
     <div class="opt">The adapter's optimizer state is larger than estimated</div>
     <div class="opt">LoRA stores the full ΔW for every layer</div>
     <div class="opt">The frozen weights need gradients after all</div>
-    <div class="opt">Activations: the backward pass still goes through every frozen layer, so activation memory is the same as full fine-tuning; use gradient checkpointing or shorter sequences</div>
+    <div class="opt">Activations: the backward pass still goes through every frozen layer, so activation memory is the same as in full fine-tuning; use gradient checkpointing or shorter sequences</div>
   </div>
-  <div class="expl"><b>LoRA saves parameter-state memory, not activation memory.</b> To get gradients to the
-  adapters in layer 1, the backward pass must traverse layers 32 to 2, which needs their activations.</div>
+  <div class="expl"><b>LoRA saves memory for parameter state, not for activations.</b> To get gradients to the
+  adapters in layer 1, the backward pass must go through layers 32 to 2, which needs their activations.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">You raise LoRA's rank from 8 to 128 with α fixed at 16 and the standard s = α/r. The result barely improves. What is the most likely reason?</div>
@@ -307,7 +307,7 @@ adapter separately.</p>
     <div class="opt">The base model's rank is 8</div>
   </div>
   <div class="expl"><b>The scaling, not the rank.</b> The sum inside B(Ax) has r terms, so its size grows like
-  √r; dividing by r over-corrects. With α/√r the update size is independent of r and extra rank becomes
+  √r, and dividing by r over-corrects. With α/√r the update size does not depend on r, and the extra rank becomes
   usable capacity (Kalajdzievski 2023).</div>
 </div>
 <div class="qitem" data-answer="2">
@@ -318,35 +318,35 @@ adapter separately.</p>
     <div class="opt">Merged, W' = W + s·BA is a single dense matrix again; unmerged, every token also runs the two thin matmuls, about 0.6% extra FLOPs for the 8B example, which is the price of serving many adapters on one base</div>
     <div class="opt">Merging removes the attention layers' adapters</div>
   </div>
-  <div class="expl"><b>Fold once, or pay a little per token.</b> One customer: merge. Thousands of customers on
-  one base: keep them separate and pay for the gathered low-rank path (Punica, S-LoRA).</div>
+  <div class="expl"><b>Fold once, or pay a little per token.</b> For one customer, merge. For thousands of customers on
+  one base, keep them separate and pay for the gathered low-rank path (Punica, S-LoRA).</div>
 </div>
 </div>
 
 <h2>23.4 · Where the data comes from: the modern recipe</h2>
 
 <p>InstructGPT (2022) trained on tens of thousands of demonstrations written by contractors. Few post-training
-pipelines look like that now. Writing great demonstrations by hand is slow, expensive and capped by the
-writers' skill, while models have become good enough to produce, filter and grade most of the data themselves.
-Llama 3's post-training (Dubey et al. 2024) ran several rounds of reward-model-filtered rejection sampling; the
-open Tülu 3 recipe (Lambert et al. 2024) mixes curated human data with large synthetic sets for each target
+pipelines look like that now. Writing great demonstrations by hand is slow and expensive, and limited by the
+writers' skill. Meanwhile models have become good enough to produce, filter and grade most of the data themselves.
+Llama 3's post-training (Dubey et al. 2024) ran several rounds of rejection sampling filtered by a reward model. The
+open Tülu 3 recipe (Lambert et al. 2024) mixes chosen human data with large synthetic sets for each target
 skill. Four techniques do most of the work.</p>
 
 <h3>1. Synthetic SFT data</h3>
 
 <p>Prompt a capable model to write instructions and answers for a target skill, then filter. Self-Instruct (Wang
-et al. 2022) bootstrapped 52k instructions from 175 seed tasks this way; current pipelines generate millions,
-conditioned on personas, topics or seed documents for diversity, and filter by a judge model, by execution for
-code, and by deduplication. Two failure modes to design against: <b>collapse of diversity</b> (the generator's
-favourite phrasings everywhere) and <b>benchmark leakage</b> (a generator that memorised test items reproduces
-them; decontaminate against every eval, Ch 26).</p>
+et al. 2022) grew 52k instructions from 175 seed tasks this way. Current pipelines generate millions,
+conditioned on personas, topics or seed documents for variety. They filter by a judge model, by running the code,
+and by deduplication. Design against two failure modes. One is <b>loss of variety</b> (the generator's
+favourite phrasings everywhere). The other is <b>benchmark leakage</b>: a generator that memorised test items reproduces
+them, so decontaminate against every eval (Ch 26).</p>
 
 <h3>2. Rejection-sampling fine-tuning</h3>
 
 <p>Use the model you are training as the data generator. For each prompt, sample k responses, keep the ones a
-verifier accepts (or the top-scoring under a reward model), and SFT on the survivors. Repeat with the improved
+verifier accepts (or the top scorers under a reward model), and run SFT on the survivors. Repeat with the improved
 model. This is the idea behind STaR (Zelikman et al. 2022), RFT (Yuan et al. 2023), ReST and "expert
-iteration", and it is reinforcement learning in disguise: SFT on the successful samples is a policy gradient with
+iteration". It is reinforcement learning in disguise: SFT on the successful samples is a policy gradient with
 reward 1 for kept samples and 0 for the rest.</p>
 
 <p>How many samples does it take? If the model solves a prompt with probability p per sample, the chance that k
@@ -354,36 +354,36 @@ samples contain at least one keeper is 1 − (1 − p)<sup>k</sup>:</p>
 
 <pre><code class="nohl">p = 0.2       k = 1: 0.200    k = 4: 0.590    k = 8: 0.832    k = 16: 0.972    k = 32: 0.999</code></pre>
 
-<p>Prompts the model already solves contribute easy data; prompts it never solves (p ≈ 0) contribute nothing
-however large k is. The same arithmetic reappears as pass@k in Chapter 26, and as GRPO's all-wrong groups in
+<p>Prompts the model already solves give easy data. Prompts it never solves (p ≈ 0) give nothing,
+however large k is. The same arithmetic comes back as pass@k in Chapter 26, and as GRPO's all-wrong groups in
 Chapter 25.</p>
 
 <h3>3. Distillation from a stronger model</h3>
 
-<p>If a stronger teacher exists, SFT on its outputs. Sequence-level distillation (Kim &amp; Rush 2016) is exactly
-that: minimise cross-entropy on teacher samples, which minimises the <b>forward</b> KL(teacher ‖ student) over
-the teacher's distribution. For reasoning models it has been startlingly effective. DeepSeek-R1's report
-distilled about 800k samples of R1's reasoning traces into Qwen and Llama models from 1.5B to 70B, and found the
-distilled small models beat the same small models trained with large-scale RL directly. s1 (Muennighoff et al.
+<p>If a stronger teacher exists, run SFT on its outputs. Sequence-level distillation (Kim &amp; Rush 2016) is exactly
+that. It minimises cross-entropy on teacher samples, which minimises the <b>forward</b> KL(teacher ‖ student) over
+the teacher's distribution. For reasoning models it has worked startlingly well. DeepSeek-R1's report
+distilled about 800k samples of R1's reasoning traces into Qwen and Llama models from 1.5B to 70B. The
+distilled small models beat the same small models trained directly with large-scale RL. s1 (Muennighoff et al.
 2025) got strong maths reasoning from just 1,000 carefully chosen traces. The traces carry the behaviour
 (checking work, backtracking) in a form SFT can copy.</p>
 
 <h3>4. On-policy distillation</h3>
 
 <p>Off-policy distillation has a flaw: the student learns from states the <i>teacher</i> visits. When the student
-makes its own early mistake, it is in a state it never saw in training, and errors compound. <b>On-policy
+makes its own early mistake, it is in a state it never saw in training, and the errors build up. <b>On-policy
 distillation</b> lets the student generate, then asks the teacher to grade every token of the student's own
-sample: minimise the <b>reverse</b> KL(student ‖ teacher), estimated per token as
+sample. It minimises the <b>reverse</b> KL(student ‖ teacher), estimated per token as
 log π<sub>student</sub>(y<sub>t</sub>) − log π<sub>teacher</sub>(y<sub>t</sub>). GKD (Agarwal et al. 2023) and
-MiniLLM (Gu et al. 2023) introduced it; Qwen3 used it to train its small models from the large ones, and
+MiniLLM (Gu et al. 2023) introduced it. Qwen3 used it to train its small models from the large ones, and
 Thinking Machines (2025) showed it reaching RL-level reasoning at a fraction of the cost. It is RL with a dense
-reward: every token is scored, instead of one number at the end. Notice the form: it is the per-token KL penalty
+reward: every token is scored, instead of one number at the end. Notice the form. It is the per-token KL penalty
 of section 23.6, with the teacher in place of the reference model.</p>
 
 <div class="example">
 <span class="t">Worked example — forward and reverse KL choose different students</span>
-<p>A teacher puts its mass on two modes: p = [0.45, 0.05, 0.45, 0.05]. Two candidate students:
-<b>cover</b> = [0.25, 0.25, 0.25, 0.25] spreads out; <b>mode</b> = [0.85, 0.05, 0.05, 0.05] commits to one
+<p>A teacher puts its weight on two modes: p = [0.45, 0.05, 0.45, 0.05]. There are two candidate students.
+<b>cover</b> = [0.25, 0.25, 0.25, 0.25] spreads out, and <b>mode</b> = [0.85, 0.05, 0.05, 0.05] commits to one
 mode.</p>
 <div class="tw" style="margin:.6rem 0">
 <table style="margin:0">
@@ -394,11 +394,11 @@ mode.</p>
 </tbody>
 </table>
 </div>
-<p style="margin-bottom:0"><b>Forward KL punishes missing any of the teacher's mass</b>, so it prefers the
-student that covers both modes, even though that student puts half its mass where the teacher puts 10%.
-<b>Reverse KL punishes putting mass where the teacher has little</b>, so it prefers the student that does one
-thing the teacher would do. A small student cannot represent everything a large teacher does; on-policy
-distillation's mode-seeking makes it do some things well rather than everything vaguely.</p>
+<p style="margin-bottom:0"><b>Forward KL punishes missing any of the teacher's weight</b>, so it prefers the
+student that covers both modes, even though that student puts half its weight where the teacher puts 10%.
+<b>Reverse KL punishes putting weight where the teacher has little</b>, so it prefers the student that does one
+thing the teacher would do. A small student cannot represent everything a large teacher does. On-policy
+distillation's mode-seeking makes it do some things well instead of everything vaguely.</p>
 </div>
 
 <div class="quiz" data-title="Checkpoint 2 — the recipe">
@@ -411,11 +411,11 @@ distillation's mode-seeking makes it do some things well rather than everything 
     <div class="opt">It is equivalent to DPO</div>
   </div>
   <div class="expl"><b>Filtering is the reward.</b> Raising the likelihood of successful samples is a policy
-  gradient step with reward 1 on them. It improves the model because the filter selects its better outputs, and
+  gradient step with reward 1 on them. It improves the model because the filter picks its better outputs, and
   it stalls on prompts with p ≈ 0, where even k = 32 samples find nothing.</div>
 </div>
 <div class="qitem" data-answer="0">
-  <div class="qq">Why does on-policy distillation minimise reverse KL on the student's samples rather than forward KL on the teacher's?</div>
+  <div class="qq">Why does on-policy distillation minimise reverse KL on the student's samples instead of forward KL on the teacher's?</div>
   <div class="opts">
     <div class="opt">It trains the student on the states it actually reaches, including after its own mistakes, and its mode-seeking suits a student too small to cover the teacher's whole distribution</div>
     <div class="opt">Reverse KL is cheaper to compute</div>
@@ -423,8 +423,8 @@ distillation's mode-seeking makes it do some things well rather than everything 
     <div class="opt">The teacher cannot generate text</div>
   </div>
   <div class="expl"><b>On-policy states, mode-seeking objective.</b> Off-policy distillation never shows the
-  student how to recover from its own errors. Scoring the student's own tokens fixes that, and is a dense
-  per-token reward rather than one number per sequence.</div>
+  student how to recover from its own errors. Scoring the student's own tokens fixes that, and it gives a dense
+  per-token reward instead of one number per sequence.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">You distil a 70B reasoning model's traces into a 7B model and its benchmark scores jump suspiciously high. What should you check first?</div>
@@ -435,7 +435,7 @@ distillation's mode-seeking makes it do some things well rather than everything 
     <div class="opt">Contamination: whether the teacher reproduced benchmark items in the synthetic data; decontaminate the training set against the evals</div>
   </div>
   <div class="expl"><b>Synthetic data leaks what the generator memorised.</b> A teacher that has seen a benchmark
-  can emit its items nearly verbatim. Deduplicate generated data against every eval with an n-gram filter before
+  can emit its items almost word for word. Deduplicate generated data against every eval with an n-gram filter before
   training (Ch 26).</div>
 </div>
 </div>
@@ -458,8 +458,8 @@ distillation's mode-seeking makes it do some things well rather than everything 
 
 <h3>The Bradley–Terry model</h3>
 
-<p>Humans give <i>rankings</i>, not scores. Bradley–Terry (1952) converts one into the other. It assumes each
-response has a latent quality <span class="math">r</span>, and the probability of preferring
+<p>Humans give <i>rankings</i>, not scores. Bradley-Terry (1952) converts one into the other. It assumes each
+response has a hidden quality <span class="math">r</span>, and that the probability of preferring
 <span class="math">y<sub>w</sub></span> over <span class="math">y<sub>l</sub></span> is a logistic function
 of their difference:</p>
 
@@ -496,14 +496,14 @@ loss = -F.logsigmoid(r_w - r_l).mean()
 
 <div class="step"><div class="i">!</div><div>
 <b>Now add 100 to both rewards in every row.</b> The gap is unchanged, so
-<b>every loss is identical</b>. The model cannot tell 2-vs-1 from 102-vs-101.
+<b>every loss is identical</b>. The model cannot tell 2 against 1 from 102 against 101.
 </div></div>
 
-<p style="margin-bottom:0"><b>That is why a reward score is meaningless on its own.</b> Only
+<p style="margin-bottom:0"><b>That is why a reward score means nothing on its own.</b> Only
 differences are learned, so "this response scored 7.3" tells you nothing without something to
-compare against — and scores from two different reward models are not comparable at all. It is
-also why <span class="math">ln 2 = 0.6931</span> is your step-0 sanity check: an untrained
-reward model has no opinion, so the gap is 0. <b>Remember this row — DPO's loss lands on exactly
+compare against. Scores from two different reward models cannot be compared at all. It is
+also why <span class="math">ln 2 = 0.6931</span> is your sanity check at step 0: an untrained
+reward model has no opinion, so the gap is 0. <b>Remember this row. DPO's loss lands on exactly
 the same number for exactly the same reason</b> (Chapter 24).</p>
 </div>
 
@@ -516,10 +516,10 @@ assert abs((1/(1+math.exp(-(2-1)))) - (1/(1+math.exp(-(102-101))))) < 1e-12</cod
 
 <div class="box math-note">
 <span class="t">Only differences are identified</span>
-<p style="margin-bottom:0">The loss depends solely on <code>r_w − r_l</code>, so adding a constant to every
-reward changes nothing. The absolute scale is meaningless — a reward of 3.7 tells you nothing on its own.
-This is why reward models are evaluated by <b>ranking accuracy</b> on held-out pairs, never by their raw
-outputs. <b>Remember this fact; it is what makes DPO work in Chapter 24</b>, and it is the same model Chatbot
+<p style="margin-bottom:0">The loss depends only on <code>r_w − r_l</code>, so adding a constant to every
+reward changes nothing. The absolute scale has no meaning, so a reward of 3.7 tells you nothing on its own.
+This is why reward models are judged by <b>ranking accuracy</b> on held-out pairs, never by their raw
+outputs. <b>Remember this fact. It is what makes DPO work in Chapter 24</b>, and it is the same model Chatbot
 Arena fits to human votes (Chapter 26).</p>
 </div>
 
@@ -535,11 +535,11 @@ max<sub>π<sub>θ</sub></sub> &nbsp; E<sub>x∼D, y∼π<sub>θ</sub></sub> <big
 
 <div class="box warn">
 <span class="t">Why the KL term is non-negotiable</span>
-<p style="margin-bottom:0">The reward model is an <i>approximation</i> of human preference, trained on a
-finite dataset. Optimise against it hard enough and the policy will find inputs where the approximation is
-badly wrong — outputs that score 10/10 and are nonsense. This is <b>reward hacking</b>, and without a KL
-constraint it happens essentially every time. Classic observed failure modes: responses that are absurdly
-long (length bias in the reward model), excessively hedged, or that repeat flattering phrases the reward
+<p style="margin-bottom:0">The reward model only <i>approximates</i> human preference, and it was trained on a
+limited dataset. Optimise against it hard enough and the policy will find inputs where the approximation is
+badly wrong: outputs that score 10/10 and are nonsense. This is <b>reward hacking</b>, and without a KL
+constraint it happens almost every time. Typical failures seen in practice are responses that are absurdly
+long (length bias in the reward model), hedged too much, or that repeat flattering phrases the reward
 model liked.</p>
 </div>
 
@@ -556,10 +556,10 @@ r<sub>t</sub> = − β ( log π<sub>t</sub> − log π<sub>ref,t</sub> ) &nbsp;&
 </div>
 
 <p>The sum works because log π(y|x) is the sum of the per-token log-probabilities (the chain rule of
-probability, the same fact DPO's sequence log-probs rest on). Each token is charged for how much more likely
-the policy made it than the reference did; a token the policy made <i>less</i> likely earns a small bonus.
-This is <b>reward shaping</b>: the same total, delivered densely, so that the value function in the next
-section has something to learn from at every step rather than one number at the end.</p>
+probability, the same fact that DPO's sequence log-probs rest on). Each token is charged for how much more likely
+the policy made it than the reference did. A token the policy made <i>less</i> likely earns a small bonus.
+This is <b>reward shaping</b>: the same total, delivered at every step, so that the value function in the next
+section has something to learn from at every step instead of one number at the end.</p>
 
 <div class="example">
 <span class="t">Worked example — a four-token completion, β = 0.1, reward-model score 1.0</span>
@@ -576,31 +576,31 @@ difference      -0.2   +0.2   +0.5    0.0      sum +0.5 = log π(y)/π_ref(y)</c
 </div></div>
 <p style="margin-bottom:0">Token 2 is where the policy moved furthest from the reference (it made that token
 e<sup>0.5</sup> = 1.65× more likely), and it pays the largest penalty. <code>kl_shaped_rewards</code> computes
-this; the test checks the sum identity.</p>
+this, and the test checks the sum identity.</p>
 </div>
 
 <h3>Advantages: from rewards to "was this token better than usual?"</h3>
 
-<p>The policy gradient for a token is its log-probability gradient times its <b>advantage</b>
-A<sub>t</sub> = Q(s<sub>t</sub>, a<sub>t</sub>) − V(s<sub>t</sub>): how much better the outcome was after taking
+<p>The policy gradient for a token is its log-probability gradient times its <b>advantage</b>,
+A<sub>t</sub> = Q(s<sub>t</sub>, a<sub>t</sub>) − V(s<sub>t</sub>). That is how much better the outcome was after taking
 this token than the value V of the state predicted on average. The state s<sub>t</sub> is the prompt plus the
-tokens so far; the action a<sub>t</sub> is the next token. We have the per-token rewards and a learned value
-model V<sub>ψ</sub>. Two ways to estimate A<sub>t</sub> sit at opposite ends:</p>
+tokens so far, and the action a<sub>t</sub> is the next token. We have the per-token rewards and a learned value
+model V<sub>ψ</sub>. There are two ways to estimate A<sub>t</sub>, at opposite ends:</p>
 
 <ul>
 <li><b>Monte Carlo:</b> A<sub>t</sub> ≈ G<sub>t</sub> − V(s<sub>t</sub>), where
 G<sub>t</sub> = r<sub>t</sub> + γr<sub>t+1</sub> + γ<sup>2</sup>r<sub>t+2</sub> + … is the actual return.
-Unbiased, but G<sub>t</sub> depends on every later sampled token, so it has high variance.</li>
+It is unbiased, but G<sub>t</sub> depends on every later sampled token, so it has high variance.</li>
 <li><b>One-step TD:</b> A<sub>t</sub> ≈ δ<sub>t</sub> = r<sub>t</sub> + γV(s<sub>t+1</sub>) − V(s<sub>t</sub>).
-Low variance, since it uses only one sampled reward, but biased whenever V is wrong, which early in training it
-is.</li>
+It has low variance, since it uses only one sampled reward, but it is biased whenever V is wrong, and early in training V
+is wrong.</li>
 </ul>
 
 <h3>GAE, derived</h3>
 
-<p>Generalised Advantage Estimation (Schulman et al. 2015) interpolates. Start from the n-step estimate, which
+<p>Generalised Advantage Estimation (Schulman et al. 2015) sits between them. Start from the n-step estimate, which
 uses n real rewards and then trusts V. Its key property is that it is a sum of TD errors, because the
-intermediate values telescope:</p>
+intermediate values cancel in pairs:</p>
 
 <div class="mathblock" style="text-align:left;padding-left:24px">
 Σ<sub>l=0..n−1</sub> γ<sup>l</sup> δ<sub>t+l</sub>
@@ -620,8 +620,8 @@ average over all n, with weight (1 − λ)λ<sup>n−1</sup>:</p>
 <span class="lbl">swap the sums: δ<sub>t+l</sub> appears in every Â<sup>(n)</sup> with n &gt; l, and (1−λ)Σ<sub>n&gt;l</sub>λ<sup>n−1</sup> = λ<sup>l</sup></span>
 </div>
 
-<p>Two limits check it: λ = 0 leaves only δ<sub>t</sub> (TD); λ = 1 gives Σγ<sup>l</sup>δ<sub>t+l</sub>, which by
-the telescoping identity is G<sub>t</sub> − V(s<sub>t</sub>) (Monte Carlo). And the sum has a one-line backward
+<p>Two limits check it. λ = 0 leaves only δ<sub>t</sub> (TD). λ = 1 gives Σγ<sup>l</sup>δ<sub>t+l</sub>, which by
+the cancelling identity is G<sub>t</sub> − V(s<sub>t</sub>) (Monte Carlo). And the sum has a one-line backward
 recursion, which is how everyone computes it:</p>
 
 <div class="mathblock">
@@ -652,15 +652,15 @@ V = [0.5, 0.6, 0.7, 0.9] for the four states, and 0 after the last token.</p>
 λ = 1     A = [0.4500, 0.3300, 0.2500, 0.1000]     = returns [0.95, 0.93, 0.95, 1.00] − V</code></pre>
 </div></div>
 <p style="margin-bottom:0"><b>Read the λ = 1 row.</b> This value model underestimates how good every early state
-is (the return from state 0 is 0.95, V says 0.5), so Monte Carlo credits the early tokens with large advantages;
-TD, trusting the wrong V, gives them small ones. λ = 0.95 sits close to Monte Carlo while damping the noise of
-long tails. RLHF implementations typically use γ = 1 (a completion is a finite episode) and λ around 0.95.
+is (the return from state 0 is 0.95, but V says 0.5), so Monte Carlo gives the early tokens large advantages.
+TD trusts the wrong V and gives them small ones. λ = 0.95 sits close to Monte Carlo while damping the noise of
+long tails. RLHF implementations usually use γ = 1 (a completion is a finite episode) and λ around 0.95.
 Every number here is asserted in <code>test_gae_recursion_equals_definition_and_limits</code>.</p>
 </div>
 
 <h3>The clipped surrogate</h3>
 
-<p>PPO's contribution is a way to take large policy steps without destroying the policy:</p>
+<p>PPO's contribution is a way to take large policy steps without wrecking the policy:</p>
 
 <div class="mathblock">
 ℒ<sup>CLIP</sup> = E <big>[</big> min<big>(</big> ρ<sub>t</sub>Â<sub>t</sub>, &nbsp; clip(ρ<sub>t</sub>, 1−ε, 1+ε)Â<sub>t</sub> <big>)</big> <big>]</big>
@@ -668,11 +668,11 @@ Every number here is asserted in <code>test_gae_recursion_equals_definition_and_
 </div>
 
 <p>The clip is one-sided, in the direction the advantage favours. With Â &gt; 0 (a good action), once ρ
-exceeds 1 + ε the clipped term is the minimum and its gradient is zero: you cannot keep pushing a good action's
-probability up within one batch. With Â &lt; 0 (a bad action), the gradient vanishes once ρ falls below 1 − ε:
-you cannot keep pushing it down. But a bad action whose probability <i>rose</i> (ρ &gt; 1 + ε, Â &lt; 0) keeps its
-gradient, because there the unclipped term is the minimum, so PPO always corrects a step in the wrong direction.
-That asymmetry is what keeps updates near the data they were collected from, and it is what makes PPO stable
+exceeds 1 + ε the clipped term is the minimum and its gradient is zero. You cannot keep pushing a good action's
+probability up within one batch. With Â &lt; 0 (a bad action), the gradient vanishes once ρ falls below 1 − ε,
+so you cannot keep pushing it down. But a bad action whose probability <i>rose</i> (ρ &gt; 1 + ε, Â &lt; 0) keeps its
+gradient, because there the unclipped term is the minimum. So PPO always corrects a step in the wrong direction.
+That asymmetry keeps updates close to the data they were collected from, and it makes PPO stable
 enough to use. The value model is trained alongside, by regressing V(s<sub>t</sub>) onto the value
 targets Â<sub>t</sub> + V(s<sub>t</sub>).</p>
 
@@ -690,9 +690,9 @@ targets Â<sub>t</sub> + V(s<sub>t</sub>).</p>
 </table>
 </div>
 
-<p><b>Four models in memory</b>, two of them receiving gradients. Plus a generation loop inside the training
-loop, plus advantage estimation, plus a dozen hyperparameters that interact badly. RLHF via PPO is genuinely
-difficult to get working, and that difficulty is the entire reason DPO exists. (LoRA helps here too: the policy
+<p><b>Four models in memory</b>, two of them getting gradients. Add a generation loop inside the training
+loop, advantage estimation, and a dozen hyperparameters that interact badly. RLHF with PPO is truly
+hard to get working, and that difficulty is the whole reason DPO exists. (LoRA helps here too. The policy
 and the value model can be adapters on one shared frozen base, and the reference is then the base with the
 adapters switched off.)</p>
 
@@ -701,37 +701,37 @@ adapters switched off.)</p>
   <div class="qq">Why can't reward-model scores be compared across different reward models?</div>
   <div class="opts">
     <div class="opt">They use different architectures</div>
-    <div class="opt">They're trained on different data</div>
+    <div class="opt">They are trained on different data</div>
     <div class="opt">The Bradley-Terry loss only constrains reward <i>differences</i>, so the absolute scale and offset are arbitrary</div>
     <div class="opt">Scores are normalised differently</div>
   </div>
-  <div class="expl"><b>Only differences are identified.</b> Add any constant to every reward and the loss is
-  unchanged; scale is similarly under-determined up to the logistic's slope. A score of 5.2 from one model
-  and 5.2 from another mean nothing in common. Evaluate reward models by pairwise ranking accuracy.</div>
+  <div class="expl"><b>Only differences are pinned down.</b> Add any constant to every reward and the loss is
+  unchanged, and the scale is similarly loose up to the logistic's slope. A score of 5.2 from one model
+  and 5.2 from another have nothing in common. Judge reward models by pairwise ranking accuracy.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">You remove the KL penalty from PPO. Reward climbs to record levels. What has happened?</div>
   <div class="opts">
-    <div class="opt">Reward hacking — the policy found out-of-distribution outputs the reward model scores highly but humans would rate poorly</div>
-    <div class="opt">The model genuinely got much better</div>
+    <div class="opt">Reward hacking: the policy found unusual outputs that the reward model scores highly but humans would rate poorly</div>
+    <div class="opt">The model really got much better</div>
     <div class="opt">The reward model is broken</div>
     <div class="opt">Nothing; the KL term is only for stability</div>
   </div>
-  <div class="expl"><b>Reward hacking, essentially guaranteed.</b> The reward model is a finite-sample
-  approximation to human preference. Unconstrained optimisation against any approximation finds its
-  failure modes — Goodhart's law, mechanised. The KL term keeps the policy in the region where the reward
-  model was actually trained and is therefore trustworthy.</div>
+  <div class="expl"><b>Reward hacking, almost guaranteed.</b> The reward model approximates human preference from a
+  limited sample. Optimising without limits against any approximation finds where it fails:
+  Goodhart's law, automated. The KL term keeps the policy in the region where the reward
+  model was actually trained, and where it can therefore be trusted.</div>
 </div>
 <div class="qitem" data-answer="1">
   <div class="qq">How many models are in memory during PPO-based RLHF, and which are trained?</div>
   <div class="opts">
-    <div class="opt">2 — policy and reward model, both trained</div>
-    <div class="opt">4 — policy, reference, reward, value; policy and value are trained</div>
-    <div class="opt">3 — policy, reward, value; all trained</div>
-    <div class="opt">1 — only the policy</div>
+    <div class="opt">2: policy and reward model, both trained</div>
+    <div class="opt">4: policy, reference, reward, value; policy and value are trained</div>
+    <div class="opt">3: policy, reward, value; all trained</div>
+    <div class="opt">1: only the policy</div>
   </div>
-  <div class="expl"><b>Four models, two trained.</b> This is the practical burden that motivated DPO: memory,
-  orchestration, and a large hyperparameter surface. For a 7B policy in bf16 you're holding roughly 4×14 GB
+  <div class="expl"><b>Four models, two trained.</b> This is the practical burden that led to DPO: memory,
+  coordination, and many hyperparameters to tune. For a 7B policy in bf16 you are holding roughly 4×14 GB
   of weights before optimizer state or activations.</div>
 </div>
 <div class="qitem" data-answer="3">
@@ -743,8 +743,8 @@ adapters switched off.)</p>
     <div class="opt">−β times the log of π(y|x)/π<sub>ref</sub>(y|x) for this completion: a one-sample estimate of the sequence-level KL penalty, because sequence log-probs are sums of token log-probs</div>
   </div>
   <div class="expl"><b>The chain rule turns a sequence penalty into token penalties.</b> Its expectation over
-  completions sampled from π is −β·KL(π ‖ π<sub>ref</sub>), exactly the objective's term. Any single completion
-  gives a noisy estimate; in the worked example it is −0.05.</div>
+  completions sampled from π is −β·KL(π ‖ π<sub>ref</sub>), exactly the term in the objective. Any single completion
+  gives a noisy estimate, and in the worked example it is −0.05.</div>
 </div>
 <div class="qitem" data-answer="1">
   <div class="qq">Setting GAE's λ = 1 gives which advantage estimate, and what is its weakness?</div>
@@ -754,8 +754,8 @@ adapters switched off.)</p>
     <div class="opt">The reward-model score; ignores the KL</div>
     <div class="opt">Zero; λ = 1 disables the advantage</div>
   </div>
-  <div class="expl"><b>λ trades bias for variance.</b> The telescoping identity turns Σδ<sub>t+l</sub> into
-  G<sub>t</sub> − V(s<sub>t</sub>). λ = 0 is the opposite end: just δ<sub>t</sub>, low variance, as wrong as V is.
+  <div class="expl"><b>λ trades bias for variance.</b> The cancelling identity turns Σδ<sub>t+l</sub> into
+  G<sub>t</sub> − V(s<sub>t</sub>). λ = 0 is the other end: just δ<sub>t</sub>, low variance, and as wrong as V is.
   In the worked example the two ends give 0.45 and 0.12 for the first token.</div>
 </div>
 </div>
@@ -769,39 +769,39 @@ adapters switched off.)</p>
 }
 </code></pre>
 
-<p>Note the rejected response isn't <i>wrong</i> — it's less appropriate for the request. Most preference
-data is about calibration and fit, not correctness.</p>
+<p>Note that the rejected response is not <i>wrong</i>. It is less suited to the request. Most preference
+data is about fit and tone, not correctness.</p>
 
 <ul>
-<li><b>Human preference</b> — highest quality, expensive, slow, and annotator agreement is typically only
-60–75%. That noise ceiling limits everything downstream.</li>
-<li><b>AI feedback (RLAIF / Constitutional AI)</b> — a strong model judges. Far cheaper and now dominant in
-practice; the risk is inheriting the judge's biases.</li>
-<li><b>Verifiable signals</b> — for maths and code, check the answer. No preference model needed at all.
-That's Chapter 25.</li>
+<li><b>Human preference</b>: highest quality, but expensive and slow, and annotators usually agree only
+60 to 75% of the time. That noise limits everything downstream.</li>
+<li><b>AI feedback (RLAIF / Constitutional AI)</b>: a strong model judges. It is far cheaper and now the most common in
+practice. The risk is inheriting the judge's biases.</li>
+<li><b>Verifiable signals</b>: for maths and code, check the answer. No preference model is needed at all.
+That is Chapter 25.</li>
 </ul>
 
 <div class="box math-note">
 <span class="t">Known biases in preference data</span>
-<p style="margin-bottom:0">Both human and AI annotators show measurable preference for <b>longer</b>
-responses, <b>more confident</b> phrasing, and <b>formatted</b> output (headers, bullet lists) — largely
-independent of actual quality. Models trained on it inherit all three. If your aligned model became verbose
-and started bulleting everything, that's not a bug in your training code; it's in your data. Length-debiasing
+<p style="margin-bottom:0">Both human and AI annotators measurably prefer <b>longer</b>
+responses, <b>more confident</b> phrasing and <b>formatted</b> output (headers, bullet lists), largely
+regardless of actual quality. Models trained on this data inherit all three. If your aligned model became wordy
+and started using bullets for everything, the bug is in your data, not your training code. Removing length bias from
 the reward model, or using length-controlled evaluation, is now standard practice.</p>
 </div>
 
 <h2>23.8 · How you know it worked</h2>
 
-<p>Training loss tells you almost nothing here. SFT loss falls whether or not the model became more useful, a
-reward model's score rises fastest when the policy is hacking it, and a judge model's win rate rises when
-answers get longer. Post-trained models are evaluated three ways, each with a trap Chapter 26 works through in
+<p>Training loss tells you almost nothing here. SFT loss falls whether or not the model became more useful. A
+reward model's score rises fastest when the policy is hacking it. A judge model's win rate rises when
+answers get longer. Post-trained models are evaluated in three ways, each with a trap that Chapter 26 works through in
 detail:</p>
 
 <ul>
 <li><b>Capability benchmarks</b> (maths, code, knowledge), to check that post-training did not damage what
-pretraining built. Trap: most benchmarks are too small to resolve a 2-point change.</li>
-<li><b>Win rates against a baseline, graded by a judge model.</b> Trap: judges prefer the first answer, the
-longer answer and their own family's answers; report <b>length-controlled</b> win rates with both orderings.</li>
+pretraining built. The trap: most benchmarks are too small to detect a 2-point change.</li>
+<li><b>Win rates against a baseline, graded by a judge model.</b> The trap: judges prefer the first answer, the
+longer answer and answers from their own model family. Report <b>length-controlled</b> win rates with both orderings.</li>
 <li><b>A private eval of your actual task</b>, with human labels on a subset to calibrate the judge. This is
 the one that should decide what ships.</li>
 </ul>
@@ -815,9 +815,9 @@ the one that should decide what ships.</li>
 decoding one example and printing which tokens have <code>label == -100</code>. Train once with masking and
 once without; compare generations from the same prompt.</p>
 <details class="reveal"><summary>What you'll observe</summary><div>
-<p style="margin-bottom:0">The unmasked model tends to continue by generating <i>another user turn</i> —
-it learned the whole conversation distribution, not the response distribution. It also converges more
-slowly on the part you care about. This is a five-minute experiment that permanently fixes the concept.</p>
+<p style="margin-bottom:0">The unmasked model tends to carry on by generating <i>another user turn</i>.
+It learned the whole conversation distribution, not the response distribution. It also learns the part you care about
+more slowly. This five-minute experiment makes the idea stick for good.</p>
 </div></details>
 </div></div>
 
@@ -834,8 +834,8 @@ non-adapter parameter's <code>.grad</code> is <code>None</code>.</li>
 <li>After 50 training steps, merged and unmerged logits agree to 1e-5, and unmerging restores every weight.</li>
 </ol>
 <details class="reveal"><summary>The bugs this catches</summary><div>
-<p style="margin-bottom:0">Forgetting to freeze the base (fact 2 fails, and memory triples); initialising B
-randomly (fact 1 fails, and the model starts from a damaged copy); scaling by α/r in <code>forward</code> but
+<p style="margin-bottom:0">Common mistakes: forgetting to freeze the base (fact 2 fails, and memory triples); starting B
+random (fact 1 fails, and the model starts from a damaged copy); and scaling by α/r in <code>forward</code> but
 not in <code>merge</code> (fact 3 fails by exactly a factor of s). Compare your code with
 <code>tests/test_posttraining.py</code>, which checks the same three things.</p>
 </div></details>
@@ -864,8 +864,8 @@ GPU?</li>
    QLoRA 11.01 B × 4.127/8 + 1.557 B × 2 + 114.7 M × 16
                                                      = 5.68 + 3.12 + 1.84 = 10.6 GB   yes</code></pre>
 <p style="margin-bottom:0">Check yours with <code>tfs.lora.llama_param_counts</code>,
-<code>lora_adapter_params</code> and <code>finetune_memory_gb</code>; the test file asserts these numbers.
-Then add activations for your batch and sequence length before you believe "fits".</p>
+<code>lora_adapter_params</code> and <code>finetune_memory_gb</code>. The test file asserts these numbers.
+Then add activations for your batch and sequence length before you believe it "fits".</p>
 </div></details>
 </div></div>
 
@@ -877,9 +877,9 @@ Then add activations for your batch and sequence length before you believe "fits
 for each scaling.</p>
 <details class="reveal"><summary>What to look for</summary><div>
 <p style="margin-bottom:0">With s = α/r at a fixed learning rate, higher ranks often do no better, and sometimes
-worse, because their effective step shrinks. With rsLoRA the curves usually order by rank, up to the point where
-the task needs no more capacity. If all ranks tie, the task is easy enough for rank 2, which is common for style
-and format changes and is itself the main lesson of LoRA.</p>
+worse, because their effective step shrinks. With rsLoRA the curves usually line up by rank, until
+the task needs no more capacity. If all ranks tie, the task is easy enough for rank 2. That is common for style
+and format changes, and it is itself the main lesson of LoRA.</p>
 </div></details>
 </div></div>
 
@@ -890,7 +890,7 @@ and format changes and is itself the main lesson of LoRA.</p>
 (b) λ = 0 gives the TD errors; (c) λ = 1 gives discounted returns minus V. Use the four-token example of 23.6 and
 reproduce A = [0.4171, 0.3127, 0.2450, 0.1000] at λ = 0.95.</p>
 <details class="reveal"><summary>A common bug</summary><div>
-<p style="margin-bottom:0">Forgetting that V(s<sub>T</sub>) = 0 after the final token, or bootstrapping across
+<p style="margin-bottom:0">Common mistakes: forgetting that V(s<sub>T</sub>) = 0 after the final token, or bootstrapping across
 the boundary into the <i>next</i> completion in a packed batch. Both make the last advantages wrong, and the
 last token is the one that carries the reward-model score.</p>
 </div></details>
@@ -901,16 +901,16 @@ last token is the one that carries the reward-model score.</p>
 <div class="eb">
 <p>Train a Bradley-Terry reward model on a public preference dataset. Then probe it:</p>
 <ol>
-<li>Ranking accuracy on a held-out split. (Above 70% is respectable; humans agree ~65–75% with each other.)</li>
+<li>Ranking accuracy on a held-out split. (Above 70% is respectable. Humans agree with each other ~65 to 75% of the time.)</li>
 <li><b>Length bias:</b> plot reward against response length. Fit a line. How much of the variance is length?</li>
 <li><b>Format bias:</b> take 50 responses, reformat them with bullet points without changing content, and
 measure the reward change.</li>
 </ol>
 <details class="reveal"><summary>What you'll find</summary><div>
-<p style="margin-bottom:0">Length correlation is usually strong — often r &gt; 0.3, sometimes much higher.
-Bulleting typically raises reward measurably. Now you can see, concretely, why RLHF'd models became verbose
-and list-happy around 2023–24. Once you can measure a bias you can correct it: subtract a length-fitted
-baseline from the reward and re-evaluate.</p>
+<p style="margin-bottom:0">Length correlation is usually strong, often r &gt; 0.3 and sometimes much higher.
+Adding bullets usually raises the reward measurably. Now you can see concretely why RLHF-trained models became wordy
+and fond of lists around 2023-24. Once you can measure a bias you can correct it: subtract a baseline fitted on length
+from the reward and evaluate again.</p>
 </div></details>
 </div></div>
 
@@ -920,27 +920,27 @@ baseline from the reward and re-evaluate.</p>
 <p>Using your reward model, run best-of-N sampling with N ∈ {1, 4, 16, 64, 256} and plot (a) mean reward
 and (b) your own quality rating of a sample of outputs, against N.</p>
 <details class="reveal"><summary>The expected divergence</summary><div>
-<p style="margin-bottom:0">Reward rises monotonically with N. Human-judged quality rises, peaks around
-N=16–64, then <b>falls</b>. Best-of-N is a KL-free optimiser against the reward model, so large N is exactly
-the regime where hacking appears. This is the cleanest demonstration of why the KL term exists — and it
+<p style="margin-bottom:0">Reward rises steadily with N. Quality as judged by a human rises, peaks around
+N=16 to 64, then <b>falls</b>. Best-of-N optimises against the reward model with no KL term, so large N is exactly
+where hacking appears. This is the clearest demonstration of why the KL term exists, and it
 takes no RL machinery at all to reproduce.</p>
 </div></details>
 </div></div>
 
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
-<li><a href="https://arxiv.org/abs/2203.02155">Ouyang et al. 2022 — InstructGPT</a> — the paper that defined the modern pipeline, including the per-token KL reward.</li>
-<li><a href="https://arxiv.org/abs/1707.06347">Schulman et al. 2017 — PPO</a> · <a href="https://arxiv.org/abs/1506.02438">Schulman et al. 2015 — Generalized Advantage Estimation</a></li>
-<li><a href="https://arxiv.org/abs/2106.09685">Hu et al. 2021 — LoRA</a> · <a href="https://arxiv.org/abs/2305.14314">Dettmers et al. 2023 — QLoRA</a> · <a href="https://arxiv.org/abs/2312.03732">Kalajdzievski 2023 — rsLoRA</a> · <a href="https://arxiv.org/abs/2402.09353">Liu et al. 2024 — DoRA</a></li>
-<li><a href="https://arxiv.org/abs/2405.09673">Biderman et al. 2024 — LoRA Learns Less and Forgets Less</a> · <a href="https://thinkingmachines.ai/blog/lora/">Schulman et al. 2025 — LoRA Without Regret</a></li>
-<li><a href="https://arxiv.org/abs/2310.18547">Chen et al. 2023 — Punica</a> · <a href="https://arxiv.org/abs/2311.03285">Sheng et al. 2023 — S-LoRA</a> (serving thousands of adapters)</li>
-<li><a href="https://arxiv.org/abs/2212.10560">Wang et al. 2022 — Self-Instruct</a> · <a href="https://arxiv.org/abs/2203.14465">Zelikman et al. 2022 — STaR</a> · <a href="https://arxiv.org/abs/2308.01825">Yuan et al. 2023 — Rejection-sampling fine-tuning</a></li>
-<li><a href="https://arxiv.org/abs/2407.21783">Dubey et al. 2024 — The Llama 3 Herd of Models</a> (post-training) · <a href="https://arxiv.org/abs/2411.15124">Lambert et al. 2024 — Tülu 3</a> (an open recipe)</li>
-<li><a href="https://arxiv.org/abs/2501.12948">DeepSeek-AI 2025 — DeepSeek-R1</a> (distilling reasoning) · <a href="https://arxiv.org/abs/2501.19393">Muennighoff et al. 2025 — s1</a></li>
-<li><a href="https://arxiv.org/abs/2306.13649">Agarwal et al. 2023 — GKD (on-policy distillation)</a> · <a href="https://arxiv.org/abs/2306.08543">Gu et al. 2023 — MiniLLM</a> · <a href="https://arxiv.org/abs/2505.09388">Qwen3 Technical Report</a> · <a href="https://thinkingmachines.ai/blog/on-policy-distillation/">Thinking Machines 2025 — On-Policy Distillation</a></li>
-<li><a href="https://arxiv.org/abs/2212.08073">Bai et al. 2022 — Constitutional AI</a> (RLAIF)</li>
-<li><a href="https://huggingface.co/docs/trl">HuggingFace TRL</a> · <a href="https://huggingface.co/docs/peft">HuggingFace PEFT</a> — production implementations of everything in this chapter.</li>
-<li><a href="https://rlhfbook.com/">Nathan Lambert — RLHF Book</a> — free, current, and the best single reference on this material.</li>
+<li><a href="https://arxiv.org/abs/2203.02155">Ouyang et al. 2022, InstructGPT</a>: the paper that defined the modern pipeline, including the per-token KL reward.</li>
+<li><a href="https://arxiv.org/abs/1707.06347">Schulman et al. 2017, PPO</a> · <a href="https://arxiv.org/abs/1506.02438">Schulman et al. 2015, Generalized Advantage Estimation</a></li>
+<li><a href="https://arxiv.org/abs/2106.09685">Hu et al. 2021, LoRA</a> · <a href="https://arxiv.org/abs/2305.14314">Dettmers et al. 2023, QLoRA</a> · <a href="https://arxiv.org/abs/2312.03732">Kalajdzievski 2023, rsLoRA</a> · <a href="https://arxiv.org/abs/2402.09353">Liu et al. 2024, DoRA</a></li>
+<li><a href="https://arxiv.org/abs/2405.09673">Biderman et al. 2024, LoRA Learns Less and Forgets Less</a> · <a href="https://thinkingmachines.ai/blog/lora/">Schulman et al. 2025, LoRA Without Regret</a></li>
+<li><a href="https://arxiv.org/abs/2310.18547">Chen et al. 2023, Punica</a> · <a href="https://arxiv.org/abs/2311.03285">Sheng et al. 2023, S-LoRA</a> (serving thousands of adapters)</li>
+<li><a href="https://arxiv.org/abs/2212.10560">Wang et al. 2022, Self-Instruct</a> · <a href="https://arxiv.org/abs/2203.14465">Zelikman et al. 2022, STaR</a> · <a href="https://arxiv.org/abs/2308.01825">Yuan et al. 2023, Rejection-sampling fine-tuning</a></li>
+<li><a href="https://arxiv.org/abs/2407.21783">Dubey et al. 2024, The Llama 3 Herd of Models</a> (post-training) · <a href="https://arxiv.org/abs/2411.15124">Lambert et al. 2024, Tülu 3</a> (an open recipe)</li>
+<li><a href="https://arxiv.org/abs/2501.12948">DeepSeek-AI 2025, DeepSeek-R1</a> (distilling reasoning) · <a href="https://arxiv.org/abs/2501.19393">Muennighoff et al. 2025, s1</a></li>
+<li><a href="https://arxiv.org/abs/2306.13649">Agarwal et al. 2023, GKD (on-policy distillation)</a> · <a href="https://arxiv.org/abs/2306.08543">Gu et al. 2023, MiniLLM</a> · <a href="https://arxiv.org/abs/2505.09388">Qwen3 Technical Report</a> · <a href="https://thinkingmachines.ai/blog/on-policy-distillation/">Thinking Machines 2025, On-Policy Distillation</a></li>
+<li><a href="https://arxiv.org/abs/2212.08073">Bai et al. 2022, Constitutional AI</a> (RLAIF)</li>
+<li><a href="https://huggingface.co/docs/trl">HuggingFace TRL</a> · <a href="https://huggingface.co/docs/peft">HuggingFace PEFT</a>: production implementations of everything in this chapter.</li>
+<li><a href="https://rlhfbook.com/">Nathan Lambert, RLHF Book</a>: free, current, and the best single reference on this material.</li>
 <li>Reference code: <code>tfs/lora.py</code>, <code>tfs/rl.py</code> · tests: <code>tests/test_posttraining.py</code></li>
 <li>Companion notebook: <code>notebooks/23_sft_rlhf.ipynb</code></li>
 </ul>
