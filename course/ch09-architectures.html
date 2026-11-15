@@ -13,8 +13,8 @@
 
 <h1>9 · Whole Architectures + End-to-End Shape Trace</h1>
 <p class="lead">
-You now have every component. This chapter assembles them three different ways — encoder-only, decoder-only,
-encoder–decoder — and then walks every single tensor from token id to loss, one shape at a time.
+You now have every component. This chapter puts them together in three ways (encoder-only, decoder-only and
+encoder-decoder) and then follows every tensor from token ID to loss, one shape at a time.
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; the block<br><a href="ch03-tokenization.html">Ch&nbsp;03</a> &mdash; tokenizer<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE<div class="sep"></div><span class="k">Leads to</span><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; now train it<br><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; the KV cache changes this forward pass<div class="sep"></div><span class="k">Why this chapter</span>Every component, assembled, with every tensor traced end to end.</div>
@@ -22,12 +22,12 @@ encoder–decoder — and then walks every single tensor from token id to loss, 
 <span class="t">The whole chapter in five sentences</span>
 <p style="margin-bottom:0"><b>One block, three arrangements</b>: bidirectional (encoder-only), causal
 (decoder-only), or an encoder whose output a causal decoder cross-attends to. <b>Decoder-only won</b> because a
-causal mask gives a training signal at every position and every task can be phrased as continuation. <b>A forward
-pass is a fixed sequence of about twenty shape changes</b>, from <code>(B, T)</code> ids to <code>(B, T, V)</code>
-logits, and you should be able to recite it. <b>The parameter count follows from the config</b>, about
-12·L·d² plus the embeddings, and the FLOPs from the parameter count, which is also how an encoder-decoder can
-have twice the parameters of a decoder at the same cost. <b>Retrieval still runs on encoder-shaped models</b>,
-trained contrastively so that matching texts land close together.</p>
+causal mask gives a training signal at every position and every task can be phrased as continuing a text. A forward
+pass is a fixed sequence of about twenty shape changes, from <code>(B, T)</code> IDs to <code>(B, T, V)</code>
+logits, and you should be able to recite it. The parameter count follows from the config, about
+12·L·d² plus the embeddings, and the FLOPs follow from the parameter count. That is also how an encoder-decoder can
+have twice the parameters of a decoder at the same cost. Retrieval still runs on encoder-shaped models,
+trained with a contrastive loss so that matching texts end up close together.</p>
 </div>
 
 <h2>9.1 · The three families</h2>
@@ -48,11 +48,11 @@ trained contrastively so that matching texts land close together.</p>
 
 <div class="box intuition">
 <span class="t">Why decoder-only won</span>
-<p style="margin-bottom:0"><b>Training efficiency.</b> With a causal mask, a single forward pass over a
-length-<code>T</code> sequence produces <code>T</code> supervised predictions — every position predicts its
-successor. BERT-style masking only supervises the ~15% of positions that were masked. So a decoder extracts
-roughly <b>6× more learning signal per FLOP</b>. Add that any task can be phrased as text continuation, and
-the case for a second architecture largely evaporated.</p>
+<p style="margin-bottom:0"><b>Training efficiency.</b> With a causal mask, a single forward pass over a sequence of length
+<code>T</code> produces <code>T</code> supervised predictions, because every position predicts the one after it.
+BERT-style masking only supervises the ~15% of positions that were masked. So a decoder gets
+roughly <b>6× more learning signal per FLOP</b>. Add the fact that any task can be phrased as continuing a text, and
+there was little reason left for a second architecture.</p>
 </div>
 
 <h3>Encoder-only: BERT</h3>
@@ -61,8 +61,8 @@ the case for a second architecture largely evaporated.</p>
 # No causal mask — position 2 sees positions 0..5 freely.
 # Cannot generate: there is no notion of "next".
 </code></pre>
-<p>Still the right tool for embeddings and reranking, where you want a rich bidirectional representation of
-a fixed text and don't need generation. Modern retrieval stacks still run BERT-family encoders.</p>
+<p>Encoders are still the right tool for embeddings and reranking, where you want a rich bidirectional representation of
+a fixed text and do not need to generate anything. Modern retrieval systems still run BERT-family encoders.</p>
 
 <h3>Decoder-only: GPT and everything after it</h3>
 <pre><code># Training objective: predict token t+1 from tokens 0..t, at EVERY position at once.
@@ -78,12 +78,12 @@ target: [cat, sat, on,  the, mat]
 #     K, V from encoder output  (T_enc, d)
 #     → output (T_dec, d)   — decoder length preserved, any encoder length
 </code></pre>
-<p>Still dominant where input and output are genuinely different modalities or languages — Whisper
-(audio→text) is the clearest current example.</p>
+<p>Encoder-decoders still lead where the input and output are truly different modalities or languages. Whisper
+(audio to text) is the clearest current example.</p>
 
 <h2>9.2 · The full shape trace</h2>
 
-<p>This is the centrepiece of the chapter. A decoder-only model with <code>B=2, T=6, V=32000,
+<p>This is the main part of the chapter. A decoder-only model with <code>B=2, T=6, V=32000,
 d_model=512, n_head=8, d_head=64, d_ff=1376, n_layer=6</code>. Step through every tensor.</p>
 
 <div data-viz="trace" data-title="GPT-style forward pass: 18 steps from text to loss" data-axismap='{"2":"batch","6":"time","512":"feat","1536":"feat","8":"head","64":"headdim","32000":"vocab"}'>
@@ -114,14 +114,14 @@ d_model=512, n_head=8, d_head=64, d_ff=1376, n_layer=6</code>. Step through ever
 <span class="t">The off-by-one that everyone writes at least once</span>
 <pre style="margin:.6em 0"><code>logits  = model(ids)               # (B, T, V)
 loss = F.cross_entropy(logits.reshape(-1, V), ids.reshape(-1))   # ← WRONG</code></pre>
-<p>This asks the model to predict <i>the token it was just given</i> — a task it solves perfectly by copying,
-and the loss goes to ~0 while the model learns nothing. You must shift:</p>
+<p>This asks the model to predict <i>the token it was just given</i>, a task it solves perfectly by copying,
+so the loss goes to ~0 while the model learns nothing. You have to shift:</p>
 <pre style="margin:.6em 0 0"><code>loss = F.cross_entropy(
     logits[:, :-1, :].reshape(-1, V),      # predictions for positions 0..T-2
     ids[:, 1:].reshape(-1))                # targets are positions 1..T-1</code></pre>
-<p style="margin-bottom:0"><b>Diagnostic:</b> if your training loss drops below <code>ln(1)≈0</code>-ish
-absurdly fast, or below the entropy of your data, you have this bug. Some HF models shift internally when
-you pass <code>labels=</code>; check before doing it yourself, or you'll shift twice.</p>
+<p style="margin-bottom:0"><b>Diagnostic:</b> if your training loss drops toward <code>ln(1)≈0</code>
+unreasonably fast, or below the entropy of your data, you have this bug. Some Hugging Face models shift internally when
+you pass <code>labels=</code>, so check before doing it yourself, or you will shift twice.</p>
 </div>
 
 <h2>9.3 · The complete model, in one file</h2>
@@ -183,11 +183,11 @@ class GPT(nn.Module):
 
 <div class="box math-note">
 <span class="t">Why <code>std=0.02</code>?</span>
-<p style="margin-bottom:0">It's GPT-2's choice and it stuck. The principle is that activations should have
+<p style="margin-bottom:0">GPT-2 chose it and everyone kept it. The idea is that activations should have
 roughly unit variance after each layer, which needs <code>std ≈ 1/√d_model</code> (0.044 at
 <code>d_model=512</code>). GPT-2 used a flat 0.02, plus an extra <code>1/√(2·n_layer)</code> scaling on the
-<i>residual output</i> projections (W_o and MLP-down) to stop the residual stream's variance growing linearly
-with depth. That second detail is genuinely important and often omitted — see Exercise 9.3.</p>
+<i>residual output</i> projections (W_o and the MLP down projection), to stop the residual stream's variance growing linearly
+with depth. That second detail matters and is often left out; see Exercise 9.3.</p>
 </div>
 
 <div class="quiz" data-title="Checkpoint 1 — the whole pipeline">
@@ -199,42 +199,42 @@ with depth. That second detail is genuinely important and often omitted — see 
     <div class="opt">The final LM head</div>
     <div class="opt">RMSNorm</div>
   </div>
-  <div class="expl"><b>Only in attention.</b> The MLP, both norms, RoPE and the LM head all operate on each
-  position independently — you could run them on a single token in isolation and get the same answer.
-  Attention is the <i>only</i> cross-position operation in a transformer. That's worth holding onto: it
-  means every claim about "how information flows through the model" is a claim about attention.</div>
+  <div class="expl"><b>Only in attention.</b> The MLP, both norms, RoPE and the LM head all work on each
+  position separately: you could run them on a single token in isolation and get the same answer.
+  Attention is the <i>only</i> operation in a transformer that mixes positions. Remember that, because it
+  means every claim about how information flows through the model is a claim about attention.</div>
 </div>
 <div class="qitem" data-answer="2">
   <div class="qq">Which tensor in the trace is the largest, and why does that matter?</div>
   <div class="opts">
     <div class="opt">The residual stream, because it appears at every layer</div>
     <div class="opt">The attention scores, always</div>
-    <div class="opt">It depends on T: logits (B·T·V) dominate at short T, attention scores (B·H·T²) dominate at long T</div>
+    <div class="opt">It depends on T: logits (B·T·V) are larger at short T, and attention scores (B·H·T²) are larger at long T</div>
     <div class="opt">The QKV projection</div>
   </div>
-  <div class="expl"><b>It depends on sequence length.</b> Here with T=6, V=32000: logits are
-  2×6×32000 = 384k elements vs scores at 2×8×36 = 576. But scores grow as T² while logits grow as T.
-  Crossover for these numbers is around T = V/H = 4000. At T=32k the scores dominate overwhelmingly —
-  which is exactly the regime FlashAttention was built for.</div>
+  <div class="expl"><b>It depends on sequence length.</b> Here, with T=6 and V=32000, the logits have
+  2×6×32000 = 384k elements against 576 for the scores, at 2×8×36. But the scores grow like T² while the logits grow like T.
+  For these numbers they cross at about T = V/H = 4000. At T=32k the scores are far larger,
+  which is the regime FlashAttention was built for.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">Your loss starts at 10.4 for a 32000-token vocabulary. Is that expected?</div>
   <div class="opts">
-    <div class="opt">Yes — ln(32000) ≈ 10.37, which is the loss of a uniform random guess</div>
+    <div class="opt">Yes: ln(32000) ≈ 10.37, which is the loss of a uniform random guess</div>
     <div class="opt">No, it should start near 0</div>
     <div class="opt">No, it should start near 1</div>
     <div class="opt">Only if the model is broken</div>
   </div>
-  <div class="expl"><b>ln(V) is the expected initial loss.</b> An untrained model outputs near-uniform
-  logits, so cross-entropy = −ln(1/V) = ln(V) = ln(32000) ≈ 10.37. <b>Always check this on step 0.</b>
-  If it starts much lower, your initialisation is too large or you have the label-shift bug. If much
-  higher, your initialisation is broken. It's the cheapest sanity check in deep learning.</div>
+  <div class="expl"><b>ln(V) is the expected starting loss.</b> An untrained model outputs nearly uniform
+  logits, so the cross-entropy is −ln(1/V) = ln(V) = ln(32000) ≈ 10.37. <b>Always check this at step 0.</b>
+  If it starts much lower, your initialisation is too large or you have the label-shift bug. If it starts much
+  higher, your initialisation is broken. It is the cheapest sanity check in deep learning.</div>
 </div>
 </div>
 
 <h2>9.4 · Parameter counting, exactly</h2>
 
-<p>You should be able to derive a model's parameter count from its config. Here's the recipe:</p>
+<p>You should be able to work out a model's parameter count from its config. Here is how:</p>
 
 <pre><code>def count_params(cfg, tied=False, swiglu=True):
     C, F_, L, V = cfg.d_model, cfg.d_ff, cfg.n_layer, cfg.vocab_size
@@ -262,22 +262,22 @@ count_params(Config(768, 3072, 12, 50257), tied=True, swiglu=False)
 <div class="box intuition">
 <span class="t">The shortcut worth memorising</span>
 <p style="margin-bottom:0">For a dense transformer with <code>d_ff = 4·d_model</code>:
-<b><code>N ≈ 12 · n_layer · d_model²</code></b> (non-embedding). Attention is <code>4C²</code>, MLP is
-<code>8C²</code>. Check it: Llama-2-7B has L=32, C=4096 → 12 × 32 × 4096² ≈ 6.4B, and the true
-non-embedding count is ~6.5B. Close enough to do in your head.</p>
+<b><code>N ≈ 12 · n_layer · d_model²</code></b> (not counting embeddings). Attention is <code>4C²</code> and the MLP is
+<code>8C²</code>. Check it: Llama-2-7B has L=32 and C=4096, so 12 × 32 × 4096² ≈ 6.4B, and the true
+non-embedding count is ~6.5B. That is close enough to do in your head.</p>
 </div>
 
 <h2>9.5 · Decoder-only vs encoder-decoder, in FLOPs</h2>
 
-<p>"Encoder-decoder models are more expensive" and "they are cheaper" are both heard, and both are wrong without
-saying what is held fixed. Count it. A forward pass costs about 2 FLOPs per parameter per token that passes
-through those parameters (Chapter 2), ignoring the attention-score matmuls. A task reads an input of
+<p>You will hear both "encoder-decoder models are more expensive" and "they are cheaper", and both are wrong unless you
+say what is held fixed. Count it. A forward pass costs about 2 FLOPs per parameter for each token that passes
+through those parameters (Chapter 2), ignoring the attention-score matmuls. Say a task reads an input of
 <i>S</i> tokens and produces an output of <i>T</i> tokens.</p>
 <ul>
-<li><b>Decoder-only</b> with <i>N</i> parameters: the input and the output are one sequence, and every one of the
-<code>S + T</code> tokens passes through all <i>N</i>. Cost <code>2·N·(S + T)</code>.</li>
+<li><b>Decoder-only</b> with <i>N</i> parameters: the input and output are one sequence, and every one of the
+<code>S + T</code> tokens passes through all <i>N</i>. The cost is <code>2·N·(S + T)</code>.</li>
 <li><b>Encoder-decoder</b> with <i>N<sub>e</sub></i> + <i>N<sub>d</sub></i>: the <i>S</i> input tokens pass through
-the encoder only, the <i>T</i> output tokens through the decoder only. Cost
+the encoder only, and the <i>T</i> output tokens through the decoder only. The cost is
 <code>2·N<sub>e</sub>·S + 2·N<sub>d</sub>·T</code>.</li>
 </ul>
 
@@ -288,23 +288,23 @@ the encoder only, the <i>T</i> output tokens through the decoder only. Cost
 encoder-decoder, 110M + 110M: 2 × 110M × 512 + 2 × 110M × 128   = 140.8 GFLOP     half, at the same parameter count
 decoder-only, 110 M params:   2 × 110M × 640                    = 140.8 GFLOP     the same as the 220M enc-dec</code></pre>
 
-<p>So <b>at equal parameters an encoder-decoder costs half as much</b> (each token visits half the model), and
-<b>at equal compute it has twice the parameters</b>. This is the comparison the T5 paper made when choosing its
-architecture: an encoder-decoder with 2P parameters has the same cost as a P-parameter decoder-only model. What the
-count leaves out works in both directions. The decoder's cross-attention adds K and V projections over the encoder
-output in every decoder layer, and its score matmuls; at generation time the encoder output's cross-attention K and
-V must be cached in every decoder layer, alongside the decoder's own self-attention cache. On the other side, the
+<p>So <b>with equal parameters an encoder-decoder costs half as much</b> (each token visits half the model), and
+<b>at equal compute it has twice the parameters</b>. The T5 paper made this comparison when choosing its
+architecture: an encoder-decoder with 2P parameters costs the same as a P-parameter decoder-only model. What the
+count leaves out cuts both ways. The decoder's cross-attention adds K and V projections over the encoder
+output in every decoder layer, plus its score matmuls, and at generation time the cross-attention K and V of the
+encoder output must be cached in every decoder layer, next to the decoder's own self-attention cache. On the other side, the
 decoder-only model's KV cache holds all <code>S + T</code> positions in every layer.</p>
 
-<p>Why, then, did decoder-only win? Not on FLOPs. It won on <b>simplicity and generality</b>: one stack, one
-objective, no fixed boundary between "input" and "output" (a chat is an interleaving of both), a KV cache that can
+<p>So why did decoder-only win, if not on FLOPs? It won on <b>simplicity and generality</b>: one stack, one
+objective, no fixed line between input and output (a chat mixes both), a KV cache that can
 be reused across turns, and a training signal at every position (§9.1). The encoder-decoder's advantages are real
-where the input and output are genuinely different, such as audio and text in Whisper, and where the input is long
+where the input and output are truly different, such as audio and text in Whisper, and where the input is long
 and the output short.</p>
 
 <h2>9.6 · Embedding and reranker models</h2>
 
-<p>Retrieval (search, RAG, deduplication, clustering) runs on a different kind of model from the one generating
+<p>Retrieval (search, RAG, deduplication, clustering) runs on a different kind of model from the one that generates
 the answer. Two shapes are used, and an engineer building retrieval needs both.</p>
 
 <div class="tw">
@@ -321,19 +321,19 @@ the answer. Two shapes are used, and an engineer building retrieval needs both.<
 </table>
 </div>
 
-<p>Both are classically <b>encoder-only</b>, BERT-shaped models (§9.1): bidirectional attention gives every token
-of the text a view of all the others, which is what a representation of a whole passage wants. The vector is
+<p>Both are traditionally <b>encoder-only</b>, BERT-shaped models (§9.1): bidirectional attention gives every token
+of the text a view of all the others, which is what you want for a representation of a whole passage. The vector is
 pooled from the last layer, by averaging the token vectors or taking the first token's. Since 2024 strong embedding
-models have also been built from decoder LLMs (E5-Mistral, Qwen3-Embedding among them), usually taking the last
-token's vector, since under a causal mask it is the only one that has seen the whole text.</p>
+models have also been built from decoder LLMs (E5-Mistral and Qwen3-Embedding among them), usually using the last
+token's vector, because under a causal mask it is the only one that has seen the whole text.</p>
 
 <h3>How they are trained: contrastive learning</h3>
 
 <p>An embedding model is not trained to predict tokens. It is trained so that a query and its relevant document
-end up close, and irrelevant ones far apart. The standard loss is <b>InfoNCE with in-batch negatives</b>. Take a
-batch of B (query, positive document) pairs, embed all of them, L2-normalise, and form the <code>(B, B)</code>
-matrix of cosine similarities. Row <i>i</i>'s correct column is <i>i</i>; every other document in the batch serves as
-a negative, for free. Then it is a classification problem over the batch:</p>
+end up close together, and irrelevant documents far away. The standard loss is <b>InfoNCE with in-batch negatives</b>. Take a
+batch of B (query, positive document) pairs, embed them all, L2-normalise, and form the <code>(B, B)</code>
+matrix of cosine similarities. Row <i>i</i>'s correct column is <i>i</i>, and every other document in the batch is
+a negative at no extra cost. Then it becomes a classification problem over the batch:</p>
 
 <div class="mathblock">
 ℒ = − <span class="frac"><span class="n">1</span><span class="d">B</span></span> <span class="op">Σ</span><sub>i</sub> log
@@ -351,19 +351,19 @@ query 0    0.948    0.269    0.416
 query 1    0.491    0.959    0.358
 query 2    0.265    0.538    0.971</code></pre></div></div>
 <div class="step"><div class="i">2</div><div>
-<b>At τ = 1</b>, row 0's logits are the similarities themselves, and the softmax is
+<b>At τ = 1</b>, row 0's logits are the similarities themselves, and the softmax gives
 <code>0.477 0.242 0.280</code>: the positive gets under half the probability even though it is clearly the best
-match. Mean loss over the batch: <b>0.759</b>. Cosines live in [−1, 1], so without a temperature the loss can never
+match. The mean loss over the batch is <b>0.759</b>. Cosines lie in [−1, 1], so without a temperature the loss can never
 become confident.</div></div>
 <div class="step"><div class="i">3</div><div>
-<b>At τ = 0.05</b> the logits are 20× larger, <code>18.96 5.37 8.32</code>, and the positive gets 0.99997. Mean loss
-<b>≈ 10<sup>−4</sup></b>: this batch is solved, and contributes almost no gradient.</div></div>
+<b>At τ = 0.05</b> the logits are 20× larger, <code>18.96 5.37 8.32</code>, and the positive gets 0.99997. The mean loss is
+<b>≈ 10<sup>−4</sup></b>: this batch is solved and adds almost no gradient.</div></div>
 <div class="step"><div class="i">4</div><div>
 <b>A hard negative.</b> Replace doc 1 with one that is <i>closer</i> to query 0 than its own positive (similarity
-0.966 vs 0.948). At τ = 0.05 the loss jumps to <b>0.777</b>. The batch is informative again, and the gradient pushes
+0.966 against 0.948). At τ = 0.05 the loss jumps to <b>0.777</b>. The batch is useful again, and the gradient pushes
 exactly the confusable pair apart.</div></div>
-<p style="margin-bottom:0">Step 3 and step 4 are the whole craft of training embedding models. Random in-batch
-negatives are quickly too easy, so training pipelines mine <b>hard negatives</b> (documents that a previous model
+<p style="margin-bottom:0">Steps 3 and 4 hold most of the skill in training embedding models. Random in-batch
+negatives soon become too easy, so training pipelines mine <b>hard negatives</b> (documents that an earlier model
 ranked highly but that are not relevant) and use large batches, because every extra pair adds B − 1 negatives to
 every row. The same loss, with images and captions, is CLIP.</p>
 </div>
@@ -372,13 +372,13 @@ every row. The same loss, with images and captions, is CLIP.</p>
 <div class="qitem" data-answer="1">
   <div class="qq">An encoder-decoder with 110M + 110M parameters and a 220M decoder-only model process a 512-token input and a 128-token output. Ignoring attention scores, how do their forward FLOPs compare?</div>
   <div class="opts">
-    <div class="opt">The same: both have 220M parameters</div>
-    <div class="opt">The encoder-decoder costs half: each token passes through only one 110M stack</div>
-    <div class="opt">The encoder-decoder costs twice as much: it has two stacks</div>
+    <div class="opt">The same, because both have 220M parameters</div>
+    <div class="opt">The encoder-decoder costs half, because each token passes through only one 110M stack</div>
+    <div class="opt">The encoder-decoder costs twice as much, because it has two stacks</div>
     <div class="opt">It depends only on the output length</div>
   </div>
-  <div class="expl"><b>140.8 vs 281.6 GFLOP.</b> FLOPs follow parameters <i>per token</i>, and each token visits
-  half of the encoder-decoder. Equivalently, at equal cost it can have twice the parameters.</div>
+  <div class="expl"><b>140.8 against 281.6 GFLOP.</b> FLOPs follow the parameters each token passes through, and each token visits
+  half of the encoder-decoder. Put the other way, at equal cost it can have twice the parameters.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">Why are search systems usually built as a bi-encoder followed by a cross-encoder, not a cross-encoder alone?</div>
@@ -386,22 +386,22 @@ every row. The same loss, with images and captions, is CLIP.</p>
     <div class="opt">Cross-encoders cannot be fine-tuned</div>
     <div class="opt">Bi-encoders are more accurate</div>
     <div class="opt">Cross-encoders only work on short documents</div>
-    <div class="opt">A cross-encoder needs one forward pass per (query, document) pair, far too many for millions of documents; the bi-encoder's precomputed vectors narrow the field cheaply, and the cross-encoder re-scores the shortlist</div>
+    <div class="opt">A cross-encoder needs one forward pass per (query, document) pair, far too many for millions of documents; the bi-encoder's precomputed vectors narrow the field cheaply, and the cross-encoder then re-scores the shortlist</div>
   </div>
-  <div class="expl"><b>Cost, then accuracy.</b> Document vectors are computed once, offline; a query costs one
-  forward pass plus a vector search. The more accurate cross-encoder is spent only where it changes the answer.</div>
+  <div class="expl"><b>Cost first, then accuracy.</b> Document vectors are computed once, offline, so a query costs one
+  forward pass plus a vector search. The more accurate cross-encoder is used only where it changes the answer.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">Training an embedding model with InfoNCE, the loss quickly falls near zero and quality stops improving. What is the most likely fix?</div>
   <div class="opts">
-    <div class="opt">Mine harder negatives (and/or use larger batches), so each batch contains documents the model confuses with the positive</div>
+    <div class="opt">Mine harder negatives (or use larger batches, or both), so that each batch contains documents the model confuses with the positive</div>
     <div class="opt">Raise the temperature to 1</div>
     <div class="opt">Remove the normalisation</div>
     <div class="opt">Switch to a causal mask</div>
   </div>
-  <div class="expl"><b>Easy negatives give no gradient.</b> In the worked example a solved batch has loss 10<sup>−4</sup>;
-  one hard negative brings it back to 0.78. Raising τ just makes the loss less confident everywhere without
-  teaching the model which documents are confusable.</div>
+  <div class="expl"><b>Easy negatives give no gradient.</b> In the worked example a solved batch has a loss of 10<sup>−4</sup>,
+  and one hard negative brings it back to 0.78. Raising τ only makes the loss less confident everywhere, without
+  teaching the model which documents are easy to confuse.</div>
 </div>
 </div>
 
@@ -426,7 +426,7 @@ print(f"{sum(p.numel() for p in model.parameters()):,} parameters")
 <div class="exercise">
 <div class="eh"><span class="n">9.2</span><span class="ti">Verify causality empirically</span><span class="lvl">essential</span></div>
 <div class="eb">
-<p>Don't trust your mask — test it. Change token <code>t</code> and confirm that outputs at positions
+<p>Do not trust your mask; test it. Change token <code>t</code> and confirm that the outputs at positions
 <code>&lt; t</code> are bit-identical:</p>
 <pre><code>ids = torch.randint(0, 32000, (1, 10))
 out1, _ = model(ids)
@@ -439,27 +439,27 @@ assert torch.allclose(out1[0, :7], out2[0, :7], atol=1e-6), "CAUSALITY VIOLATED"
 assert not torch.allclose(out1[0, 7], out2[0, 7]),           "position 7 should change"
 print("causal ✓")
 </code></pre>
-<p class="tiny" style="margin-bottom:0">Run this on every model you ever write. A subtly broken mask leaks
-the future, which makes training loss look fantastic and generation look insane — a failure mode that has
+<p class="tiny" style="margin-bottom:0">Run this on every model you write. A slightly broken mask leaks
+the future, which makes the training loss look fantastic and generation look absurd, and that failure has
 cost people weeks.</p>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">9.3</span><span class="ti">The residual-scaling initialisation</span><span class="lvl">code</span></div>
 <div class="eb">
-<p>GPT-2 scales the residual-output projections at init by <code>1/√(2·n_layer)</code>. Implement it, then
-measure why:</p>
+<p>GPT-2 scales the residual output projections at initialisation by <code>1/√(2·n_layer)</code>. Implement it, then
+measure why it is there:</p>
 <pre><code>for name, p in model.named_parameters():
     if name.endswith('proj.weight') or name.endswith('down.weight'):
         nn.init.normal_(p, std=0.02 / math.sqrt(2 * cfg.n_layer))
 </code></pre>
 <p>With and without it, run one forward pass and print <code>x.std()</code> after each block.</p>
 <details class="reveal"><summary>What you'll see</summary><div>
-<p style="margin-bottom:0">Without the scaling, the residual stream's standard deviation grows roughly as
-<code>√n_layer</code> — each block adds an independent contribution and variances sum. At 48 layers that's
-a ~7× growth, which pushes the final norm and the logits into a bad range and makes early training
-unstable. With the scaling, std stays roughly flat with depth. Two lines of code, and it's the difference
-between a training run that spikes and one that doesn't.</p>
+<p style="margin-bottom:0">Without the scaling, the residual stream's standard deviation grows roughly like
+<code>√n_layer</code>, because each block adds an independent contribution and variances add up. At 48 layers that is
+about 7× growth, which pushes the final norm and the logits into a bad range and makes early training
+unstable. With the scaling, the std stays roughly flat with depth. Those two lines of code separate a training run that
+spikes from one that does not.</p>
 </div></details>
 </div></div>
 
@@ -467,8 +467,8 @@ between a training run that spikes and one that doesn't.</p>
 <div class="eh"><span class="n">9.4</span><span class="ti">Reverse-engineer a real config</span><span class="lvl">thinking</span></div>
 <div class="eb">
 <p>Download <code>config.json</code> for any open model (Llama-3-8B, Qwen3-8B, Mistral-7B). From the config
-alone, without loading weights, compute: total parameters, non-embedding parameters, KV cache size per token
-per layer, and FLOPs for one forward pass at T=2048. Then check your parameter count against the model card.</p>
+alone, without loading the weights, compute: the total parameters, the non-embedding parameters, the KV cache size per token
+per layer, and the FLOPs for one forward pass at T=2048. Then check your parameter count against the model card.</p>
 <details class="reveal"><summary>Llama-3-8B worked example</summary><div>
 <pre><code class="nohl">hidden_size            4096
 num_hidden_layers        32
@@ -491,21 +491,21 @@ per layer                                  = 218,112,000
 + final norm 4096
 TOTAL                                      ≈ 8,030,261,248  ≈ 8.03 B   ✓</code></pre>
 <p style="margin-bottom:0">KV cache: <code>2 × 8 heads × 128 dim × 2 bytes = 4096 bytes per token per
-layer</code>, × 32 layers = <b>128 KB per token</b>. At 128k context that's <b>16 GB</b> for a single
-sequence — as much memory as the 8B model's own weights in bf16.</p>
+layer</code>, × 32 layers = <b>128 KB per token</b>. At 128k context that is <b>16 GB</b> for a single
+sequence, as much memory as the 8B model's own weights in bf16.</p>
 </div></details>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">9.5</span><span class="ti">Size a retrieval system</span><span class="lvl">thinking</span></div>
 <div class="eb">
-<p>You index 10 million passages with a 335M-parameter bi-encoder producing 1024-dimensional fp16 vectors, average
-passage length 256 tokens, and rerank the top 100 per query with a cross-encoder of the same size on
+<p>You index 10 million passages with a 335M-parameter bi-encoder that produces 1024-dimensional fp16 vectors. Passages
+are 256 tokens long on average. You rerank the top 100 per query with a cross-encoder of the same size on
 (query + passage) ≈ 300 tokens.</p>
 <ol>
-<li>Index memory, and the forward FLOPs to build it.</li>
-<li>Forward FLOPs per query for embedding (query ≈ 20 tokens) and for reranking.</li>
-<li>Which stage dominates per-query compute, and what is the obvious lever?</li>
+<li>The index memory, and the forward FLOPs needed to build it.</li>
+<li>The forward FLOPs per query for embedding (query ≈ 20 tokens) and for reranking.</li>
+<li>Which stage dominates the compute per query, and what is the obvious thing to change?</li>
 </ol>
 <details class="reveal"><summary>Answers</summary><div>
 <pre><code class="nohl">1. 10^7 × 1024 × 2 bytes                     = 20.5 GB of vectors
@@ -513,39 +513,39 @@ passage length 256 tokens, and rerank the top 100 per query with a cross-encoder
 2. query embedding: 2 × 335e6 × 20           = 1.3 × 10^10 FLOPs
    reranking:       2 × 335e6 × 300 × 100    = 2.0 × 10^13 FLOPs   (1,500× the embedding)
 3. reranking. Rerank fewer candidates, use a smaller reranker, or truncate passages.</code></pre>
-<p style="margin-bottom:0">The vector search itself (a dot product with 10<sup>7</sup> vectors, 2 × 10<sup>10</sup>
-FLOPs brute force, far less with an approximate index) is comparable to the query embedding. The cross-encoder is
-where the money goes, which is why the shortlist size is the first knob a retrieval team tunes.</p>
+<p style="margin-bottom:0">The vector search itself (a dot product with 10<sup>7</sup> vectors: 2 × 10<sup>10</sup>
+FLOPs by brute force, far less with an approximate index) costs about as much as the query embedding. The cross-encoder is
+where the money goes, which is why the shortlist size is the first setting a retrieval team tunes.</p>
 </div></details>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">9.6</span><span class="ti">Predict, then measure: temperature and batch size in InfoNCE</span><span class="lvl">code</span></div>
 <div class="eb">
-<p>Using <code>tfs.foundations.info_nce</code>: (1) for random unit vectors in 256 dimensions with the positive
-equal to the query plus small noise, predict how the loss at τ = 0.05 changes as B goes from 8 to 512. (2) Then
-predict the loss when every query and document is random (no signal). Measure both.</p>
+<p>Using <code>tfs.foundations.info_nce</code>: (1) for random unit vectors in 256 dimensions, with the positive
+equal to the query plus a little noise, predict how the loss at τ = 0.05 changes as B goes from 8 to 512. (2) Then
+predict the loss when every query and document is random (no signal at all). Measure both.</p>
 <details class="reveal"><summary>What to expect</summary><div>
-<p style="margin-bottom:0">(1) With a clear positive the loss is tiny and rises with B: 1.5 × 10<sup>−6</sup> at
-B = 8, 1.9 × 10<sup>−4</sup> at B = 512, because more negatives mean more chances that one is close by accident.
+<p style="margin-bottom:0">(1) With a clear positive the loss is tiny and grows with B: 1.5 × 10<sup>−6</sup> at
+B = 8 and 1.9 × 10<sup>−4</sup> at B = 512, because more negatives give more chances that one is close by accident.
 (2) With no signal you might predict ln B, the loss of a uniform guess (2.08 at B = 8, 6.24 at B = 512). The
-measurement is <b>higher</b>: 3.23 and 7.02. Random 256-d unit vectors have cosines with standard deviation
-1/√256 = 0.0625, and dividing by τ = 0.05 turns that into logits with standard deviation σ = 1.25: the model is
-confidently wrong rather than uniform. For random logits the expected loss is about ln B + σ²/2 = 6.24 + 0.78 = 7.02,
+measurement is <b>higher</b>: 3.23 and 7.02. Random 256-dimensional unit vectors have cosines with standard deviation
+1/√256 = 0.0625, and dividing by τ = 0.05 turns those into logits with standard deviation σ = 1.25, so the model is
+confidently wrong instead of uniform. For random logits the expected loss is about ln B + σ²/2 = 6.24 + 0.78 = 7.02,
 which matches at B = 512 (at B = 8 the sample is too small for the approximation). So the chance level of InfoNCE
-depends on τ and d, not just B, and that formula, not ln B, is the number to compare an untrained model against.</p>
+depends on τ and d, not only on B, and that formula, not ln B, is the number to compare an untrained model against.</p>
 </div></details>
 </div></div>
 
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
-<li><a href="https://github.com/karpathy/nanoGPT">karpathy/nanoGPT</a> — the reference. ~300 lines for a full GPT.</li>
-<li><a href="https://github.com/meta-llama/llama3/blob/main/llama/model.py">Meta's llama3 model.py</a> — a real production architecture, still readable.</li>
-<li><a href="https://arxiv.org/abs/1810.04805">Devlin et al. 2018 — BERT</a> · <a href="https://arxiv.org/abs/1910.10683">Raffel et al. 2019 — T5</a></li>
-<li><a href="https://bbycroft.net/llm">bbycroft.net/llm</a> — a 3-D animated walkthrough of a GPT forward pass. Pairs extremely well with this chapter.</li>
-<li><a href="https://arxiv.org/abs/1910.10683">Raffel et al. 2020 — Exploring the Limits of Transfer Learning (T5)</a> (§3.2: encoder-decoder vs decoder-only at matched parameters and FLOPs)</li>
-<li><a href="https://arxiv.org/abs/1908.10084">Reimers &amp; Gurevych 2019 — Sentence-BERT</a> (bi-encoders) · <a href="https://arxiv.org/abs/1807.03748">van den Oord et al. 2018 — InfoNCE</a> · <a href="https://arxiv.org/abs/2212.03533">Wang et al. 2022 — E5</a></li>
-<li><a href="https://arxiv.org/abs/2401.00368">Wang et al. 2024 — Improving Text Embeddings with Large Language Models</a> (decoder-based embeddings)</li>
+<li><a href="https://github.com/karpathy/nanoGPT">karpathy/nanoGPT</a>: the reference, about 300 lines for a full GPT.</li>
+<li><a href="https://github.com/meta-llama/llama3/blob/main/llama/model.py">Meta's llama3 model.py</a>: a real production architecture that is still readable.</li>
+<li><a href="https://arxiv.org/abs/1810.04805">Devlin et al. 2018, BERT</a> · <a href="https://arxiv.org/abs/1910.10683">Raffel et al. 2019, T5</a></li>
+<li><a href="https://bbycroft.net/llm">bbycroft.net/llm</a>: a 3-D animated walkthrough of a GPT forward pass. It goes very well with this chapter.</li>
+<li><a href="https://arxiv.org/abs/1910.10683">Raffel et al. 2020, Exploring the Limits of Transfer Learning (T5)</a> (§3.2: encoder-decoder against decoder-only at matched parameters and FLOPs)</li>
+<li><a href="https://arxiv.org/abs/1908.10084">Reimers &amp; Gurevych 2019, Sentence-BERT</a> (bi-encoders) · <a href="https://arxiv.org/abs/1807.03748">van den Oord et al. 2018, InfoNCE</a> · <a href="https://arxiv.org/abs/2212.03533">Wang et al. 2022, E5</a></li>
+<li><a href="https://arxiv.org/abs/2401.00368">Wang et al. 2024, Improving Text Embeddings with Large Language Models</a> (decoder-based embeddings)</li>
 <li>Reference code: <code>tfs/foundations.py</code> (Ch 9 section) · tests: <code>tests/test_foundations.py</code></li>
 <li>Companion notebook: <code>notebooks/09_full_model.ipynb</code></li>
 </ul>
