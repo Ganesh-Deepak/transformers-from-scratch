@@ -34,7 +34,7 @@ r = round
 # ==================================================== Ch 13 — decoding
 
 def test_best_of_n_and_pass_at_k():
-    """13.6: one sample right 30% of the time; n independent tries."""
+    """13.5: one sample right 30% of the time; n independent tries."""
     assert [r(D.pass_at_n(0.3, n), 3) for n in (1, 5, 9, 21)] == [0.3, 0.832, 0.96, 0.999]
     # unbiased estimator: 20 samples, 3 correct
     assert r(D.pass_at_k(20, 3, 1), 3) == 0.15 and r(D.pass_at_k(20, 3, 5), 3) == 0.601
@@ -42,7 +42,7 @@ def test_best_of_n_and_pass_at_k():
 
 
 def test_self_consistency():
-    """13.6: majority vote helps when the right answer is the mode, hurts when a wrong one is."""
+    """13.5: majority vote helps when the right answer is the mode, hurts when a wrong one is."""
     good = [r(D.majority_vote_accuracy([0.4, 0.3, 0.2, 0.1], 0, n), 3) for n in (1, 5, 9, 21, 41)]
     assert good == [0.4, 0.49, 0.556, 0.668, 0.763]
     bad = [r(D.majority_vote_accuracy([0.35, 0.45, 0.1, 0.1], 0, n), 3) for n in (1, 5, 9, 21, 41)]
@@ -53,7 +53,7 @@ def test_self_consistency():
 
 
 def test_stop_sequences_streaming():
-    """13.7: a stop string split across three tokens is caught and never shown."""
+    """13.6: a stop string split across three tokens is caught and never shown."""
     emitted, tail, stopped = D.stream(["Sure", ".\n", "\nUs", "er", ": hi"], ["\n\nUser:"])
     assert emitted == ["Sure", ".", "", "", ""] and stopped and tail == ""
     # a held-back newline is released as soon as it cannot be a stop any more
@@ -65,7 +65,7 @@ def test_stop_sequences_streaming():
 
 
 def test_fp32_reduction_order():
-    """13.8: same numbers, different order, different sum."""
+    """13.7: same numbers, different order, different sum."""
     a, b = D.f32(1e8), D.f32(-1e8)
     assert D.sum_fp32([a, 1.0, b]) == 0.0 and D.sum_fp32([a, b, 1.0]) == 1.0
     x = D.random_fp32(4096, 1)
@@ -76,7 +76,7 @@ def test_fp32_reduction_order():
 
 
 def test_argmax_flip():
-    """13.8: a near-tie whose winner depends on the split count."""
+    """13.7: a near-tie whose winner depends on the split count."""
     f = D.find_argmax_flip()
     assert f is not None and f["seed"] == 1
     assert f["winner"] == {1: 1, 8: 0}
@@ -145,7 +145,7 @@ def test_kv_units():
 
 
 def test_chunked_prefill_exact():
-    """15.6: chunked prefill must give the same logits and cache as one shot."""
+    """15.7: chunked prefill must give the same logits and cache as one shot."""
     torch.manual_seed(0)
     m = Model(CFG).eval()
     ids = torch.randint(0, CFG.vocab_size, (2, 40))
@@ -175,7 +175,7 @@ def test_cache_timing_shape():
 
 
 def test_eviction_policies():
-    """15.7 on the synthetic sink + heavy-hitter + recency pattern."""
+    """15.8 on the synthetic sink + heavy-hitter + recency pattern."""
     acc, p = KV.synthetic_attention()
     T = 1024
     assert KV.streaming_keep(T, 4, 60)[:5] == [0, 1, 2, 3, 964]
