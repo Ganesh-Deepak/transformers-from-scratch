@@ -56,7 +56,9 @@ it breaks causality, fine-grained and shared experts with combinatorics, expert 
 the all-to-all bill, node-limited routing, the serving fact that batched decode reads most
 experts, training stability, upcycling, a 7-model spec table with arithmetic cross-checks,
 8 quiz questions, 7 exercises. Every number from `tfs/moe.py` / `notebooks/20_moe.ipynb`.
-Next: an interactive router widget (tokens × experts, top-k, load bars, bias balancing).
+Interactive router widget added in §20.4 (`data-viz="moe"`): tokens × experts with top-k picks, live load
+bars, a DeepSeek-V3 bias-balancing toggle that takes the load CV from ~2.1 to under half over 40 steps, and the
+experts-read-per-decode-step curve vs batch; interaction-tested in `check_interaction.js`.
 
 ### Ch 03 · Tokenization — **B+**
 Clear BPE build-up; the hand-traced merges are verified (24 → 19 → 14 → 10 → 9 tokens).
@@ -179,45 +181,68 @@ All added (4.1k → 5.9k words, 3 → 8 quiz questions, 5 → 7 exercises), code
 2.59% / 0.17% at 10⁴×: floating fp8 tolerates outliers that would break int8), delayed scaling clipping 5.0 to 3.4;
 §12.8 1.0 + 1000 × 0.001 in bf16 = 1.0 (nearest), 2.005 (stochastic, mean of 20), 2.0 (Kahan).
 
-### Ch 13 · Decoding — **B+** (checked; sampler arithmetic correct)
-Missing: best-of-n / self-consistency, stop sequences, batch-dependent nondeterminism, grammar engines (XGrammar) and token-boundary issues in constrained decoding.
+### Ch 13 · Decoding — **A** (raised November 2026)
+All five missing items done, with reference code in `tfs/decoding.py` and every number asserted in
+`tests/test_inference.py`. §13.4 rewritten: how a grammar engine turns a character automaton into a token mask,
+a worked 22-token example (2 / 7 legal tokens, the boundary-crossing `7}` that a per-terminal engine bans, 24
+token paths for one 9-character string), token healing, XGrammar's context-independent masks. New §13.5
+best-of-n / self-consistency (exact plurality-vote accuracy, including the case where voting makes it worse:
+0.35 → 0.236 at n = 41), §13.6 stop sequences while streaming (hold-back algorithm, traced), §13.7
+batch-dependent nondeterminism (bit-exact fp32 split-K sums; a real argmax flip between 1 and 8 splits).
+Whole-chapter box, two new checkpoints (3 + 4 questions), exercises 13.4–13.7 (cost estimate, implementation,
+predict-then-measure, hard).
 
-### Ch 14 · The GPU — **A−**, one section wrong (NOT YET FIXED)
-Ridge points, decode ceilings and prefill/decode numbers check. **§14.4 is wrong**: it claims d_head is 64/128 because of 128-byte cache lines and that "you never see 48, 80, 96". Counterexamples: Phi-2 (80), Phi-3-mini and GPT-NeoX-20B (96), Gemma (256), DeepSeek-V3 (192 q/k). The real constraints are tensor-core multiples and which head sizes kernels ship tuned versions of. Rewrite §14.4 and its quiz. Fixed this pass: raw LaTeX (`d_{head}`, `\sqrt`) shown literally to readers in Ch 7, 14, 16, 19.
+### Ch 14 · The GPU — **A** (raised November 2026)
+§14.4 was fixed earlier (see the October note below). Added: §14.7 MFU (with the Llama 3 38–43% reference)
+and the overhead-bound regime with a computed launch floor (355 kernels, 1.42 ms vs 4.79 ms for an 8B model;
+7× over the memory floor for a 125M one) and CUDA graphs; §14.8 fp8/fp4 tensor-core rates (dense) and ridges,
+and why the saturating decode batch does not move with precision; §14.9 the interconnect ladder (NVLink 4/5,
+PCIe 5, IB NDR, a ring all-reduce 3.89 vs 35.0 ms); §14.10 a Triton fused-softmax introduction. Checkpoint 2
+(4 questions), exercises 14.5–14.7. Code: `tfs/gpu.py`.
 
 ### Not yet audited in this pass
 Ch 15–19, 21–26 (Ch 0 was rewritten in October; Ch 12 is audited above). Add a check_ui rule rejecting raw LaTeX outside code.
 
-### Ch 14 · §14.4 — now FIXED
+### Ch 14 · §14.4 — FIXED (October pass)
 Rewritten: tensor cores require multiples of 16 (32 for fp8); 64/128 dominate because attention kernels ship
 tuned paths for them, not because of cache lines. Real counterexamples cited (Phi-2 80, Phi-3-mini 96,
-DeepSeek-V3 192, Gemma 256). Quiz replaced with a Phi-2-shaped question. `check_ui.js` now fails on raw
-LaTeX in page text (verified to fail on the old Ch 14).
+DeepSeek-V3 192, Gemma 256). `check_ui.js` fails on raw LaTeX in page text.
 
-### Ch 15 · The KV Cache — **A−**
-All arithmetic checks (128 KB/token Llama-3-8B, 320 KB/token 70B, user counts, fleet sizing). Missing:
-cache eviction and compression beyond quantization (StreamingLLM sinks, H2O / SnapKV), chunked prefill,
-and a measured cached-vs-uncached timing plot from the repo's model. Units mix GB and GiB in places.
+### Ch 15 · The KV Cache — **A** (raised November 2026)
+Units are now consistent: KiB/GiB for cache sizes, GB for vendor figures, with a margin note; this corrected
+three answers (70B at 8k: 66 users, not ~70; exercise 15.2: 13 and 8 H100s, not 12 and 7; quiz: 40 users from
+40 GiB). New §15.6 measured cached-vs-uncached timing from the repo's own model, drawn by a new `series` widget
+(11–14 ms flat vs 13 → 156 ms per token; 5.5 s vs 30.7 s for 480 tokens), with the overhead-bound reading.
+§15.7 chunked prefill, exact, and the silent bug in `tfs.model.Model` (top-left `is_causal` on a multi-token
+chunk: 0.34 logit error), fixed path in `tfs/kvcache.py`. §15.8 eviction: StreamingLLM sinks, H2O, SnapKV, with a
+computed mass-kept table. Map table extended. Checkpoint 2, exercises 15.4–15.6.
 
-### Ch 16 · MQA, GQA, MLA — **A**
-MLA absorption and the decoupled-RoPE argument are the best treatment in the course; all numbers check.
-Fixed: Gemma 2 27B uses 16 KV heads (chapter said all Gemma landed on ≤8); removed an unverified
-"Kimi K2.5" row. Missing: cross-layer KV sharing (CLA, YOCO), and why absorbed MLA decode behaves like
-MQA over a 576-wide latent (compute-dense, which is why it suits decode).
+### Ch 16 · MQA, GQA, MLA — **A** (completed November 2026)
+Added: absorbed MLA decode shown to be MQA over a 576-wide latent, with code that checks absorbed = naive
+(`tfs/mla.py`), the arithmetic intensity table (241.8 vs 8 vs 1 FLOP/byte), FlashMLA's reported figures, and why
+prefill decompresses (3.4× the FLOPs for 57× fewer bytes). New §16.5 cross-layer sharing: CLA (2× / 2.9×) and
+YOCO (21.3× at 128k), Character.AI's production use. Whole-chapter box, checkpoint 3, exercises 16.4–16.5.
 
-### Ch 17 · FlashAttention — **A−**
-Online softmax worked example and FA1–3 numbers check. Fixed: "d²/M ≈ 1/25 → 25× fewer HBM accesses"
-depended on counting M in bytes vs elements; now "≈1/12, an order of magnitude". Note: the §17.4 pseudo-code
-skips fully-masked blocks but omits the in-tile causal mask on the diagonal block (exercise 17.2's code has it);
-say so in the pseudo-code. The FA4 (2026) row is stated from announcements and should be re-checked against
-the paper. Missing: FlashDecoding / split-K for decode explained with the same rigour; FlexAttention examples.
+### Ch 17 · FlashAttention — **A** (raised November 2026)
+§17.4 pseudo-code now has the in-tile causal mask on diagonal blocks and skips future blocks before loading
+them, with a box on the two granularities; `tfs/flash.py` runs it, tested at four tile shapes. Exercise 17.2's
+stray closing tags removed. FA4 row and box re-checked against the paper (arXiv 2603.05451, MLSys 2026): up to
+1,613 TFLOP/s bf16 on B200 (71%), 1.3× cuDNN 9.13, 2.7× Triton; the unverified "1.2–3.2× FlexAttention" and
+"requires Hopper or Blackwell" claims removed. New §17.7 Flash-Decoding / split-KV with occupancy arithmetic and a
+worked merge (36.881 both ways), §17.8 FlexAttention examples (mask_mod / score_mod, block sparsity 48% / 79% /
+91%, tested against SDPA). Checkpoint 2, exercises 17.4–17.6.
 
-### Ch 18 · Serving — **B+**
-Speculative-decoding arithmetic (2.77, 6.13), PagedAttention waste figures check. Missing, by value:
-1. SLOs and goodput: TTFT, TPOT, p99, and how a scheduler trades them; a $/million-token cost model.
-2. Serving MoE with expert parallelism (now in Ch 20 §20.7 — cross-link both ways).
-3. Multi-LoRA serving, KV offload tiers (CPU/SSD, LMCache), structured-output engines (XGrammar).
-4. FP8 / FP4 (NVFP4, MXFP4) weight serving, linking Ch 0's formats to deployment.
+### Ch 18 · Serving — **A** (raised November 2026)
+All four missing items done, numbers from `tfs/serving.py`, asserted in `tests/test_inference.py`. New §18.3 SLOs,
+percentiles and goodput (worked ten-request example); §18.4 the scheduler's trade computed on the roofline
+(batch vs TPOT vs throughput; the cache is 81% of traffic at batch 256; memory caps batch at 223 before the TPOT
+limit of 314; chunked-prefill TTFT/TPOT table, balanced chunk 547); §18.5 $/M-token model (assumed
+$2.50/GPU-hour, stated as an assumption; output tokens 4.8× input). §18.7 now covers fp8 / MXFP4 / NVFP4 weight
+serving with bits-per-weight including scales and Hopper-vs-Blackwell execution, linked to Ch 0. New §18.9 MoE
+expert parallelism (tokens per expert, batch 9,451 for compute-bound fp8 experts, DeepSeek-V3's EP32 / EP320
+deployment, cross-linked to Ch 20 §20.7), §18.10 multi-LoRA (83.9 MB adapters; 64 distinct adapters = 5.37 GB
+per step), §18.11 KV offload tiers (reload 16.8 ms vs recompute 301.5 ms), §18.12 structured output in the engine
+(XGrammar, overlap, jump-forward). Three checkpoints, exercises 18.4–18.7.
 
 ### Ch 19 · Distributed Training — **A** (raised to the standard, November 2026)
 ZeRO floors, TP traffic and the bubble table check. This pass (2.8k → 7.0k words, 3 → 10 quiz questions, 4 → 7
@@ -313,6 +338,6 @@ pass@k, paired bootstrap and a power calculation). Final check grown to 8 questi
 2. **Data for pretraining** — dedup, filtering, mixtures, annealing (Ch 11).
 3. **Context parallelism** — ring attention / Ulysses (Ch 19), and the staged long-context recipe (Ch 21).
 4. **Linear-attention hybrids** — delta-rule attention explained, not just listed (Ch 22).
-5. **Serving economics** — SLOs, goodput, $/token, MoE expert-parallel serving (Ch 18).
+5. ~~**Serving economics** — SLOs, goodput, $/token, MoE expert-parallel serving (Ch 18).~~ Done, November 2026.
 6. **The 13 planned notebooks**, so every chapter's numbers are executable like Ch 0, 12 and 20.
 7. **Evaluation** — nowhere taught as a subject (benchmarks, contamination, LLM-as-judge, length control).

@@ -846,10 +846,10 @@ function vizKV(el, d) {
   slider(row2, "seq len", 512, 131072, seq, v => { seq = v; draw(); });
   slider(row2, "batch", 1, 64, bs, v => { bs = v; draw(); });
 
-  function fmt(b) {
-    if (b > 1024 ** 3) return (b / 1024 ** 3).toFixed(2) + " GB";
-    if (b > 1024 ** 2) return (b / 1024 ** 2).toFixed(1) + " MB";
-    return (b / 1024).toFixed(0) + " KB";
+  function fmt(b) {                       // binary units: the formula is powers of two (Ch 15 §15.4)
+    if (b > 1024 ** 3) return (b / 1024 ** 3).toFixed(2) + " GiB";
+    if (b > 1024 ** 2) return (b / 1024 ** 2).toFixed(1) + " MiB";
+    return (b / 1024).toFixed(0) + " KiB";
   }
   function draw() {
     const mha = 2 * L * nh * dh * seq * bs * bytes;
@@ -873,7 +873,7 @@ function vizKV(el, d) {
       bar(`MQA (1 KV head)`, mqa, mha, C.accent) +
       bar(`MLA (576/token/layer)`, mla, mha, C.accent) +
       `<div style="margin-top:12px;color:var(--ink-3);font-size:11.5px;line-height:1.7">` +
-      `For reference: one H100 has 80 GB total, and the <i>weights</i> of a 70B fp16 model already take ~140 GB (so it needs ≥2 GPUs). ` +
+      `For reference: one H100 has 80 GB of HBM, and the <i>weights</i> of a 70B bf16 model already take 141 GB (so it needs ≥2 GPUs). ` +
       `Everything left over is cache — and cache is what limits how many concurrent users you can serve.</div>`;
   }
   draw();
@@ -1207,12 +1207,226 @@ function vizFloat(el, d) {
 }
 
 /* ============================================================
+   14. SERIES — a small measured line chart (Ch 15's cache timing)
+   Data comes from an inline <script type="application/json">:
+     {"x":[...], "series":[{"name":..., "y":[...]}, ...]}
+   Not an axis diagram: series use accent / stamp, and are told apart by
+   dash pattern and marker shape as well, so they survive greyscale.
+   ============================================================ */
+function vizSeries(el, d) {
+  let data = { x: [], series: [] };
+  try { data = JSON.parse(el.querySelector("script")?.textContent || "{}"); } catch (e) { /* empty chart */ }
+  el.querySelector("script")?.remove();
+  panel(el, d.title || "", d.sub || "");
+  const wrap = document.createElement("div"); el.appendChild(wrap);
+  const W = 620, H = 290, L = 54, R = 16, T = 14, B = 46;
+  const xs = data.x, all = data.series.flatMap(s => s.y);
+  const xmax = Math.max(...xs), ymax = Math.max(...all) * 1.08;
+  const nice = v => { const p = Math.pow(10, Math.floor(Math.log10(v))); return [1, 2, 5, 10].map(m => m * p).find(m => v / m <= 6) || p * 10; };
+  const ystep = nice(ymax), xstep = nice(xmax);
+  const X = v => L + (v / xmax) * (W - L - R), Y = v => H - B - (v / ymax) * (H - T - B);
+  const sv = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", role: "img",
+    "aria-label": (d.title || "chart") + ": " + data.series.map(s => `${s.name} from ${s.y[0]} to ${s.y[s.y.length - 1]}`).join("; ") });
+  for (let v = 0; v <= ymax; v += ystep) {
+    sv.appendChild(svgEl("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: C.grid, "stroke-width": 1 }));
+    svgText(sv, L - 6, Y(v) + 4, String(v), C.faint, { anchor: "end", size: 10, weight: 500 });
+  }
+  for (let v = 0; v <= xmax; v += xstep) svgText(sv, X(v), H - B + 16, String(v), C.faint, { anchor: "middle", size: 10, weight: 500 });
+  sv.appendChild(svgEl("line", { x1: L, x2: W - R, y1: H - B, y2: H - B, stroke: C.gridHi, "stroke-width": 1.2 }));
+  svgText(sv, (L + W - R) / 2, H - 8, d.xlabel || "", C.dim, { anchor: "middle", size: 11 });
+  const yl = svgText(sv, 14, (T + H - B) / 2, d.ylabel || "", C.dim, { anchor: "middle", size: 11 });
+  yl.setAttribute("transform", `rotate(-90 14 ${(T + H - B) / 2})`);
+  const styles = [{ col: C.accent, dash: "" }, { col: C.stamp, dash: "6 4" }];
+  data.series.forEach((s, i) => {
+    const st = styles[i % styles.length];
+    sv.appendChild(svgEl("polyline", { points: s.y.map((y, j) => `${X(xs[j])},${Y(y)}`).join(" "), fill: "none",
+      stroke: st.col, "stroke-width": 2.4, "stroke-dasharray": st.dash }));
+    s.y.forEach((y, j) => {
+      const cx = X(xs[j]), cy = Y(y);
+      sv.appendChild(i % 2 ? svgEl("rect", { x: cx - 3.5, y: cy - 3.5, width: 7, height: 7, fill: st.col })
+                           : svgEl("circle", { cx, cy, r: 3.8, fill: st.col }));
+    });
+    const last = s.y.length - 1;
+    svgText(sv, X(xs[last]) - 6, Y(s.y[last]) + (i % 2 ? 18 : -9), s.name, st.col, { anchor: "end", size: 11, weight: 700 });
+  });
+  wrap.appendChild(sv);
+}
+
+/* ============================================================
+   15. MoE ROUTER — tokens x experts, top-k, load, bias balancing
+   Experts are NOT a tensor axis, so nothing here uses an axis colour:
+   affinity is accent at varying opacity, a chosen slot is a stamp-coloured
+   square, load bars are accent with the mean marked by a stamp rule.
+   The bias rule is DeepSeek-V3's (Ch 20 §20.4), with a larger step size
+   (gamma) so it converges in tens of steps instead of thousands.
+   ============================================================ */
+function vizMoE(el, d) {
+  panel(el, "A router at work: who picks which expert",
+    "Columns are tokens in one step, rows are experts. Shade = router affinity; a filled square = one of that token's top-k picks. Bars on the right: tokens each expert received.");
+  const row = ctlRow(el), row2 = ctlRow(el);
+  let E = +d.experts || 16, k = +d.k || 2, N = +d.tokens || 24, skew = 3, useBias = false;
+  const gamma = 0.04;
+  let step = 0, bias = [], pref = [], hist = [], timer = null;
+
+  const eSel = document.createElement("label");
+  eSel.innerHTML = "experts " + `<select>${[8, 16, 32].map(o => `<option ${o === E ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+  row.appendChild(eSel);
+  eSel.querySelector("select").onchange = ev => { E = +ev.target.value; k = Math.min(k, 4); reset(); };
+  slider(row, "top-k", 1, 4, k, v => { k = v; reset(); });
+  slider(row, "tokens per step", 8, 32, N, v => { N = v; reset(); });
+  slider(row, "router skew", 0, 6, skew, v => { skew = v; reset(); });
+  const tg = toggle(row2, "bias balancing (DeepSeek-V3)", useBias, on => { useBias = on; reset(); });
+  tg.classList.add("moe-bias");
+  const mk = (txt, cls, primary) => {
+    const b = document.createElement("button"); b.className = "btn" + (primary ? " primary" : "") + " " + cls;
+    b.type = "button"; b.textContent = txt; row2.appendChild(b); return b;
+  };
+  const bStep = mk("step", "moe-step", false), bPlay = mk("play 40 steps", "moe-play", true), bReset = mk("reset", "moe-reset", false);
+
+  const wrap = document.createElement("div"); el.appendChild(wrap);
+  const read = document.createElement("div");
+  read.className = "moe-read";
+  read.style.cssText = "margin-top:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-2);line-height:1.85";
+  el.appendChild(read);
+  const curveWrap = document.createElement("div"); curveWrap.style.marginTop = "14px"; el.appendChild(curveWrap);
+
+  function gauss(r) { let u = 0, v = 0; while (u === 0) u = r(); while (v === 0) v = r(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+  function reset() {
+    stop();
+    step = 0; hist = [];
+    bias = new Array(E).fill(0);
+    const r = rng(7 + E);
+    // a fixed popularity per expert: a few experts are favoured, as an untrained router's would drift to be
+    pref = Array.from({ length: E }, () => gauss(r));
+    route(); draw();
+  }
+  let aff = [], picks = [], load = [];
+  function route() {
+    const r = rng(1000 + step * 31 + E);
+    aff = []; picks = []; load = new Array(E).fill(0);
+    for (let t = 0; t < N; t++) {
+      const s = [];
+      for (let e = 0; e < E; e++) s.push(1 / (1 + Math.exp(-(gauss(r) + skew * 0.6 * pref[e]))));
+      const order = s.map((v, e) => [v + (useBias ? bias[e] : 0), e]).sort((a, b) => b[0] - a[0]).slice(0, k).map(p => p[1]);
+      order.forEach(e => load[e]++);
+      aff.push(s); picks.push(order);
+    }
+    hist.push(cv(load));
+  }
+  function cv(xs) {
+    const m = xs.reduce((a, b) => a + b, 0) / xs.length;
+    const v = xs.reduce((a, b) => a + (b - m) * (b - m), 0) / xs.length;
+    return m ? Math.sqrt(v) / m : 0;
+  }
+  function advance() {
+    if (useBias) {
+      const mean = N * k / E;
+      for (let e = 0; e < E; e++) bias[e] += gamma * Math.sign(mean - load[e]);   // under-used up, over-used down
+    }
+    step++; route(); draw();
+  }
+  function stop() { if (timer !== null) { clearInterval(timer); timer = null; } bPlay.textContent = "play 40 steps"; }
+  bStep.onclick = () => { stop(); advance(); };
+  bReset.onclick = () => reset();
+  bPlay.onclick = () => {
+    if (timer !== null) { stop(); return; }
+    let left = 40; bPlay.textContent = "pause";
+    timer = setInterval(() => { advance(); if (--left <= 0) stop(); }, 120);
+  };
+
+  function draw() {
+    const rh = E <= 16 ? 16 : 11, cw = Math.min(18, Math.floor(400 / N)), L = 40, top = 22;
+    const gx = L, gw = N * cw, bx = gx + gw + 14, bw = 150, W = bx + bw + 46, H = top + E * rh + 30;
+    const maxLoad = Math.max(N * k / E * 2.5, ...load);
+    wrap.innerHTML = "";
+    const sv = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", class: "moe-grid", role: "img",
+      "aria-label": `${E} experts by ${N} tokens, top-${k}; load coefficient of variation ${hist[hist.length - 1].toFixed(2)}` });
+    svgText(sv, gx, 13, `tokens in this step (${N})  →`, C.faint, { size: 10.5, weight: 500 });
+    svgText(sv, bx, 13, "load (tokens routed)", C.faint, { size: 10.5, weight: 500 });
+    for (let e = 0; e < E; e++) {
+      const y = top + e * rh;
+      svgText(sv, L - 6, y + rh - 4, "e" + e, C.faint, { anchor: "end", size: rh > 12 ? 10 : 8.5, weight: 500 });
+      for (let t = 0; t < N; t++) {
+        sv.appendChild(svgEl("rect", { x: gx + t * cw, y, width: cw - 1, height: rh - 1, fill: C.accent,
+          "fill-opacity": (0.06 + 0.5 * aff[t][e] * aff[t][e]).toFixed(3) }));
+      }
+      const w = bw * load[e] / maxLoad;
+      sv.appendChild(svgEl("rect", { x: bx, y: y + 1, width: Math.max(0, w), height: rh - 3, fill: C.accent, class: "moe-bar", "data-load": load[e] }));
+      svgText(sv, bx + w + 4, y + rh - 4, String(load[e]), C.dim, { size: rh > 12 ? 10 : 8.5, weight: 600 });
+    }
+    for (let t = 0; t < N; t++) for (const e of picks[t]) {
+      sv.appendChild(svgEl("rect", { x: gx + t * cw + 2, y: top + e * rh + 2, width: cw - 5, height: rh - 5, fill: C.stamp, "data-chosen": "1" }));
+    }
+    const mx = bx + bw * (N * k / E) / maxLoad;
+    sv.appendChild(svgEl("line", { x1: mx, x2: mx, y1: top - 4, y2: top + E * rh, stroke: C.stamp, "stroke-width": 1.6, "stroke-dasharray": "4 3" }));
+    svgText(sv, mx, top + E * rh + 14, `mean ${(N * k / E).toFixed(1)}`, C.stamp, { anchor: "middle", size: 10 });
+    wrap.appendChild(sv);
+
+    const now = hist[hist.length - 1], first = hist[0];
+    const recent = hist.slice(-10), avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+    read.dataset.cv = now.toFixed(4);
+    read.dataset.cvAvg = avg.toFixed(4);
+    read.dataset.step = String(step);
+    const busiest = Math.max(...load), idle = load.filter(x => x === 0).length;
+    read.innerHTML =
+      `step <b>${step}</b> · ${N} tokens × top-${k} = <b>${N * k}</b> slots over ${E} experts · ` +
+      `busiest expert <b style="color:${C.stamp}">${busiest}</b> (mean ${(N * k / E).toFixed(1)}) · idle experts <b>${idle}</b><br>` +
+      `load CV: now <b style="color:${C.accent}">${now.toFixed(2)}</b>, average of last ${recent.length} steps <b>${avg.toFixed(2)}</b>, at step 0 <b>${first.toFixed(2)}</b>` +
+      (useBias ? `<br><span style="color:${C.faint}">bias rule: after each step, b<sub>e</sub> += ${gamma} · sign(mean − load<sub>e</sub>). The bias picks <i>who</i> is chosen; gate weights would still use the unbiased affinity.</span>`
+               : `<br><span style="color:${C.faint}">No balancing: the favoured experts stay favoured every step. Turn on bias balancing and press play.</span>`);
+    drawCurve();
+  }
+
+  /* experts read per decode step vs batch size: E(1 - (1 - k/E)^b) / E */
+  function drawCurve() {
+    const W = 620, H = 210, L = 48, R = 16, T = 26, B = 40;
+    const bs = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512];
+    const lx = b => L + Math.log2(b) / 9 * (W - L - R), ly = f => H - B - f * (H - T - B);
+    const frac = (EE, kk, b) => 1 - Math.pow(1 - kk / EE, b);
+    curveWrap.innerHTML = "";
+    const sv = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", class: "moe-curve", role: "img",
+      "aria-label": `Fraction of experts read per decode step against batch size, for this router (${E} experts, top-${k}) and DeepSeek-V3 (256, top-8)` });
+    svgText(sv, L, 14, "share of routed experts read per decode step, vs decode batch", C.dim, { size: 11 });
+    [0, 0.25, 0.5, 0.75, 1].forEach(f => {
+      sv.appendChild(svgEl("line", { x1: L, x2: W - R, y1: ly(f), y2: ly(f), stroke: C.grid, "stroke-width": 1 }));
+      svgText(sv, L - 6, ly(f) + 4, Math.round(f * 100) + "%", C.faint, { anchor: "end", size: 10, weight: 500 });
+    });
+    bs.forEach(b => svgText(sv, lx(b), H - B + 15, String(b), C.faint, { anchor: "middle", size: 10, weight: 500 }));
+    svgText(sv, (L + W - R) / 2, H - 6, "tokens decoded together (log scale)", C.dim, { anchor: "middle", size: 10.5 });
+    const line = (EE, kk, col, dash, cls) => {
+      const pts = [];
+      for (let i = 0; i <= 90; i++) { const b = Math.pow(2, i / 10); pts.push(`${lx(b)},${ly(frac(EE, kk, b))}`); }
+      sv.appendChild(svgEl("polyline", { points: pts.join(" "), fill: "none", stroke: col, "stroke-width": 2.4, "stroke-dasharray": dash, class: cls }));
+    };
+    line(256, 8, C.stamp, "6 4", "moe-ds");
+    line(E, k, C.accent, "", "moe-mine");
+    const here = Math.min(512, N), fm = frac(E, k, here), fd = frac(256, 8, here);
+    sv.appendChild(svgEl("circle", { cx: lx(here), cy: ly(fm), r: 5, fill: C.accent }));
+    sv.appendChild(svgEl("rect", { x: lx(here) - 4.5, y: ly(fd) - 4.5, width: 9, height: 9, fill: C.stamp }));
+    const lab = svgText(sv, lx(here) + 9, ly(fm) - 6, `${Math.round(fm * 100)}%`, C.accent, { size: 11, weight: 700 });
+    lab.setAttribute("class", "moe-pt-mine");
+    const lab2 = svgText(sv, lx(here) + 9, ly(fd) + 15, `${Math.round(fd * 100)}%`, C.stamp, { size: 11, weight: 700 });
+    lab2.setAttribute("class", "moe-pt-ds");
+    svgText(sv, W - R, ly(0.12), `— this router: ${E} experts, top-${k}`, C.accent, { anchor: "end", size: 10.5 });
+    svgText(sv, W - R, ly(0.04), `- - DeepSeek-V3: 256, top-8`, C.stamp, { anchor: "end", size: 10.5 });
+    curveWrap.appendChild(sv);
+    const note = document.createElement("div");
+    note.className = "tiny";
+    note.style.marginTop = "6px";
+    note.textContent = `At a decode batch of ${here} tokens, this router reads ${Math.round(fm * 100)}% of its experts each step and DeepSeek-V3 reads ${Math.round(fd * 100)}% (uniform routing, §20.7). Sparsity saves FLOPs; at serving batch sizes it saves little bandwidth.`;
+    curveWrap.appendChild(note);
+  }
+  reset();
+}
+
+/* ============================================================
    registry + boot
    ============================================================ */
 const VIZ = {
   matmul: vizMatmul, tensor: vizTensor, broadcast: vizBroadcast, softmax: vizSoftmax,
   attention: vizAttention, heads: vizHeads, rope: vizRope, kv: vizKV, trace: vizTrace,
   online: vizOnline, gqa: vizGQA, chinchilla: vizChinchilla, float: vizFloat,
+  series: vizSeries, moe: vizMoE,
 };
 function renderOne(el) {
   const fn = VIZ[el.dataset.viz];

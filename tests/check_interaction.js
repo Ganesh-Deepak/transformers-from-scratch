@@ -723,6 +723,67 @@ const ins2 = run([
 if (ins2.error) ok(false, "inspector reload scenario ran", ins2.error);
 else ok(ins2.hidden && ins2.pad < 100, "inspector: stays closed on the next page, and gives the column back", JSON.stringify(ins2));
 
+/* ------------------------------- MoE router widget (Ch 20 §20.4) ---------- */
+console.log("\n MoE router widget");
+const MOE_HELP = [
+  "var W = function () { return document.querySelector('[data-viz=\"moe\"]'); };",
+  "var rd = function () { return W().querySelector('.moe-read').dataset; };",
+  "var chosen = function () { return W().querySelectorAll('.moe-grid rect[data-chosen]').length; };",
+  "var loads = function () { return [].slice.call(W().querySelectorAll('.moe-bar')).map(function (b) { return +b.getAttribute('data-load'); }); };",
+  "var setRange = function (i, v) { var s = W().querySelectorAll('input[type=range]')[i]; s.value = String(v); s.dispatchEvent(new Event('input', { bubbles: true })); };",
+].join("\n");
+const mo = run([MOE_HELP,
+  "var r = {};",
+  "r.chosen = chosen(); r.bars = loads().length; r.sum = loads().reduce(function (a, b) { return a + b; }, 0);",
+  "r.mine = W().querySelector('.moe-pt-mine').textContent; r.ds = W().querySelector('.moe-pt-ds').textContent;",
+  "r.cv0 = +rd().cv;",
+  // no balancing: thirty steps of fresh tokens, same skewed router
+  "for (var i = 0; i < 30; i++) W().querySelector('.moe-step').click();",
+  "r.offStep = +rd().step; r.offAvg = +rd().cvAvg;",
+  // bias balancing on (this resets), then let 'play' run on the fake clock
+  "W().querySelector('.moe-bias input').click();",
+  "r.resetStep = +rd().step;",
+  "W().querySelector('.moe-play').click();",
+  "r.playing = W().querySelector('.moe-play').textContent;",
+  "window.__advance(120 * 45);",
+  "r.onStep = +rd().step; r.onAvg = +rd().cvAvg; r.after = W().querySelector('.moe-play').textContent;",
+  // top-k 4: every token now fills four slots, and the curve follows
+  "setRange(0, 4);",
+  "r.chosenK4 = chosen(); r.mineK4 = W().querySelector('.moe-pt-mine').textContent;",
+  // the colour model: experts are not an axis, so no axis colour may appear
+  "var cs = getComputedStyle(document.documentElement);",
+  "var axis = ['--dim-1','--dim-2','--dim-3','--dim-4','--dim-5'].map(function (k) { return cs.getPropertyValue(k).trim().toLowerCase(); });",
+  "var used = [].slice.call(W().querySelectorAll('[fill],[stroke]')).reduce(function (a, n) { a.push((n.getAttribute('fill') || '').toLowerCase(), (n.getAttribute('stroke') || '').toLowerCase()); return a; }, []);",
+  "r.axisUsed = used.filter(function (c) { return c && axis.indexOf(c) !== -1; }).length;",
+  "r.nAxis = axis.filter(Boolean).length;",
+  // a theme change rebuilds the widget; the bias toggle must survive it
+  "window.dispatchEvent(new Event('themechange'));",
+  "r.biasAfterTheme = W().querySelector('.moe-bias input').checked;",
+  "r.chosenAfterTheme = chosen();",
+  "return r;",
+].join("\n"), "ch20-moe.html");
+if (mo.error) ok(false, "moe scenario ran", mo.error);
+else {
+  ok(mo.chosen === 24 * 2 && mo.sum === 48 && mo.bars === 16, "moe: 24 tokens × top-2 = 48 picks over 16 load bars", `${mo.chosen} picks, ${mo.bars} bars, load sum ${mo.sum}`);
+  ok(mo.mine === "96%" && mo.ds === "53%", "moe: curve marks this router (16, top-2) and DeepSeek-V3 at the step's batch of 24", `${mo.mine} / ${mo.ds}`);
+  ok(mo.offStep === 30 && mo.offAvg > 0.8 * mo.cv0, "moe: without balancing the skewed router stays unbalanced", `CV ${mo.cv0} -> ${mo.offAvg}`);
+  ok(mo.resetStep === 0 && mo.playing === "pause", "moe: toggling balancing resets, play starts a run", `${mo.resetStep} ${mo.playing}`);
+  ok(mo.onStep === 40 && mo.after === "play 40 steps", "moe: play runs exactly 40 steps on the clock, then stops", `${mo.onStep} ${mo.after}`);
+  ok(mo.onAvg < 0.5 * mo.cv0, "moe: bias balancing visibly evens the load (CV at least halves)", `CV ${mo.cv0} -> ${mo.onAvg}`);
+  ok(mo.chosenK4 === 24 * 4 && mo.mineK4 === "100%", "moe: top-k slider redraws picks and the curve", `${mo.chosenK4} picks, ${mo.mineK4}`);
+  ok(mo.nAxis === 5 && mo.axisUsed === 0, "moe: no axis colour anywhere in the widget (experts are not an axis)", `${mo.axisUsed} uses`);
+  ok(mo.biasAfterTheme === true && mo.chosenAfterTheme === 24 * 4, "moe: a theme change keeps the reader's settings", `${mo.biasAfterTheme} ${mo.chosenAfterTheme}`);
+}
+
+const se = run([
+  "var w = document.querySelector('[data-viz=\"series\"]');",
+  "return { lines: w.querySelectorAll('polyline').length, pts: w.querySelectorAll('circle').length + w.querySelectorAll('svg rect').length,",
+  "  label: w.querySelector('svg').getAttribute('aria-label'), script: !!w.querySelector('script') };",
+].join("\n"), "ch15-kvcache.html");
+if (se.error) ok(false, "series scenario ran", se.error);
+else ok(se.lines === 2 && se.pts === 18 && !se.script && /without cache from 13.15 to 155.67/.test(se.label),
+        "series: Ch 15's measured timing draws two lines, 18 points, and describes itself", `${se.lines} lines, ${se.pts} points`);
+
 /* ------------------------------- 5. every chapter, condensed -------------- */
 if (ALL) {
   console.log("\n every chapter: navigation + timer lifecycle");

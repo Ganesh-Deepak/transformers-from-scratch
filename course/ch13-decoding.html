@@ -18,7 +18,18 @@ algorithm with its own parameters — and those parameters change model behaviou
 realise. A "bad" model is quite often a well-trained model with a badly configured sampler.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; logits come out of the forward pass<div class="sep"></div><span class="k">Leads to</span><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; this loop is quadratically wasteful — the cache fixes it<br><a href="ch18-serving.html">Ch&nbsp;18</a> &mdash; speculative decoding rewrites it again<div class="sep"></div><span class="k">Why this chapter</span>The model gives a distribution. Turning it into text is a separate algorithm with its own bugs.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; logits come out of the forward pass<div class="sep"></div><span class="k">Leads to</span><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; this loop is quadratically wasteful — the cache fixes it<br><a href="ch18-serving.html">Ch&nbsp;18</a> &mdash; speculative decoding rewrites it again<br><a href="ch25-grpo.html">Ch&nbsp;25</a> &mdash; sampling many answers is how RL on reasoning learns<div class="sep"></div><span class="k">Why this chapter</span>The model gives a distribution. Turning it into text is a separate algorithm with its own bugs.</div>
+<div class="box intuition">
+<span class="t">The whole chapter in five sentences</span>
+<p style="margin-bottom:0"><b>A sampler turns one logit vector into one token</b>, and its settings
+(temperature, top-p, min-p) change behaviour more than most model changes do. <b>Constraints are masks</b>:
+a grammar engine walks each token's characters through an automaton and sets the illegal ones to −∞, and
+the hard part is that grammar boundaries and token boundaries do not line up. <b>More samples buy
+accuracy</b> when you can verify or vote, but voting only amplifies what the model already believes most.
+<b>Stopping is a streaming problem</b>, because stop strings span tokens. <b>Temperature 0 is not
+reproducible on a server</b>, because batch size changes the order of floating-point additions.</p>
+</div>
+
 <h2>13.1 · The generation loop</h2>
 
 <pre><code>@torch.no_grad()
@@ -261,20 +272,347 @@ allowed = grammar.allowed_token_ids(state)      # e.g. after '{' only '"' or '}'
 logits[~allowed] = float('-inf')
 </code></pre>
 
-<p>This gives a <b>100% guarantee</b> of syntactic validity — you cannot generate malformed JSON because
-malformed tokens have zero probability. Implementations: <code>outlines</code>, <code>guidance</code>,
-llama.cpp's GBNF grammars, vLLM's structured-output backends, and the OpenAI/Anthropic structured-output
-APIs.</p>
+<p>This gives a <b>100% guarantee</b> of syntactic validity: malformed tokens have zero probability, so you
+cannot sample them. Implementations: <code>outlines</code>, <code>guidance</code> / <code>llguidance</code>,
+llama.cpp's GBNF grammars, XGrammar, the structured-output backends of vLLM and SGLang, and the
+structured-output modes of the hosted APIs. The interesting part is what <code>allowed_token_ids</code>
+has to do, because the grammar is written in <b>characters</b> and the model speaks in <b>tokens</b>.</p>
+
+<h3>From a character automaton to a token mask</h3>
+
+<p>A grammar engine compiles the grammar into an automaton over characters (bytes, really): a finite-state
+machine for a regular expression, a <b>pushdown automaton</b> (an FSM with a stack, for nesting) for a
+context-free grammar such as JSON. A token is allowed in state <i>s</i> if feeding <b>every character of the
+token</b>, one after another, keeps the automaton alive. That is the whole rule, and
+<code>tfs/decoding.py</code> implements it in a dozen lines for a toy grammar.</p>
+
+<div class="example">
+<span class="t">Worked example — masking a 22-token vocabulary against <code>{"n": &lt;digits&gt;}</code></span>
+<p>The grammar is the literal <code>{"n": </code>, then one or more digits, then <code>}</code>. The toy
+vocabulary has 22 entries, including multi-character ones such as <code>{"</code>, <code>n":</code> and
+<code>7}</code>, exactly the kind of merges a real BPE vocabulary is full of.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>At the start</b>, only tokens whose characters are a prefix of <code>{"n": </code> survive:
+<pre style="margin:.4rem 0"><code class="nohl">allowed: '{'  '{"'                         2 of 22 tokens</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>After <code>{"n": 1</code></b>, the automaton is inside the digit run. A digit continues it; a
+<code>}</code> ends it and closes the object:
+<pre style="margin:.4rem 0"><code class="nohl">allowed: '1' '2' '7' '12' '42' '7}' '}'      7 of 22 tokens</code></pre>
+Note <code>7}</code>: one token that finishes the number <b>and</b> closes the object. It crosses a
+grammar boundary.
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>The naive engine gets this wrong.</b> One that matches tokens against one grammar terminal at a time
+(a token must lie inside the current terminal, here "the number") allows only
+<code>'1' '2' '7' '12' '42'</code>. It bans <code>7}</code>, and in this toy version even a bare
+<code>}</code>, which it would only accept after the number had been closed some other way. Banning
+boundary-crossing tokens does not break validity, but it forces the model onto spellings it rarely saw in
+training.
+</div></div>
+
+<div class="step"><div class="i">4</div><div>
+<b>Which spelling would the model have produced?</b> The tokenizer's own split of
+<code>{"n": 17}</code> (longest match first here) is
+<pre style="margin:.4rem 0"><code class="nohl">'{"'  'n"'  ':'  ' '  '1'  '7}'               6 tokens</code></pre>
+yet <b>24 different token sequences</b> spell the same 9 characters with this vocabulary. Every one is valid
+under the grammar, and only one of them is what the model was trained to see. Steering it onto one of the
+other 23 (say <code>'{' '"' 'n' '"' ...</code>) puts it slightly off-distribution at every step.
+</div></div>
+
+<p style="margin-bottom:0"><b>The lesson.</b> Validity is a property of characters; quality depends on the
+token path. A good engine checks tokens character by character (so boundary-crossing tokens survive) and
+lets the model pick the path. All five numbers above are asserted in <code>test_grammar_masks</code>.</p>
+</div>
+
+<h3>The token-boundary problem, from the prompt side</h3>
+
+<p>The same mismatch bites where the prompt ends. If a prompt ends in <code>"name": "</code> and the
+tokenizer would normally have merged that final quote with the first characters of the value, the model
+now sees an unusual split and its next-token distribution is distorted: the trailing-space effect from
+Chapter 3, in another form. <b>Token healing</b> (introduced in Microsoft's <code>guidance</code>) backs up
+one token, removes it from the prompt, and constrains the first generated token to start with the removed
+characters, so the model can choose the merge it would have chosen. Grammar engines meet the same issue
+in the middle of generation, which is why they track a partial token's characters rather than only whole
+tokens.</p>
+
+<h3>Making it fast: XGrammar</h3>
+
+<p>The naive engine is expensive. Walking 128,000 tokens through the automaton every step costs far more
+than the GPU's forward pass for a small model, and it runs on the CPU, so the GPU waits. XGrammar (Dong
+et al., 2024) splits the vocabulary at each automaton position into two kinds:</p>
+
+<ul>
+<li><b>Context-independent tokens</b>, whose validity depends only on the current automaton position, not on
+the stack below it. Their masks are <b>precomputed once</b> per grammar and cached.</li>
+<li><b>Context-dependent tokens</b>, which could pop the stack (a <code>}</code> closing an object whose
+opening depends on the history). Only these are checked at run time, and they are a small minority.</li>
+</ul>
+
+<p>It also overlaps mask computation on the CPU with the forward pass on the GPU. The paper reports
+<b>up to 100× faster</b> mask generation than earlier engines and up to 80× end-to-end speedup for
+structured-output serving of Llama-3.1 on an H100 (the authors' measurements). Chapter 18 returns to what
+this means for a serving stack.</p>
 
 <div class="box warn">
 <span class="t">Constrained ≠ correct</span>
 <p style="margin-bottom:0">You are guaranteed valid <i>syntax</i>, not valid <i>content</i>. Forcing a schema
 can also hurt quality: if the model wants to reason before answering and the grammar forbids it, you've
-removed its working space. The usual fix is a two-stage approach — free-form reasoning first, then a
-constrained extraction pass.</p>
+removed its working space. The usual fix is a two-stage approach (free-form reasoning first, then a
+constrained extraction pass), or a schema with a free-text <code>reasoning</code> field placed
+<b>before</b> the answer fields, since the model generates fields in order.</p>
 </div>
 
-<h2>13.5 · Recommended settings</h2>
+<div class="quiz" data-title="Checkpoint 2 — constrained decoding">
+<div class="qitem" data-answer="1">
+  <div class="qq">A grammar engine allows a token only if it stays inside one grammar terminal. What goes wrong?</div>
+  <div class="opts">
+    <div class="opt">It produces invalid JSON</div>
+    <div class="opt">Output stays valid, but tokens that cross a boundary (like <code>7}</code>) are banned, forcing spellings the model rarely saw</div>
+    <div class="opt">It becomes slower than unconstrained decoding</div>
+    <div class="opt">Nothing; boundaries never fall inside tokens</div>
+  </div>
+  <div class="expl"><b>Valid but off-distribution.</b> Real vocabularies are full of merges like
+  <code>"}</code>, <code>",</code> or <code>7}</code>. Checking characters one by one lets them through;
+  checking whole terminals does not, and the model is pushed onto non-canonical token paths.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">What does XGrammar precompute?</div>
+  <div class="opts">
+    <div class="opt">The model's logits for every grammar state</div>
+    <div class="opt">Every possible output string</div>
+    <div class="opt">Token masks for context-independent tokens at each automaton position, leaving only stack-dependent tokens to check at run time</div>
+    <div class="opt">A smaller vocabulary for each grammar</div>
+  </div>
+  <div class="expl"><b>Most tokens' validity depends only on where you are, not on the stack.</b> Those
+  masks are cached; the few context-dependent tokens are checked live, and that work overlaps the GPU's
+  forward pass.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Your prompt ends in <code>"url": "http</code> and quality of the generated URL is poor. Why might token healing help?</div>
+  <div class="opts">
+    <div class="opt">The tokenizer would normally merge <code>http</code> with what follows (e.g. <code>https</code>, <code>://</code>); backing up a token lets the model choose that merge</div>
+    <div class="opt">It removes special tokens from the prompt</div>
+    <div class="opt">It raises the temperature for the first token</div>
+    <div class="opt">It retokenizes the whole prompt with a different vocabulary</div>
+  </div>
+  <div class="expl"><b>A prompt boundary splits a likely merge.</b> Removing the last token and constraining the
+  first generated token to start with its characters gives the model back the canonical tokenization.</div>
+</div>
+</div>
+
+<h2>13.5 · Spending more samples: best-of-n and self-consistency</h2>
+
+<p>Everything so far draws <b>one</b> sample. For tasks with a checkable or votable answer, drawing several
+and choosing among them is often the cheapest accuracy you can buy, and it is the simplest form of
+<b>test-time compute</b>. Two ways to choose:</p>
+
+<ul>
+<li><b>Best-of-n with a verifier.</b> Sample n answers, score each with something that can tell right from
+wrong (unit tests, a checker, a reward model), keep the best. If the verifier is perfect and each sample is
+right with probability <i>p</i>, you succeed when <i>any</i> sample is right.</li>
+<li><b>Self-consistency</b> (Wang et al., 2022). No verifier: sample n reasoning paths, extract each final
+answer, return the most common one. It works when the right answer is the model's <b>most likely</b>
+answer even though it is far from certain.</li>
+</ul>
+
+<div class="mathblock">
+P(at least one right in n) = 1 − (1 − p)<sup>n</sup>
+<span class="lbl">the ceiling for best-of-n with a perfect verifier · Chen et al. (2021) give an unbiased estimator, pass@k = 1 − C(n−c, k) / C(n, k), from n samples with c correct</span>
+</div>
+
+<div class="example">
+<span class="t">Worked example — what voting buys, and when it backfires</span>
+
+<div class="step"><div class="i">1</div><div>
+<b>With a perfect verifier</b>, p = 0.3 per sample:
+<pre style="margin:.4rem 0"><code class="nohl">n           1      5      9     21
+success   0.300  0.832  0.960  0.999</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Voting, when the right answer is the mode.</b> Answers A (right), B, C, D with probabilities 0.4, 0.3,
+0.2, 0.1. The exact plurality-vote accuracy (ties split evenly):
+<pre style="margin:.4rem 0"><code class="nohl">n           1      5      9     21     41
+accuracy  0.400  0.490  0.556  0.668  0.763</code></pre>
+Slower than with a verifier, because a vote needs a <i>margin</i>, not one lucky sample, but it keeps
+climbing toward 1.
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>Voting, when a wrong answer is the mode.</b> Same task, but the model has a systematic misconception:
+right 0.35, one wrong answer 0.45, others 0.1 each:
+<pre style="margin:.4rem 0"><code class="nohl">n           1      5      9     21     41
+accuracy  0.350  0.363  0.353  0.302  0.236</code></pre>
+<b>More samples make it worse.</b> Self-consistency amplifies whatever the model believes most; it cannot
+fix a belief that is wrong.
+</div></div>
+
+<p style="margin-bottom:0">Every number is computed by <code>pass_at_n</code> and
+<code>majority_vote_accuracy</code> in <code>tfs/decoding.py</code> and asserted in
+<code>test_best_of_n_and_pass_at_k</code> and <code>test_self_consistency</code>.</p>
+</div>
+
+<p><b>What it costs.</b> n samples are n decodes, but not n prefills: the prompt is processed once and its KV
+cache shared by all n sequences (copy-on-write blocks, Chapter 18), so best-of-8 on a long prompt costs far
+less than 8 separate requests. Samples must be <b>diverse</b> to help, which means temperature well above 0;
+eight greedy samples are one sample eight times.</p>
+
+<h2>13.6 · Stopping: EOS, stop sequences, and streaming</h2>
+
+<p>Generation ends in one of three ways: the model emits its end token (<code>&lt;|eot_id|&gt;</code> for
+Llama 3, a different id for every family, and a wrong one in your config means generation never stops),
+the length limit is reached, or the text matches a <b>stop sequence</b> the caller supplied, such as
+<code>"\n\nUser:"</code>. The first two are a comparison on token ids. The third is harder than it looks,
+because stop sequences are <b>strings</b> and they almost never line up with token boundaries.</p>
+
+<div class="example">
+<span class="t">Worked example — a stop string that arrives in three pieces</span>
+<p>Stop sequence <code>"\n\nUser:"</code>. The model emits tokens whose text is <code>"Sure"</code>,
+<code>".\n"</code>, <code>"\nUs"</code>, <code>"er"</code>, <code>": hi"</code>. We stream to the client as we
+go.</p>
+
+<div class="step"><div class="i">1</div><div>
+<code>"Sure"</code> cannot begin the stop string: <b>send it</b>.
+</div></div>
+<div class="step"><div class="i">2</div><div>
+<code>".\n"</code>: the trailing <code>\n</code> <i>could</i> be the start of <code>\n\nUser:</code>. Send
+<code>"."</code>, <b>hold back</b> <code>"\n"</code>.
+</div></div>
+<div class="step"><div class="i">3</div><div>
+<code>"\nUs"</code>, <code>"er"</code>: the held-back text grows to <code>"\n\nUser"</code>, still a prefix
+of the stop string. Send nothing.
+</div></div>
+<div class="step"><div class="i">4</div><div>
+<code>": hi"</code> completes the stop string. Stop. The client received exactly <code>"Sure."</code>,
+and never saw a fragment of the stop string it would have had to retract.
+<pre style="margin:.4rem 0"><code class="nohl">emitted per token:  'Sure'  '.'  ''  ''  ''      -> "Sure."   stopped</code></pre>
+</div></div>
+<p style="margin-bottom:0">Hold-back rule: after each token, keep back the longest suffix of the pending text
+that is a proper prefix of any stop string; release the rest. <code>StopStreamer</code> in
+<code>tfs/decoding.py</code> is 30 lines; <code>test_stop_sequences_streaming</code> checks this trace and
+that held-back text is released, not lost, if the stream ends without a stop.</p>
+</div>
+
+<div class="box gotcha">
+<span class="t">Three stop-sequence bugs that ship</span>
+<ol style="margin-bottom:0">
+<li><b>Matching per token.</b> Checking each token's text for the stop string misses every stop that spans
+tokens, which is most of them.</li>
+<li><b>Streaming before checking.</b> Sending tokens immediately and stopping later leaks the start of the
+stop string (<code>"\n\nUs"</code>) to the client.</li>
+<li><b>Bytes, not characters.</b> A token can end in the middle of a multi-byte UTF-8 character (Chapter 3).
+Detokenize with a byte buffer and hold back incomplete characters, or the client receives
+<code>�</code>.</li>
+</ol>
+</div>
+
+<h2>13.7 · Why temperature 0 is not reproducible</h2>
+
+<p>Set temperature to 0, send the same prompt to an inference server twice, and you will sometimes get
+different completions. The usual explanation ("GPUs are nondeterministic, threads race") is mostly wrong
+for inference: the forward pass of a typical engine does not use atomic adds, and the same kernel on the same
+input gives the same bits every time. He and Thinking Machines Lab (2025) traced the real cause: <b>the
+kernels are not batch-invariant.</b> The result for <i>your</i> request depends on how many <i>other</i>
+requests the server happened to batch with it.</p>
+
+<p>The chain is short. Floating-point addition is not associative, so a sum's last bits depend on the order
+of additions. To keep the GPU busy, matmul and attention kernels change their reduction strategy with
+problem size, for instance splitting a long dot product into more chunks (split-K, Chapter 17) when the batch
+is small. Batch size changes the order; the order changes the bits; and when two candidate tokens are nearly
+tied, the bits change the argmax.</p>
+
+<div class="example">
+<span class="t">Worked example — the same numbers, summed six ways</span>
+
+<div class="step"><div class="i">1</div><div>
+<b>Order matters.</b> In fp32, <code>1e8 + 1 = 1e8</code> (the spacing between fp32 numbers near 10<sup>8</sup>
+is 8, Chapter 0). So:
+<pre style="margin:.4rem 0"><code class="nohl">(1e8 + 1) + (-1e8)  =  0
+(1e8 + (-1e8)) + 1  =  1</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Chunking changes the answer.</b> 4096 random fp32 values, summed the way a split-K kernel does
+(each chunk left to right, then the partial sums), every addition rounded to fp32:
+<pre style="margin:.4rem 0"><code class="nohl">chunks:    1           2           4           8           16          32
+sum:    27.716221   27.716259   27.716211   27.716192   27.716166   27.716141
+exact (fp64 fsum):  27.716160</code></pre>
+Six chunkings, six different fp32 results, all within 1.2 × 10<sup>−4</sup> of each other.
+</div></div>
+
+<div class="step"><div class="i">3</div><div>
+<b>A flipped argmax.</b> Two candidate tokens whose exact logits differ by about 1.07 × 10<sup>−6</sup>
+(26.6436109 vs 26.6436099; token 0 should win). Computing both 1024-long dot products with 1 chunk and
+then with 8:
+<pre style="margin:.4rem 0"><code class="nohl">split 1:   token 0 = 26.643583   token 1 = 26.643604   -> greedy picks token 1
+split 8:   token 0 = 26.643608   token 1 = 26.643597   -> greedy picks token 0</code></pre>
+One flipped token early in a completion and every token after it can differ.
+</div></div>
+<p style="margin-bottom:0">The sums are done one fp32 addition at a time in pure Python so they reproduce
+bit for bit on any machine: <code>sum_fp32</code> and <code>find_argmax_flip</code>, asserted in
+<code>test_fp32_reduction_order</code> and <code>test_argmax_flip</code>.</p>
+</div>
+
+<p><b>What to do about it.</b> For evaluation, do not assume a single temperature-0 run is "the" answer:
+near-ties are common in long outputs. For RL on a model's own samples (Chapter 25), a mismatch between the
+sampler's numbers and the trainer's numbers is a source of off-policy error, which is the case He et al.
+make for <b>batch-invariant kernels</b>: kernels that fix one reduction order regardless of batch size, at
+some cost in speed. Serving engines have begun to offer deterministic or batch-invariant modes for exactly
+this use.</p>
+
+<div class="quiz" data-title="Checkpoint 3 — samples, stops, and reproducibility">
+<div class="qitem" data-answer="3">
+  <div class="qq">A model answers a maths question right 35% of the time, but gives one specific wrong answer 45% of the time. What does self-consistency with 41 samples do?</div>
+  <div class="opts">
+    <div class="opt">Pushes accuracy toward 100%</div>
+    <div class="opt">Leaves it at 35%</div>
+    <div class="opt">Pushes it to exactly 50%</div>
+    <div class="opt">Lowers it (to about 24%), because the vote converges on the most common answer, which is wrong</div>
+  </div>
+  <div class="expl"><b>Voting amplifies the mode.</b> Exactly 0.236 at n = 41 in the worked example. Voting
+  only helps when the right answer is already the most likely one; otherwise you need a verifier.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">Your server checks each new token's text for the stop string <code>"###"</code>. Users report outputs ending in <code>"##"</code>. Why?</div>
+  <div class="opts">
+    <div class="opt">The model never generates <code>"###"</code></div>
+    <div class="opt">The stop string arrived split across tokens (<code>"##"</code> then <code>"#"</code>); per-token matching missed it, and the first piece had already been streamed</div>
+    <div class="opt">The tokenizer cannot encode <code>"#"</code></div>
+    <div class="opt">Stop strings only work at temperature 0</div>
+  </div>
+  <div class="expl"><b>Strings span tokens.</b> Match against the accumulated text, and hold back any suffix
+  that could still become a stop string until it is resolved.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Same prompt, temperature 0, same server, different outputs on two calls. Most likely cause?</div>
+  <div class="opts">
+    <div class="opt">Your request was batched with different numbers of other requests, the kernels chose different reduction orders, and a near-tied argmax flipped</div>
+    <div class="opt">Temperature 0 still samples randomly</div>
+    <div class="opt">Race conditions between GPU threads in every matmul</div>
+    <div class="opt">The model weights are updated between calls</div>
+  </div>
+  <div class="expl"><b>Batch invariance, not thread races.</b> The same kernel on the same input is
+  deterministic; what changes is the input shape, through the batch, and with it the order of
+  floating-point additions.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">You draw 8 samples per prompt for best-of-8 on 4,000-token prompts. Roughly what does it cost relative to 1 sample?</div>
+  <div class="opts">
+    <div class="opt">8× the prefill and 8× the decode</div>
+    <div class="opt">The same as 1 sample</div>
+    <div class="opt">One prefill (the prompt's KV cache is shared) and 8× the decode</div>
+    <div class="opt">8× the prefill and 1× the decode</div>
+  </div>
+  <div class="expl"><b>Share the prefix.</b> With prefix sharing (Chapter 18's copy-on-write blocks) the
+  prompt is processed once; each sample adds only its own decode steps and its own cache blocks.</div>
+</div>
+</div>
+
+<h2>13.8 · Recommended settings</h2>
 
 <div class="tw">
 <table>
@@ -298,7 +636,7 @@ decoding in particular can cause repetition loops in some of them. This is a rea
 from base/instruct models. Always read the model card's recommended settings before benchmarking anything.</p>
 </div>
 
-<h2>13.6 · Exercises</h2>
+<h2>13.9 · Exercises</h2>
 
 <div class="exercise">
 <div class="eh"><span class="n">13.1</span><span class="ti">Implement every sampler</span><span class="lvl">code</span></div>
@@ -362,12 +700,83 @@ trained to match — a genuinely counterintuitive result, and the reason nobody 
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">13.4</span><span class="ti">Price best-of-n</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>A coding task: 2,000-token prompt, 400-token answers, unit tests as a perfect verifier, each sample passes
+with p = 0.3. Assume a decoded token costs 4× a prefill token (Chapter 18 derives a ratio of this size).</p>
+<ol>
+<li>How many samples for a 95% chance that at least one passes?</li>
+<li>Cost of that best-of-n, in "prefill-token equivalents", with and without prefix sharing.</li>
+<li>When would you rather spend the same budget on a bigger model?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">1. 1 − 0.7^n ≥ 0.95  ->  n ≥ ln 0.05 / ln 0.7 = 8.4  ->  n = 9   (0.960)
+2. one sample:                2000 + 4 × 400  =  3,600
+   9 samples, no sharing:     9 × 3,600       = 32,400
+   9 samples, shared prefix:  2000 + 9 × 1600 = 16,400   (about half)</code></pre>
+<p style="margin-bottom:0">3: when there is no verifier (voting needs the right answer to be the mode), or
+when p is near zero: best-of-n multiplies chances the model already has, it does not create them.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">13.5</span><span class="ti">Write a streaming stop-sequence filter</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Implement <code>StopStreamer(stops).push(text) -&gt; str</code> and <code>flush()</code> without looking
+at <code>tfs/decoding.py</code>. Test it on: a stop that arrives in one token, one split across three tokens,
+two stop strings that share a prefix (<code>"\n\nUser:"</code> and <code>"\n\nAssistant:"</code>), and a
+stream that ends with held-back text and no stop.</p>
+<details class="reveal"><summary>The invariant to test</summary><div>
+<p style="margin-bottom:0">For any token stream and any stop set, everything emitted plus the flush must equal
+the full text cut at the first occurrence of any stop string, or the full text if none occurs. Write that as
+a property test over random splits of a fixed string. It catches all three bugs in the box above.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">13.6</span><span class="ti">Predict, then measure: batch-dependent output</span><span class="lvl">exploration</span></div>
+<div class="eb">
+<p>Prediction first: with your Chapter 11 model in fp32 on CPU, greedy-decode one prompt (a) alone and
+(b) as row 0 of a batch of 16 different prompts (left-padded, Chapter 5). Will the 200 generated tokens be
+identical? Write your guess down. Then run it, and repeat in bf16 and, if you have one, on a GPU.</p>
+<details class="reveal"><summary>What to expect</summary><div>
+<p style="margin-bottom:0">Often identical on CPU in fp32 for a small model, because its logit gaps are large
+next to fp32 noise. Differences become likely in bf16 (about 3 significant digits, Chapter 0), on GPUs
+whose kernels pick tile shapes by batch size, and in longer generations, where one near-tie is enough.
+Record the first position where (a) and (b) differ and the top-2 logit gap there; it should be tiny. That
+gap, not "randomness", is the mechanism.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">13.7</span><span class="ti">Build a grammar mask for real JSON</span><span class="lvl">hard</span></div>
+<div class="eb">
+<p>Extend the toy <code>Pattern</code> to a pushdown automaton for the object
+<code>{"name": &lt;string&gt;, "age": &lt;integer&gt;}</code>, run it over a real vocabulary (GPT-2's 50,257
+tokens), and time one mask computation. How many tokens are legal right after <code>{"name": "</code>?
+How many right after the closing quote of the name?</p>
+<details class="reveal"><summary>What you should find</summary><div>
+<p style="margin-bottom:0">Inside a string almost the whole vocabulary is legal (any token without an
+unescaped quote or control character), so the mask is nearly all ones; after the closing quote only a
+handful survive (a comma, or comma-space merges). In Python the mask will take milliseconds per step,
+longer than a small model's forward pass on a GPU: exactly the overhead XGrammar's precomputed
+context-independent masks remove.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://arxiv.org/abs/1904.09751">Holtzman et al. 2019 — The Curious Case of Neural Text Degeneration</a> — the nucleus sampling paper.</li>
 <li><a href="https://arxiv.org/abs/2407.01082">Nguyen et al. 2024 — Min-p sampling</a></li>
 <li><a href="https://huggingface.co/blog/how-to-generate">HuggingFace — How to generate text</a></li>
 <li><a href="https://github.com/dottxt-ai/outlines">outlines</a> — structured generation via token masking.</li>
+<li><a href="https://arxiv.org/abs/2411.15100">Dong et al. 2024 — XGrammar</a> (context-independent token masks, pushdown automata)</li>
+<li><a href="https://github.com/guidance-ai/guidance">guidance</a> — token healing and constrained generation.</li>
+<li><a href="https://arxiv.org/abs/2203.11171">Wang et al. 2022 — Self-Consistency Improves Chain of Thought Reasoning</a></li>
+<li><a href="https://arxiv.org/abs/2107.03374">Chen et al. 2021 — Evaluating Large Language Models Trained on Code</a> (pass@k and its unbiased estimator)</li>
+<li><a href="https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/">He &amp; Thinking Machines Lab 2025 — Defeating Nondeterminism in LLM Inference</a> (batch invariance)</li>
+<li>Reference code: <code>tfs/decoding.py</code> · tests: <code>tests/test_inference.py</code> (Ch 13 section)</li>
 <li>Companion notebook: not written yet (planned as <code class="planned">notebooks/13_decoding.ipynb</code>)</li>
 </ul>
 

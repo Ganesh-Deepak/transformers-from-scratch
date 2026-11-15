@@ -19,7 +19,7 @@ able to look at any operation and predict, with arithmetic and before running it
 by compute or by memory. That single prediction explains almost every design decision in Parts IV and V.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; the matmul whose cost we are now counting<br><a href="ch12-precision.html">Ch&nbsp;12</a> &mdash; why bf16 exists at all<div class="sep"></div><span class="k">Leads to</span><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; the memory wall, which is this chapter applied once<br><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; a kernel designed entirely around the hierarchy below<br><a href="ch18-serving.html">Ch&nbsp;18</a> &mdash; batching, which is a roofline argument<div class="sep"></div><span class="k">Why this chapter</span>Without it, "memory-bound" is a phrase you repeat. With it, it is a number you compute.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; the matmul whose cost we are now counting<br><a href="ch12-precision.html">Ch&nbsp;12</a> &mdash; why bf16 exists at all<div class="sep"></div><span class="k">Leads to</span><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; the memory wall, which is this chapter applied once<br><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; a kernel designed entirely around the hierarchy below<br><a href="ch18-serving.html">Ch&nbsp;18</a> &mdash; batching, which is a roofline argument<br><a href="ch19-distributed.html">Ch&nbsp;19</a> &mdash; the interconnect ladder, used<div class="sep"></div><span class="k">Why this chapter</span>Without it, "memory-bound" is a phrase you repeat. With it, it is a number you compute.</div>
 
 <div class="box intuition">
 <span class="t">The one idea in this chapter</span>
@@ -344,7 +344,224 @@ the online-softmax proof that makes it exact.</p>
 </div>
 </div>
 
-<h2>14.7 · Exercises</h2>
+<h2>14.7 · MFU, and the third regime: overhead</h2>
+
+<p>The roofline gives two ceilings. Practitioners summarise how close a real workload gets to them with one
+number, <b>Model FLOPs Utilisation</b> (Chowdhery et al., 2022, in the PaLM paper):</p>
+
+<div class="mathblock">
+MFU = <span class="frac"><span class="n">(FLOPs the model needs per token) × (tokens per second)</span><span class="d">peak FLOP/s of the hardware</span></span>
+<span class="lbl">training: 6N FLOPs per token · inference: 2N · attention FLOPs usually left out, so MFU is slightly conservative</span>
+</div>
+
+<p>"The model needs" is the point: if you recompute activations in the backward pass (Chapter 19), the GPU does
+more arithmetic, but MFU does not credit it. (Counting it gives <b>hardware</b> FLOPs utilisation, HFU,
+which flatters a run that recomputes a lot.) A worked example: an 8.03 B-parameter model training at 9,000
+tokens per second per H100 does 6 × 8.03 × 10<sup>9</sup> × 9,000 = 4.34 × 10<sup>14</sup> FLOP/s, which is
+<b>43.8% MFU</b> against 989.4 TFLOP/s. Well-tuned large dense training runs report around 40%: Meta gives
+<b>38–43% bf16 MFU</b> for Llama 3 405B on 16k H100s. Inference decode, being memory-bound, has an MFU in
+single digits by design, so for decode quote <b>bandwidth utilisation</b> (bytes moved per second ÷ HBM
+bandwidth) instead.</p>
+
+<h3>When neither ceiling binds: the overhead-bound regime</h3>
+
+<p>A GPU only works on what the CPU has handed it. Every kernel costs a launch: the host-side framework
+(Python, PyTorch's dispatcher) decides what to run, and the driver enqueues it, a cost of order
+microseconds per kernel. If the kernels are tiny, the GPU finishes each one before the next arrives, and
+the step time is set by the <b>number of launches</b>, not by bytes or FLOPs. Horace He calls this the
+third regime: <b>overhead-bound</b>.</p>
+
+<div class="example">
+<span class="t">Worked example — when does launch overhead matter?</span>
+<p>Assume ~4 µs of launch cost per kernel (order of magnitude; measure your own stack) and an unfused
+Llama-style block of 11 kernels (norm, QKV, RoPE, attention, output projection, add, norm, gate+up,
+SiLU·mul, down, add), plus 3 for embedding, final norm and LM head.</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>An 8B model, bf16, batch 1.</b> 32 layers → 32 × 11 + 3 = <b>355 kernels</b>.
+<pre style="margin:.4rem 0"><code class="nohl">memory floor  16.06 GB / 3.35 TB/s  = 4.79 ms
+launch floor  355 × 4 µs            = 1.42 ms      -> memory-bound, but overhead is 30% of it</code></pre>
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>A 125M model (GPT-2 small size, 0.25 GB in bf16), 12 layers.</b> 135 kernels.
+<pre style="margin:.4rem 0"><code class="nohl">memory floor  0.25 GB / 3.35 TB/s   =  75 µs
+launch floor  135 × 4 µs            = 540 µs      -> OVERHEAD-bound, 7x over the memory floor</code></pre>
+A faster GPU does nothing here. Neither does a better matmul kernel.
+</div></div>
+<p style="margin-bottom:0"><code>tfs/gpu.py</code>: <code>kernels_per_decode_step</code> and
+<code>decode_step_floor</code>, asserted in <code>test_launch_overhead</code>. You have already seen this
+regime: Chapter 15's measured cached decode on a CPU takes about 11 ms per token whether the context is 16
+tokens or 500, because a model that small is all overhead.</p>
+</div>
+
+<p><b>The fixes</b>, in the order you reach for them:</p>
+<ul>
+<li><b>Fusion</b> (§14.6): fewer, larger kernels. <code>torch.compile</code> fuses elementwise chains.</li>
+<li><b>CUDA graphs</b>: record the whole sequence of kernel launches for one decode step once, then replay it
+with a single launch. The CPU cost per step drops to almost nothing. The catch is that a graph is captured
+for <b>fixed shapes and addresses</b>, so engines such as vLLM and SGLang capture one graph per batch size in
+a list (padding a batch of 13 up to the next captured size), and keep the KV cache at fixed addresses, which
+PagedAttention's block tables (Chapter 18) make possible.</li>
+<li><b>Bigger batches</b>: the launch cost is per step, not per sequence, so batching amortises it exactly as
+it amortises weight reads.</li>
+</ul>
+
+<h2>14.8 · Lower precision is a faster chip</h2>
+
+<p>Tensor cores run narrower formats at higher rates: each halving of the operand width roughly doubles the
+peak. Datasheet figures, <b>dense</b> (vendor headline numbers are often quoted with 2:4 structured sparsity,
+which doubles them again and which almost no LLM workload uses):</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>GPU</th><th class="num">bf16</th><th class="num">fp8</th><th class="num">fp4</th><th class="num">HBM</th><th class="num">ridge bf16</th><th class="num">ridge fp8</th><th class="num">ridge fp4</th></tr></thead>
+<tbody>
+<tr><td>H100 SXM</td><td class="num">989 TF</td><td class="num">1,979 TF</td><td class="num">—</td><td class="num">3.35 TB/s</td><td class="num">295</td><td class="num">591</td><td class="num">—</td></tr>
+<tr><td>H200</td><td class="num">989 TF</td><td class="num">1,979 TF</td><td class="num">—</td><td class="num">4.8 TB/s</td><td class="num">206</td><td class="num">412</td><td class="num">—</td></tr>
+<tr><td>B200</td><td class="num">2,250 TF</td><td class="num">4,500 TF</td><td class="num">9,000 TF</td><td class="num">8.0 TB/s</td><td class="num">281</td><td class="num">562.5</td><td class="num">1,125</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Ridge points are in FLOPs per <b>byte</b>, and that is the subtle part. A narrower format raises the peak
+<i>and</i> shrinks the bytes, so the batch needed to saturate decode does not move:</p>
+
+<div class="mathblock">
+decode batch to saturate = ridge × (bytes per weight) / 2
+<span class="lbl">H100 bf16: 295 × 2 / 2 = 295 · H100 fp8: 591 × 1 / 2 = 295 · B200 fp4: 1125 × 0.5 / 2 = 281</span>
+</div>
+
+<p>So moving decode from bf16 to fp8 does not change <i>when</i> you become compute-bound; it halves the time
+of every step on the way there, because you move half the bytes. Prefill, which is compute-bound, gets the
+doubled peak directly. Hopper has no fp4 tensor cores: 4-bit weights on an H100 are <b>weight-only</b>
+quantization (stored in 4 bits, dequantized to bf16 or fp8 before the matmul), which saves bandwidth but not
+FLOPs. Blackwell executes MXFP4 and NVFP4 (Chapter 0 §0.6) natively. Chapter 18 turns these formats into
+serving decisions.</p>
+
+<div class="box warn">
+<span class="t">Peak is not achieved</span>
+<p style="margin-bottom:0">fp8 matmuls need scaling factors (per tensor, per row or per block) applied and
+accumulated in higher precision, and fp4 needs block scales (Chapter 0). Real kernels reach a smaller
+fraction of the fp8 and fp4 peaks than of the bf16 one, and small matmuls fall short of all of them. Use the
+table for ceilings and ratios; measure for anything you will plan capacity on.</p>
+</div>
+
+<h2>14.9 · Beyond one GPU: the interconnect ladder</h2>
+
+<p>The hierarchy of §14.1 does not stop at HBM. Once a model or a batch spans several GPUs, the links between
+them become the next, much slower, level. Per GPU, <b>one direction</b> (datasheets often quote the sum of
+both directions):</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Link</th><th class="num">GB/s per direction</th><th>Connects</th></tr></thead>
+<tbody>
+<tr><td>HBM3 (H100)</td><td class="num">3,350</td><td>GPU to its own memory, for comparison</td></tr>
+<tr><td>NVLink 5 (B200)</td><td class="num">900</td><td>GPUs in one NVLink domain (1.8 TB/s bidirectional)</td></tr>
+<tr><td>NVLink 4 (H100)</td><td class="num">450</td><td>the 8 GPUs of an HGX node (900 GB/s bidirectional, 18 links)</td></tr>
+<tr><td>PCIe 5.0 x16</td><td class="num">~64</td><td>GPU to CPU memory; GPUs without NVLink</td></tr>
+<tr><td>InfiniBand NDR, one 400 Gb/s port</td><td class="num">50</td><td>node to node (typically one port per GPU)</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Each step down is roughly 7× to 10×. To feel it, all-reduce 1 GB of gradients across 8 GPUs with a ring
+(each GPU sends and receives <span class="math">2(n−1)/n</span> of the buffer):</p>
+
+<pre><code class="nohl">inside a node, NVLink 4:   2 × 7/8 × 1 GB / 450 GB/s  =  3.89 ms
+across nodes, IB NDR:      2 × 7/8 × 1 GB /  50 GB/s  = 35.0  ms</code></pre>
+
+<p>That factor of 9 is why tensor parallelism, which communicates inside every layer, stays inside a node
+(Chapter 19), why MoE expert parallelism tries to keep its all-to-all inside NVLink (Chapter 20), and why
+offloading a KV cache to CPU memory over PCIe (Chapter 18) is a real but limited escape hatch: the link is
+50× slower than HBM.</p>
+
+<h2>14.10 · Writing a kernel: a first look at Triton</h2>
+
+<p>Everything above is an argument for writing <b>fused</b> kernels. CUDA C++ is the full-control way;
+<b>Triton</b> (Tillet et al., 2019, now developed by OpenAI and the backend that <code>torch.compile</code>
+generates for GPUs) is the productive way. You write a function for one <b>program</b> (one tile of the
+problem) in Python-like syntax over blocks of values, and the compiler handles threads, coalescing and
+shared memory. Here is a fused row softmax, the kernel at the heart of Chapter 17:</p>
+
+<pre><code>import torch, triton
+import triton.language as tl
+
+@triton.jit
+def softmax_kernel(x_ptr, y_ptr, n_cols, row_stride, BLOCK: tl.constexpr):
+    row  = tl.program_id(0)                          # one program per row
+    cols = tl.arange(0, BLOCK)                       # (BLOCK,) column offsets, a power of 2
+    mask = cols &lt; n_cols                             # the tail of the row is padding
+    x = tl.load(x_ptr + row * row_stride + cols, mask=mask, other=-float("inf"))
+    x = x - tl.max(x, axis=0)                        # stable softmax: subtract the row max
+    num = tl.exp(x)
+    y = num / tl.sum(num, axis=0)
+    tl.store(y_ptr + row * row_stride + cols, y, mask=mask)
+
+def softmax(x):                                      # x: (n_rows, n_cols), contiguous rows
+    n_rows, n_cols = x.shape
+    y = torch.empty_like(x)
+    softmax_kernel[(n_rows,)](x, y, n_cols, x.stride(0),
+                              BLOCK=triton.next_power_of_2(n_cols))
+    return y</code></pre>
+
+<p>Read it against this chapter. The row is loaded from HBM <b>once</b>, max, exp, sum and divide all happen
+in registers, and the result is written <b>once</b>: 2 bytes of traffic per element per direction in bf16,
+against roughly 4 to 5 round trips for the same ops launched separately (a max kernel, a subtract, an exp, a
+sum, a divide, each reading its input from HBM). <code>tl.arange</code> over consecutive columns makes the
+loads coalesced (§14.5), and <code>mask</code> handles rows whose length is not a power of two, the same
+padding problem tensor cores have. This version needs a whole row to fit in one block; Chapter 17's
+online softmax is how you remove that limit.</p>
+
+<div class="quiz" data-title="Checkpoint 2 — MFU, overhead, precision, links">
+<div class="qitem" data-answer="1">
+  <div class="qq">A training run recomputes all activations in the backward pass. Its MFU is 40%. Its HFU is:</div>
+  <div class="opts">
+    <div class="opt">Also 40%: they are the same thing</div>
+    <div class="opt">Higher, because recomputation adds hardware FLOPs that MFU does not count</div>
+    <div class="opt">Lower, because recomputation wastes time</div>
+    <div class="opt">Undefined for training</div>
+  </div>
+  <div class="expl"><b>MFU counts what the model needs (6N per token); HFU counts what the hardware did.</b>
+  Full recomputation adds another forward pass, about 2N, so HFU is roughly 8/6 of MFU here.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">A 125M-parameter model decodes at batch 1 no faster on an H200 than on an H100. Why?</div>
+  <div class="opts">
+    <div class="opt">The H200 has the same bandwidth</div>
+    <div class="opt">It is compute-bound</div>
+    <div class="opt">The KV cache dominates</div>
+    <div class="opt">It is overhead-bound: ~135 kernel launches cost far more than reading 0.25 GB, so more bandwidth does not help</div>
+  </div>
+  <div class="expl"><b>The third regime.</b> 75 µs of memory time against ~540 µs of launches. The cures are
+  CUDA graphs, fusion and batching, not a bigger GPU.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">You move decode of a dense model from bf16 to fp8 weights on an H100. What happens to the batch size at which decode becomes compute-bound?</div>
+  <div class="opts">
+    <div class="opt">Nothing: fp8 doubles the peak and halves the bytes, so the saturating batch stays ~295, but every step below it gets about 2× faster</div>
+    <div class="opt">It halves, to ~148</div>
+    <div class="opt">It doubles, to ~590</div>
+    <div class="opt">Decode becomes compute-bound at batch 1</div>
+  </div>
+  <div class="expl"><b>Both sides of the ratio move.</b> Ridge 591 FLOP/byte × 1 byte per weight ÷ 2 FLOPs per
+  weight per token = 295, the same as bf16. The win is bytes per step.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">Why does tensor parallelism usually stay inside one 8-GPU node?</div>
+  <div class="opts">
+    <div class="opt">PyTorch does not support it across nodes</div>
+    <div class="opt">Nodes cannot share weights</div>
+    <div class="opt">It communicates in every layer, and the node-to-node link (~50 GB/s per GPU) is about 9× slower than NVLink</div>
+    <div class="opt">It needs exactly 8 GPUs</div>
+  </div>
+  <div class="expl"><b>The interconnect ladder.</b> The same all-reduce takes 3.9 ms on NVLink and 35 ms over
+  InfiniBand. Communication that happens dozens of times per step has to live on the fast rung.</div>
+</div>
+</div>
+
+<h2>14.11 · Exercises</h2>
 
 <div class="exercise">
 <div class="eh"><span class="n">14.1</span><span class="ti">Build the roofline calculator</span><span class="lvl">essential</span></div>
@@ -403,6 +620,53 @@ PagedAttention exist. State that reason in one sentence.</p>
 faster overall, and connect that to the coalescing table in §14.5.</p>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">14.5</span><span class="ti">Compute the MFU of a real report</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>A team reports training a 70.6 B dense model on 1,024 H100s at 1.6 million tokens per second overall.
+Compute the MFU (ignore attention FLOPs). Then add attention: at sequence length 8,192 with 80 layers and
+d_model 8,192, training attention costs about <code>12 · n_layer · d_model · T</code> FLOPs per token
+(Chapter 2's count, forward and backward). What fraction of the true FLOPs did the 6N rule leave out?</p>
+<details class="reveal"><summary>Answer</summary><div>
+<pre><code class="nohl">per GPU: 1.6e6 / 1024 = 1,562.5 tokens/s
+6N:      6 × 70.6e9 × 1562.5 = 6.62e14 FLOP/s   ->  MFU = 6.62e14 / 989.4e12 = 66.9%
+attn:    12 × 80 × 8192 × 8192 = 6.44e10 FLOPs/token  vs  6N = 4.24e11  ->  +15%</code></pre>
+<p style="margin-bottom:0">67% would be an exceptional figure, so ask whether the report counted attention, or
+recomputation, or quoted peak with sparsity. The 6N rule understates the work at long context by about 15%
+here, which is why careful reports state which convention they use.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">14.6</span><span class="ti">Predict, then measure: find the overhead floor</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Prediction first: for the Chapter 9 model on your machine, will one cached decode step at batch 1 take
+noticeably less time than at batch 8? Write down a number. Then time it at batch 1, 2, 4, …, 64, and plot
+step time against batch. Repeat with <code>torch.compile(model, mode="reduce-overhead")</code> on a GPU,
+which uses CUDA graphs.</p>
+<details class="reveal"><summary>What the curve shows</summary><div>
+<p style="margin-bottom:0">A flat region at small batch: that is the overhead floor, where adding sequences is
+free because the step is waiting on launches, not on bytes or FLOPs. The curve bends upward only when the
+batch makes the work large enough to matter. CUDA graphs lower the flat region; they do nothing to the
+slope.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">14.7</span><span class="ti">Write and benchmark the Triton softmax</span><span class="lvl">hard</span></div>
+<div class="eb">
+<p>Run the §14.10 kernel on a GPU for an (8192, 4096) bf16 tensor. Check it against
+<code>torch.softmax</code>, then time it, eager PyTorch built from separate ops
+(<code>x - x.max(-1, keepdim=True).values</code>, <code>exp</code>, <code>sum</code>, divide) and
+<code>torch.softmax</code>. Convert each time to effective bandwidth: <code>2 × bytes(x) / seconds</code>.</p>
+<details class="reveal"><summary>How to judge your result</summary><div>
+<p style="margin-bottom:0">A fused softmax is memory-bound, so the right yardstick is the HBM bandwidth from
+§14.1. The fused kernel should reach a large fraction of it; the eager chain should take several times
+longer, because it moves the tensor through HBM once per op. If your kernel is far from the bandwidth
+line, check that rows are contiguous (coalescing, §14.5) and that BLOCK is not much larger than the row.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://dl.acm.org/doi/10.1145/1498765.1498785">Williams, Waterman &amp; Patterson 2009 — Roofline</a> — the original model; everything in §14.1–14.3 is an application of it.</li>
@@ -410,6 +674,12 @@ faster overall, and connect that to the coalescing table in §14.5.</p>
 <li><a href="https://docs.nvidia.com/cuda/parallel-thread-execution/">PTX ISA — <code>mma</code> instructions</a> — the actual tile shapes, if you want to confirm <code>m16n8k16</code> rather than take it on trust.</li>
 <li><a href="https://horace.io/brrr_intro.html">Horace He — Making Deep Learning Go Brrrr From First Principles</a> — the clearest short treatment of compute vs memory vs overhead.</li>
 <li><a href="https://arxiv.org/abs/2205.14135">Dao et al. 2022 — FlashAttention</a> — §2 is a worked example of reasoning at this level.</li>
+<li><a href="https://arxiv.org/abs/2204.02311">Chowdhery et al. 2022 — PaLM</a> (Appendix B defines MFU)</li>
+<li><a href="https://arxiv.org/abs/2407.21783">Llama Team 2024 — The Llama 3 Herd of Models</a> (38–43% bf16 MFU on 16k H100s)</li>
+<li><a href="https://www.nvidia.com/en-us/data-center/h100/">NVIDIA H100</a> and <a href="https://www.nvidia.com/en-us/data-center/hgx/">HGX B200</a> datasheets — tensor-core rates (dense = half the sparse figure), NVLink bandwidth</li>
+<li><a href="https://triton-lang.org/main/getting-started/tutorials/02-fused-softmax.html">Triton tutorial — fused softmax</a> and <a href="https://dl.acm.org/doi/10.1145/3315508.3329973">Tillet et al. 2019 — Triton</a></li>
+<li><a href="https://pytorch.org/blog/accelerating-pytorch-with-cuda-graphs/">PyTorch — Accelerating PyTorch with CUDA Graphs</a></li>
+<li>Reference code: <code>tfs/gpu.py</code> · tests: <code>tests/test_inference.py</code> (Ch 14 section)</li>
 <li>Companion notebook: not written yet (planned as <code class="planned">notebooks/14_gpu.ipynb</code>)</li>
 </ul>
 

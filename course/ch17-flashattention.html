@@ -20,6 +20,18 @@ arithmetic.
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the T x T score matrix<br><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; why memory traffic dominates<div class="sep"></div><span class="k">Leads to</span><a href="ch18-serving.html">Ch&nbsp;18</a> &mdash; serving stacks assume this exists<br><a href="ch22-frontier.html">Ch&nbsp;22</a> &mdash; it removed the memory wall, not the quadratic<div class="sep"></div><span class="k">Why this chapter</span>Same maths, same output, 2-4x faster — because the bottleneck was never arithmetic.</div>
+<div class="box intuition">
+<span class="t">The whole chapter in five sentences</span>
+<p style="margin-bottom:0"><b>Attention was slow because of memory traffic, not arithmetic</b>: the
+N × N score matrix was written to HBM and read back for nothing. <b>The online softmax keeps a running max and
+sum</b>, rescaling what it has accumulated whenever the max grows, so a row can be processed in tiles and the
+result is exact. <b>FlashAttention tiles Q, K and V through on-chip memory</b> and never materialises the
+matrix, which cuts HBM traffic by an order of magnitude and memory from O(N²) to O(N). <b>Decode needs a
+different split</b>: one query has too little parallel work, so Flash-Decoding splits the keys and merges the
+pieces by their log-sum-exps. <b>FlexAttention turns any mask or score modification into such a kernel</b>,
+and the skipped blocks of a sparse mask are where its speed comes from.</p>
+</div>
+
 <h2>17.1 · The insight: attention is IO-bound, not compute-bound</h2>
 
 <p>A GPU has a memory hierarchy, and the numbers are wildly asymmetric:</p>
@@ -171,10 +183,14 @@ for i in range(0, N, Br):                       # OUTER loop over query blocks
     li = zeros(Br)                              # running sum       (in SRAM)
 
     for j in range(0, N, Bc):                   # INNER loop over key blocks
+        if causal and j > i + Br - 1: break     # every key in this block is in the future: skip it
         Kj, Vj = load(K[j:j+Bc]), load(V[j:j+Bc])       # → SRAM
 
         Sij = Qi @ Kj.T / sqrt(d)               # (Br, Bc)  ← ONLY THIS TILE EXISTS
-        if causal and j > i: continue           # skip fully-masked blocks entirely
+        if causal and j + Bc - 1 > i:           # the block straddles the diagonal, so
+            q_pos = arange(i, i+Br)[:, None]    # mask INSIDE the tile: key j' may not
+            k_pos = arange(j, j+Bc)[None, :]    # be later than query i'
+            Sij = where(k_pos > q_pos, -inf, Sij)
 
         m_new = maximum(mi, Sij.max(dim=-1))    # (Br,)
         Pij   = exp(Sij - m_new[:, None])       # (Br, Bc)
@@ -189,6 +205,17 @@ for i in range(0, N, Br):                       # OUTER loop over query blocks
 
 <p>Notice what never happens: <b>the <code>(N, N)</code> matrix is never allocated.</b> Only a
 <code>(Br, Bc)</code> tile exists at any moment, and it lives in SRAM.</p>
+
+<div class="box gotcha">
+<span class="t">Causal masking happens at two granularities</span>
+<p style="margin-bottom:0">Blocks entirely above the diagonal are <b>skipped</b>, never loaded or computed:
+that is where causal attention's 2× saving comes from. Blocks that <b>straddle</b> the diagonal are computed,
+and then need the ordinary element-wise mask inside the tile, or each query sees up to <code>Bc − 1</code>
+future keys. Drop the in-tile mask and the result is wrong only near the diagonal, a bug that passes a test
+on short sequences with one big tile. <code>tfs/flash.py</code> is this loop in runnable PyTorch;
+<code>test_flash_attention_in_tile_mask</code> checks it against naive attention for square, tall and wide
+tiles and for one tile covering everything.</p>
+</div>
 
 <h3>The backward pass: recomputation</h3>
 
@@ -269,26 +296,27 @@ count (the exact factor depends on tile sizes and head dimension). And
 <tr><td><b>FlashAttention</b></td><td>2022</td><td>tiling + online softmax + recomputation</td><td>2–4× faster, 10–20× less memory</td></tr>
 <tr><td><b>FlashAttention-2</b></td><td>2023</td><td>fewer non-matmul FLOPs; parallelise over sequence length, not just batch×head; better warp partitioning</td><td>~2× over FA1; ~70% of A100 peak</td></tr>
 <tr><td><b>FlashAttention-3</b></td><td>2024</td><td>Hopper-specific: async TMA copies, WGMMA, warp specialisation, overlapping matmul with softmax, FP8 support</td><td>1.5–2× over FA2 on H100; ~740 TFLOP/s bf16, ~1.2 PFLOP/s fp8</td></tr>
-<tr><td><b>FlashAttention-4</b></td><td><b>2026</b></td><td>Blackwell co-design; written in CuTe-DSL; software-emulated exponentials via polynomial approximation on FMA units instead of the SFU</td><td>fastest Blackwell attention kernel; backs PyTorch FlexAttention on Hopper &amp; Blackwell</td></tr>
+<tr><td><b>FlashAttention-4</b></td><td><b>2026</b></td><td>Blackwell (B200) co-design in CuTe-DSL: fully asynchronous pipelines with larger tiles; part of the exponentials computed by a polynomial on the FMA units; softmax rescaling skipped unless the max grows past a threshold; tensor memory and 2-CTA MMA in the backward pass</td><td>up to 1,613 TFLOP/s bf16 on B200 (71% of peak); up to 1.3× cuDNN 9.13 and 2.7× Triton</td></tr>
 </tbody>
 </table>
 </div>
 
 <div class="box sota">
 <span class="t">FlashAttention-4, March 2026</span>
-<p>Released by Tri Dao and collaborators (Princeton, Together AI, Meta, NVIDIA, Colfax). Two details worth
-knowing:</p>
+<p>Zadouri, Hoehnerbach, Shah, Liu, Thakkar and Dao (Princeton, Together AI, Meta, Colfax, NVIDIA), MLSys
+2026. Two ideas are worth knowing, because they show kernel design chasing whatever the hardware made
+scarce:</p>
 <ul style="margin-bottom:0">
-<li><b>The exponential became the bottleneck.</b> On Blackwell, matmul throughput grew so much that the
-special function unit computing <code>exp</code> couldn't keep up. FA4 approximates the exponential with a
-polynomial evaluated on the general-purpose FMA units, moving that work onto hardware Blackwell has in
-abundance. That's a striking example of how kernel design chases whatever the hardware made scarce.</li>
-<li><b>FlexAttention integration.</b> You can now write attention variants — ALiBi, sliding window, document
-masking, soft-capping — as plain Python <code>score_mod</code> functions and have them JIT-compiled into FA4
-kernels, reportedly 1.2–3.2× faster than the previous Triton backend. Custom attention no longer requires
-writing CUDA.</li>
+<li><b>The exponential became the bottleneck.</b> Blackwell's tensor cores roughly doubled matmul throughput
+over Hopper while the special-function unit that computes <code>exp</code> did not keep pace, so softmax, not
+matmul, set the speed. FA4 computes a fraction of the exponentials with a polynomial approximation on the
+ordinary FMA units, splitting the work between the two kinds of hardware.</li>
+<li><b>Rescale only when it matters.</b> §17.3's correction factor is exact for <i>any</i> reference max, as long
+as the numerator and denominator use the same one. FA4 keeps a stale max until the true one has grown past a
+threshold, skipping most rescales; the final division still gives the exact softmax.</li>
 </ul>
-<p class="tiny" style="margin:.8em 0 0">FA4 requires Hopper or Blackwell. On older GPUs you're on FA2.</p>
+<p class="tiny" style="margin:.8em 0 0">The paper's benchmarks are on B200. On Hopper, FlashAttention-3 is
+the reference implementation; on Ampere and older, FlashAttention-2.</p>
 </div>
 
 <h2>17.6 · Using it</h2>
@@ -318,19 +346,182 @@ FlashAttention. Measure <code>torch.cuda.max_memory_allocated()</code> at T=1k, 
 linearly, the fallback quadratically.</p>
 </div>
 
-<h2>17.7 · What it does <i>not</i> solve</h2>
+<h2>17.7 · Decode: Flash-Decoding and split-KV</h2>
+
+<p>FlashAttention parallelises over <b>batch × heads × query blocks</b>: each GPU thread block owns one tile of
+queries for one head and walks through all the keys. In prefill there are thousands of query blocks and the
+GPU is full. In decode there is <b>one query per sequence</b>, so the work items are just batch × heads, and
+each one walks the whole cache alone.</p>
+
+<div class="example">
+<span class="t">Worked example — how idle is the GPU during decode attention?</span>
+<p>An H100 has 132 SMs; a FlashAttention-style kernel runs (at least) one thread block per work item, so
+work items per SM is the occupancy to look at.</p>
+<pre style="margin:.4rem 0"><code class="nohl">batch 1,  32 heads:         32 blocks / 132 SMs = 0.24    76% of the SMs have nothing to do
+batch 16, 32 heads:        512 blocks / 132 SMs = 3.88    full
+batch 1,  32 heads, 8 splits: 256 blocks / 132 SMs = 1.94  full again</code></pre>
+<p style="margin-bottom:0">And the idle case is the one that matters for long context: at batch 1 and 128k
+tokens, each of those 32 blocks streams 128k keys and values through one SM while 100 SMs wait.
+<code>decode_occupancy</code> in <code>tfs/flash.py</code>, asserted in <code>test_split_kv_decode</code>.</p>
+</div>
+
+<p><b>Flash-Decoding</b> (Dao, Haziza, Massa and Sizov, 2023) adds a third parallel dimension: <b>split the
+keys</b>. Cut the cache into S chunks; each chunk is a separate work item that computes attention of the query
+against its slice only, and returns two things: its <b>normalised partial output</b> o<sub>i</sub> and the
+<b>log-sum-exp</b> ℓ<sub>i</sub> of its scores. A small second kernel merges them. This is the same idea as
+split-K in a matmul (split the reduction dimension, add the partial results), with the online-softmax
+correction from §17.3 as the "add".</p>
+
+<div class="mathblock">
+ℓ = log Σ<sub>i</sub> e<sup>ℓ<sub>i</sub></sup> &nbsp;&nbsp;&nbsp;&nbsp; o = Σ<sub>i</sub> e<sup>ℓ<sub>i</sub> − ℓ</sup> · o<sub>i</sub>
+<span class="lbl">each split's output is weighted by its share of the total softmax mass · exact, by the same argument as §17.3</span>
+</div>
+
+<div class="example">
+<span class="t">Worked example — §17.3's four scores, split in two</span>
+<p>Scores <code>[1, 3, 2, 5]</code> (the same four as §17.3), values <code>[10, 20, 30, 40]</code>. Split A takes
+the first two keys, split B the last two; neither sees the other's scores.</p>
+
+<div class="step"><div class="i">A</div><div>
+<pre style="margin:.4rem 0"><code class="nohl">ℓ_A = log(e¹ + e³)                           = 3.1269
+o_A = (e¹·10 + e³·20) / (e¹ + e³)            = 18.808</code></pre>
+</div></div>
+<div class="step"><div class="i">B</div><div>
+<pre style="margin:.4rem 0"><code class="nohl">ℓ_B = log(e² + e⁵)                           = 5.0486
+o_B = (e²·30 + e⁵·40) / (e² + e⁵)            = 39.5257</code></pre>
+</div></div>
+<div class="step"><div class="i">=</div><div>
+<b>Merge.</b>
+<pre style="margin:.4rem 0"><code class="nohl">ℓ   = log(e^3.1269 + e^5.0486)              = 5.18518     (§17.3's logsumexp, again)
+w_A = e^(3.1269 − 5.18518) = 0.1277     w_B = 0.8723
+o   = 0.1277 × 18.808 + 0.8723 × 39.5257    = 36.881
+direct: softmax([1,3,2,5]) · [10,20,30,40]  = 36.881</code></pre>
+</div></div>
+<p style="margin-bottom:0"><code>scores_partial</code> and <code>merge_partials</code> in
+<code>tfs/flash.py</code>; <code>test_split_kv_worked_example</code> checks these numbers, and
+<code>test_split_kv_decode</code> checks a 1,000-key cache split 1, 2, 7, 16 and 1,000 ways against direct
+attention.</p>
+</div>
+
+<p><b>What the split costs.</b> Each split writes one d-dimensional partial output and one scalar per head to
+HBM, and the merge reads them back: S × (d + 1) values per head, against reading T × d keys and T × d values.
+For S = 8 and T = 32k that is under 0.02% extra traffic. Too many splits, though, and each one's slice is too
+short to amortise its setup, so engines choose S from the batch size, the head count, the SM count and the
+cache length. Dao et al. reported <b>up to 8× faster</b> decoding for very long sequences. Note what this
+means for Chapter 13: the split count is chosen from the <i>batch</i>, so the order of the final reduction
+depends on who else is in the batch. Flash-Decoding is a textbook example of a kernel that is not
+batch-invariant.</p>
+
+<p>The same structure appears in DeepSeek's <b>FlashMLA</b> (Chapter 16), which applies it to absorbed MLA, and
+in vLLM's and FlashInfer's decode kernels, which also handle the paged cache layout of Chapter 18 (keys come
+from a block table, not one contiguous tensor).</p>
+
+<h2>17.8 · Custom attention without custom kernels: FlexAttention</h2>
+
+<p>Every attention variant in this course (causal, sliding window, document masking for packed sequences,
+prefix-LM, ALiBi, logit soft-capping) is FlashAttention with a small change in the inner loop: either some
+scores are <b>masked</b>, or every score is <b>modified</b> by a function of its position. Writing a fused
+kernel for each one is a CUDA project. <b>FlexAttention</b> (Dong et al., 2024, in PyTorch since 2.5) asks for
+the change as two small Python functions and generates the fused kernel:</p>
+
+<pre><code>from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+
+# mask_mod: may query q_idx see key kv_idx?          (b = batch, h = head)
+def causal(b, h, q_idx, kv_idx):
+    return q_idx &gt;= kv_idx
+
+def sliding_window(b, h, q_idx, kv_idx):              # Mistral / Gemma local layers
+    return (q_idx &gt;= kv_idx) &amp; (q_idx - kv_idx &lt; 256)
+
+def document(b, h, q_idx, kv_idx):                    # packed sequences: stay in your own document
+    return (doc_id[q_idx] == doc_id[kv_idx]) &amp; (q_idx &gt;= kv_idx)
+
+# score_mod: change a score that IS computed
+def softcap(score, b, h, q_idx, kv_idx):              # Gemma 2's attention logit soft-capping
+    return 50.0 * torch.tanh(score / 50.0)
+
+def alibi(score, b, h, q_idx, kv_idx):                # ALiBi: a per-head linear distance penalty
+    return score + slopes[h] * (kv_idx - q_idx)
+
+block_mask = create_block_mask(sliding_window, B=None, H=None, Q_LEN=4096, KV_LEN=4096)
+out = flex_attention(q, k, v, score_mod=softcap, block_mask=block_mask)   # q, k, v: (B, H, T, d)</code></pre>
+
+<p>The two hooks do different jobs. A <code>score_mod</code> runs on every score inside the tile, after
+<code>QK<sup>T</sup></code> and before the online softmax. A <code>mask_mod</code> is evaluated <b>ahead of
+time</b>, per (128 × 128) block, by <code>create_block_mask</code>, which records which blocks are entirely
+masked (skip them, as §17.4 skips blocks above the diagonal), entirely visible (no masking work) or partial
+(apply the predicate element-wise, the in-tile mask). The speed of a sparse mask comes from that first
+category:</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Mask at T = 4,096, 128 × 128 blocks</th><th class="num">blocks skipped</th></tr></thead>
+<tbody>
+<tr><td>causal</td><td class="num">48.4%</td></tr>
+<tr><td>packed documents of 1,000, 1,500 and 1,596 tokens, causal</td><td class="num">78.9%</td></tr>
+<tr><td>sliding window of 256, causal</td><td class="num">90.9%</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>A sliding window of 256 lets the kernel skip 91% of the tiles: it computes 9.1% of them against causal's
+51.6%, under a fifth of the work of causal attention at this length, without anyone writing a kernel. These counts come from
+<code>block_sparsity</code> in <code>tfs/flash.py</code> (<code>test_flex_style_masks</code>), and
+<code>test_flex_attention_matches_sdpa</code> runs the real <code>flex_attention</code> with the sliding-window
+mask and checks it against <code>scaled_dot_product_attention</code> with the equivalent dense mask.
+Generated kernels are fast but not always as fast as a hand-written FlashAttention for plain causal
+attention; the point is getting within reach for the variants nobody has hand-written.</p>
+
+<div class="quiz" data-title="Checkpoint 2 — decode and custom masks">
+<div class="qitem" data-answer="1">
+  <div class="qq">Why is plain FlashAttention slow for decode at batch 1 and long context?</div>
+  <div class="opts">
+    <div class="opt">It materialises the score matrix during decode</div>
+    <div class="opt">It parallelises over batch × heads × query blocks; with one query there are only 32 work items for 132 SMs, each streaming the whole cache alone</div>
+    <div class="opt">The online softmax is inexact for a single query</div>
+    <div class="opt">Decode is compute-bound</div>
+  </div>
+  <div class="expl"><b>Not enough parallel work.</b> Occupancy 0.24 at batch 1, 32 heads. Splitting the keys
+  multiplies the work items by S without changing the result.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">What must each Flash-Decoding split return so the partial results can be merged exactly?</div>
+  <div class="opts">
+    <div class="opt">Its maximum score only</div>
+    <div class="opt">Its unnormalised scores</div>
+    <div class="opt">Its output, and nothing else</div>
+    <div class="opt">Its normalised partial output and the log-sum-exp of its scores</div>
+  </div>
+  <div class="expl"><b>Output plus log-sum-exp.</b> The LSE says how much softmax mass that split holds;
+  e<sup>ℓ<sub>i</sub> − ℓ</sup> is exactly its weight in the final average. (Max and sum together carry the
+  same information.)</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">In FlexAttention, why is a sliding window expressed as a <code>mask_mod</code> rather than a <code>score_mod</code> that returns −∞ outside the window?</div>
+  <div class="opts">
+    <div class="opt">A mask_mod is turned into a block mask ahead of time, so fully masked tiles are never computed; a score_mod only runs inside tiles that are computed anyway</div>
+    <div class="opt">score_mod cannot return −∞</div>
+    <div class="opt">mask_mod is applied after the softmax</div>
+    <div class="opt">There is no difference in speed</div>
+  </div>
+  <div class="expl"><b>Skipping is the speedup.</b> Both give the same numbers. Only the block mask lets the
+  kernel skip 91% of the tiles at T = 4,096 with a 256 window.</div>
+</div>
+</div>
+
+<h2>17.9 · What it does <i>not</i> solve</h2>
 
 <ul>
 <li><b>FLOPs are still O(N²).</b> FlashAttention removes the memory wall, not the quadratic. At 1M tokens
 you still need genuine sparsity (Chapter 22).</li>
 <li><b>The KV cache is untouched.</b> Flash speeds up computing attention; it doesn't shrink what you store.
 That's GQA/MLA's job (Chapter 16). The two are complementary and always used together.</li>
-<li><b>Decode gets much less benefit.</b> With a single query row there's no large intermediate to avoid.
-Decode-optimised variants (FlashDecoding, and DeepSeek's FlashMLA) split the <i>key</i> dimension across SMs
-instead — a different parallelisation for a different regime.</li>
+<li><b>Decode needs its own parallelisation.</b> With a single query row there is no large intermediate to
+avoid and too little parallel work; §17.7's split-KV fixes the second problem, not the first. Decode
+attention stays bandwidth-bound, bounded by the cache bytes it must read.</li>
 </ul>
 
-<h2>17.8 · Exercises</h2>
+<h2>17.10 · Exercises</h2>
 
 <div class="exercise">
 <div class="eh"><span class="n">17.1</span><span class="ti">Implement the online softmax</span><span class="lvl">essential</span></div>
@@ -393,7 +584,6 @@ assert torch.allclose(flash_attention(Q,K,V), naive_attention(Q,K,V), atol=1e-5)
 <code>-inf</code>, <code>m_new</code> is <code>-inf</code> and you get <code>nan</code>. The <code>break</code>
 above avoids it. Real kernels skip those blocks too — which is why causal attention is roughly 2× faster
 than bidirectional, not the same speed.</p>
-</div></details>
 </div></div>
 
 <div class="exercise">
@@ -409,14 +599,63 @@ if your "Flash" line has slope 2, you fell back to the math backend; check the d
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">17.4</span><span class="ti">Implement Flash-Decoding</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Write <code>split_kv_decode(q, K, V, n_splits)</code> for one query against a cache of T keys. Each split
+returns its normalised output and its log-sum-exp; merge them. Assert it matches direct attention for
+<code>n_splits</code> in {1, 2, 7, T}, including splits of unequal length, and for a cache where one split's
+scores are all −100 (its weight should vanish, not produce NaN).</p>
+<details class="reveal"><summary>Hint</summary><div>
+<p style="margin-bottom:0">Return the LSE rather than (max, sum): one number per split, and
+<code>torch.logsumexp</code> over the LSEs gives the total stably. Compare with <code>tfs/flash.py</code>.
+The all-−100 split is fine: its LSE is about −100 + log(length), so its weight is e<sup>−100</sup>-small, not
+undefined. A split that is entirely <i>masked</i> (−∞) is the dangerous case; skip it rather than computing it.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">17.5</span><span class="ti">Choose the split count</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>An H100 (132 SMs) decodes Llama-3-8B (32 query heads, 8 KV heads, d = 128) at 128k context. For batch 1, 4
+and 32, how many splits does each sequence need to give every SM at least two work items, if work items are
+batch × 32 heads × splits? What is the extra HBM traffic of the merge at batch 1, relative to reading the cache?</p>
+<details class="reveal"><summary>Answer</summary><div>
+<pre><code class="nohl">target: ≥ 264 work items
+batch 1:  32 × S ≥ 264  ->  S = 9        batch 4:  128 × S ≥ 264  ->  S = 3        batch 32: S = 1
+merge traffic, batch 1, S = 9: 32 heads × 9 × (128 + 1) values  ≈ 37k values
+cache read: 2 × 8 heads × 128 × 131,072 tokens                   ≈ 268M values   -> 0.014%</code></pre>
+<p style="margin-bottom:0">The split is free in traffic terms; its cost is the second, tiny kernel launch and
+the batch-dependent reduction order (Chapter 13 §13.7). Real kernels group the 4 query heads that share a KV
+head into one work item, which changes the counts but not the conclusion.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">17.6</span><span class="ti">Document masking with FlexAttention</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Pack three sequences of lengths 700, 900 and 448 into one 2,048-token row. Build a document
+<code>mask_mod</code>, run <code>flex_attention</code>, and check each document's output equals running it alone.
+Then print the block mask's sparsity, and predict it before you print it.</p>
+<details class="reveal"><summary>What you should see</summary><div>
+<p style="margin-bottom:0">Identical outputs per document (that is the point of the mask: packing without
+cross-contamination, Chapter 11), and a sparsity well above causal's ~48%, because every block that pairs two
+different documents is skipped. Without the mask, packed training silently lets each document attend to the
+previous one.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://arxiv.org/abs/2205.14135">Dao et al. 2022 — FlashAttention</a></li>
 <li><a href="https://arxiv.org/abs/2307.08691">Dao 2023 — FlashAttention-2</a></li>
 <li><a href="https://arxiv.org/abs/2407.08608">Shah et al. 2024 — FlashAttention-3</a></li>
-<li><a href="https://www.together.ai/blog/flashattention-4">Together AI — FlashAttention-4</a> (2026)</li>
+<li><a href="https://arxiv.org/abs/2603.05451">Zadouri et al. 2026 — FlashAttention-4: Algorithm and Kernel Pipelining Co-Design for Asymmetric Hardware Scaling</a> · <a href="https://www.together.ai/blog/flashattention-4">Together AI blog</a></li>
+<li><a href="https://crfm.stanford.edu/2023/10/12/flashdecoding.html">Dao, Haziza, Massa &amp; Sizov 2023 — Flash-Decoding for long-context inference</a></li>
+<li><a href="https://arxiv.org/abs/2412.05496">Dong et al. 2024 — Flex Attention: A Programming Model for Generating Optimized Attention Kernels</a></li>
 <li><a href="https://arxiv.org/abs/1805.02867">Milakov &amp; Gimelshein 2018 — Online normalizer calculation for softmax</a> — the algorithmic core.</li>
 <li><a href="https://pytorch.org/blog/flexattention/">PyTorch — FlexAttention</a></li>
+<li>Reference code: <code>tfs/flash.py</code> · tests: <code>tests/test_inference.py</code> (Ch 17 section)</li>
 <li>Companion notebook: <code>notebooks/17_flashattention.ipynb</code></li>
 </ul>
 
