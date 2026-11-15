@@ -376,6 +376,44 @@ few percent and everyone ignores it. At <code>T = 128k</code> it can dominate. T
 sparse attention (Chapter 22) exists.</p>
 </div>
 
+<h3>Where 2N comes from: one layer, matmul by matmul</h3>
+
+<p>"2N per token" is a summary. Derive it once from the matmuls of a single standard transformer layer
+(multi-head attention, a 4× MLP; Chapters 5–8 build each piece) and you will never need to trust it again.
+A token's vector has <code>d</code> features. Each weight matrix <code>(d_in, d_out)</code> applied to one token
+is a <code>(1, d_in) @ (d_in, d_out)</code> matmul: <b>2 · d_in · d_out</b> FLOPs, i.e. 2 FLOPs per weight.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Matmul (per token)</th><th>Weight shape</th><th class="num">Weights</th><th class="num">FLOPs</th></tr></thead>
+<tbody>
+<tr><td>Q, K, V projections</td><td>3 × <code>(d, d)</code></td><td class="num">3d²</td><td class="num">6d²</td></tr>
+<tr><td>output projection</td><td><code>(d, d)</code></td><td class="num">d²</td><td class="num">2d²</td></tr>
+<tr><td>MLP up</td><td><code>(d, 4d)</code></td><td class="num">4d²</td><td class="num">8d²</td></tr>
+<tr><td>MLP down</td><td><code>(4d, d)</code></td><td class="num">4d²</td><td class="num">8d²</td></tr>
+<tr><td><b>all weight matmuls</b></td><td></td><td class="num"><b>12d²</b></td><td class="num"><b>24d²</b></td></tr>
+<tr><td>scores <code>q·K<sup>T</sup></code>, mix <code>A·V</code></td><td>no weights</td><td class="num">0</td><td class="num">2·T·d each = 4Td</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The <b>12d²</b> in the weight column is the per-layer parameter count Chapter 9 derives and checks against
+GPT-2 (12 · n_layer · d² is most of every transformer). The FLOP column is exactly twice it: that is the
+"2N". What 2N leaves out is the last row, the two matmuls that multiply activations by activations.
+For GPT-2 small (<code>d = 768</code>) at <code>T = 1024</code>, <code>tfs.foundations.layer_flops_per_token</code>
+gives:</p>
+
+<pre><code class="nohl">projections   8 × 768²        =  4,718,592 FLOPs per token
+MLP          16 × 768²        =  9,437,184
+attention    4 × 1024 × 768   =  3,145,728      (half that with a causal mask that skips masked blocks)
+total                         = 17,301,504      2N accounts for 82% of it</code></pre>
+
+<p>Multiply by 12 layers and add the unembedding (<code>2 × 768 × 50257</code> ≈ 77 M) and you have GPT-2's
+forward cost per token. Training multiplies by 3 (the backward pass computes two matmuls for every forward one:
+a gradient for the input and one for the weight). Push <code>T</code> up and the attention row grows while the
+others do not; for a layer it overtakes the weights at <code>4Td = 24d²</code>, i.e. <b>T = 6d</b>, which is
+Chapter 5's crossover.</p>
+
 <div class="quiz" data-title="Checkpoint 2 — einsum &amp; FLOPs">
 <div class="qitem" data-answer="1">
   <div class="qq">What does <code>torch.einsum('bhqd,bhkd->bhqk', q, k)</code> sum over?</div>
@@ -404,7 +442,103 @@ sparse attention (Chapter 22) exists.</p>
 </div>
 </div>
 
-<h2>2.6 · Exercises</h2>
+<h2>2.6 · Shapes affect speed: intensity and tile alignment</h2>
+
+<p>FLOPs tell you how much arithmetic a matmul needs. They do not tell you how long it takes, because a GPU
+can only do arithmetic on numbers it has fetched from memory. Two facts about shapes decide which of the two
+limits you hit. Chapter 14 develops both fully; you need the first version now, because this is the first
+place shapes affect speed and not just correctness.</p>
+
+<h3>Arithmetic intensity: FLOPs per byte moved</h3>
+
+<p>For <code>(M, K) @ (K, N)</code> in bf16, the matmul does <code>2MKN</code> FLOPs and must at least read
+both inputs and write the output once: <code>2(MK + KN + MN)</code> bytes. Their ratio is the
+<b>arithmetic intensity</b>. An H100 does about 295 bf16 FLOPs in the time it moves one byte from HBM
+(Chapter 14's <i>ridge point</i>); below 295 FLOPs/byte it waits on memory, above it on arithmetic. Hold
+the weight fixed at <code>(4096, 4096)</code> and vary <code>M</code>, the number of tokens processed at once
+(<code>tfs.foundations.matmul_intensity</code>):</p>
+
+<div class="tw">
+<table>
+<thead><tr><th class="num">M (tokens)</th><th class="num">FLOPs</th><th class="num">bytes moved</th><th class="num">FLOPs / byte</th><th>on an H100 (ridge 295)</th></tr></thead>
+<tbody>
+<tr><td class="num">1</td><td class="num">33.6 M</td><td class="num">33.6 MB</td><td class="num">1.0</td><td>memory-bound: 0.3% of peak at best</td></tr>
+<tr><td class="num">16</td><td class="num">537 M</td><td class="num">33.8 MB</td><td class="num">15.9</td><td>memory-bound</td></tr>
+<tr><td class="num">128</td><td class="num">4.29 G</td><td class="num">35.7 MB</td><td class="num">120</td><td>memory-bound</td></tr>
+<tr><td class="num">1024</td><td class="num">34.4 G</td><td class="num">50.3 MB</td><td class="num">683</td><td>compute-bound</td></tr>
+<tr><td class="num">4096</td><td class="num">137 G</td><td class="num">101 MB</td><td class="num">1365</td><td>compute-bound</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Read the bytes column: at small <code>M</code> it is almost all the weight matrix (33.5 MB), read once no
+matter how few tokens use it. That single row is the economics of LLM inference. <b>Decoding one token is
+M = 1</b>: a matrix-vector product, intensity 1, so a decode step is limited by how fast the weights stream
+from memory, not by FLOPs. Batching many users' tokens (raising M) is free until intensity reaches the ridge.
+Training and prefill run thousands of tokens at once and live on the compute side. Chapters 14, 15 and 18 are
+all consequences of this table.</p>
+
+<h3>Tile alignment: why vocab sizes are padded</h3>
+
+<p>Tensor cores do not multiply single numbers. They multiply small fixed-size tiles (for bf16, the
+instruction shapes need dimensions in multiples of 8 or 16, and the kernels that run them cut every matrix into
+blocks of 64 or 128). A dimension that is not a multiple of the block size leaves the last block partly empty,
+and the kernel pays for the whole block anyway. NVIDIA's performance guide states the practical rule: for fp16
+and bf16, keep matmul dimensions <b>multiples of 8</b>, and larger powers of two are better still. The waste
+from a partial block is <code>n / (⌈n / tile⌉ · tile)</code> of useful work:</p>
+
+<pre><code class="nohl">n = 4097,  tile 128:   4097 / (33 × 128)   = 97.0% useful     one extra element costs a whole block
+n = 65,    tile 64:      65 / (2 × 64)     = 50.8% useful     a small dimension can halve throughput
+n = 50257, tile 128:  50257 / (393 × 128)  = 99.9% useful     but the irregular size can also miss the fast kernel</code></pre>
+
+<p>The third row is GPT-2's vocabulary, 50,257, which is odd. The output projection <code>(d, V)</code> is
+the largest matmul in a small model, and an odd <code>V</code> rules out the vectorised, aligned code paths
+entirely, whatever the tile arithmetic says. So implementations <b>pad the vocabulary</b> with unused rows:
+nanoGPT pads 50,257 to <b>50,304</b>, the next multiple of 64 (and also of 128), at a cost of 47 rows that are
+never predicted. Modern models choose aligned sizes up front: Llama 3's 128,256 is 1,002 × 128, and Qwen2.5's
+<code>config.json</code> vocabulary of 152,064 is 1,188 × 128, larger than its tokenizer's actual token count
+for the same reason. The same rule is why <code>d_ff</code> values like 11,008 and 14,336 are multiples of 256
+(Chapter 8), and why head dimensions are 64 or 128 (Chapter 14).</p>
+
+<div class="quiz" data-title="Checkpoint 3 — shapes and speed">
+<div class="qitem" data-answer="1">
+  <div class="qq">One decode step multiplies a single token's vector <code>(1, 4096)</code> by a <code>(4096, 4096)</code> bf16 weight. Roughly what is its arithmetic intensity, and what limits it on an H100?</div>
+  <div class="opts">
+    <div class="opt">About 4096 FLOPs/byte; compute-bound</div>
+    <div class="opt">About 1 FLOP/byte; memory-bound, by the time to read the 33.5 MB weight</div>
+    <div class="opt">About 295 FLOPs/byte; exactly balanced</div>
+    <div class="opt">It depends only on the GPU's clock speed</div>
+  </div>
+  <div class="expl"><b>Intensity 1.</b> 2 × 4096² = 33.6 M FLOPs over 2 × (4096 + 4096² + 4096) ≈ 33.6 MB.
+  Every weight is read for one multiply-add. The GPU's arithmetic sits ~99.7% idle; only batching more tokens
+  through the same weights changes that.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">Your FLOP count says the forward pass of a 12-layer, d = 768 model at T = 1024 is about 82% weight matmuls. What is the rest?</div>
+  <div class="opts">
+    <div class="opt">The softmax and layer norms</div>
+    <div class="opt">The embedding lookup</div>
+    <div class="opt">The backward pass</div>
+    <div class="opt">The attention score and mixing matmuls, 4Td per token per layer, which multiply activations by activations and have no weights</div>
+  </div>
+  <div class="expl"><b>Attention's own matmuls.</b> 4 × 1024 × 768 = 3.1 M of 17.3 M per token per layer.
+  Softmax and norms are elementwise: real time, negligible FLOPs. The embedding is a lookup (Chapter 4).</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Why does nanoGPT pad GPT-2's vocabulary from 50,257 to 50,304?</div>
+  <div class="opts">
+    <div class="opt">50,304 is a multiple of 64, so the large output matmul runs on aligned, tensor-core-friendly kernels; the 47 extra rows are never predicted</div>
+    <div class="opt">The tokenizer has 47 hidden tokens</div>
+    <div class="opt">To make the embedding table a power of two</div>
+    <div class="opt">Padding improves the model's perplexity</div>
+  </div>
+  <div class="expl"><b>Alignment, not modelling.</b> 50,304 = 786 × 64 (and 393 × 128). It is not a power of two;
+  it only needs to be a multiple of the kernels' tile sizes. The extra logits are trained toward −∞ because their
+  tokens never appear.</div>
+</div>
+</div>
+
+<h2>2.7 · Exercises</h2>
 
 <div class="exercise">
 <div class="eh"><span class="n">2.1</span><span class="ti">Predict, then verify</span><span class="lvl">warm-up</span></div>
@@ -516,11 +650,50 @@ transformers at moderate context length. It starts to break down for MoE models 
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">2.5</span><span class="ti">How much batch makes decode compute-bound?</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>A model's MLP up-projection is <code>(4096, 14336)</code> in bf16. During decoding, each step multiplies
+a batch of <code>M</code> single-token vectors by it.</p>
+<ol>
+<li>Write the arithmetic intensity as a function of <code>M</code>.</li>
+<li>Find the smallest <code>M</code> that reaches an H100's ridge of 295 FLOPs/byte.</li>
+<li>Why does the answer barely depend on the weight's shape, as long as it is large?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">1. FLOPs = 2·M·4096·14336        bytes = 2·(4096M + 4096·14336 + 14336M)
+   intensity = 4096·14336·M / (4096·14336 + 18432·M)
+2. solve intensity = 295:  M = 295 / (1 − 295·18432/(4096·14336)) ≈ 325</code></pre>
+<p style="margin-bottom:0">3. When K·N is much larger than (K + N)·M, the weight dominates the bytes and the
+intensity is ≈ M: every token in the batch reuses each weight once. So "decode becomes compute-bound at a
+batch of roughly the ridge point" is a rule that holds for every large layer. (Check part 2 with
+<code>matmul_intensity(326, 4096, 14336)</code>, which gives 295.7.) In practice the KV cache, which is <i>not</i> shared between
+sequences, keeps decode memory-bound well past this batch size: Chapter 15.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">2.6</span><span class="ti">Predict, then measure: one extra element</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Predict the ratio of run times for <code>a @ b</code> with square bf16 matrices of size 4096 and 4097. Then
+measure it on a GPU (or fp32 on CPU), timing 20 runs after 5 warm-ups and calling
+<code>torch.cuda.synchronize()</code> before reading the clock.</p>
+<details class="reveal"><summary>What to expect</summary><div>
+<p style="margin-bottom:0">The FLOP count grows by 0.07%, so a FLOP model predicts no change. Tile arithmetic
+predicts at least the 97%-useful figure from the text, about 3% slower, and on GPUs the measured penalty is
+often much larger, because a non-multiple-of-8 dimension can push cuBLAS onto a slower, unaligned kernel.
+On a CPU the difference is usually small. The lesson is that the shape that is cheapest to <i>think</i> about
+is not the shape that is cheapest to <i>run</i>; profile before believing either.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://rockt.ai/2018/04/30/einsum">Tim Rocktäschel — Einsum is All You Need</a> — the best einsum tutorial written.</li>
 <li><a href="https://einops.rocks/">einops documentation</a> — worth 30 minutes; it will change how you write tensor code.</li>
 <li><a href="https://arxiv.org/abs/2001.08361">Kaplan et al. 2020, Appendix B</a> — where the 6ND estimate is worked out carefully.</li>
+<li><a href="https://docs.nvidia.com/deeplearning/performance/dl-performance-matrix-multiplication/index.html">NVIDIA — Matrix Multiplication Background User's Guide</a> (arithmetic intensity, tile and wave quantization, alignment rules)</li>
+<li>Reference code: <code>tfs/foundations.py</code> (Ch 2 section) · tests: <code>tests/test_foundations.py</code></li>
 <li>Companion notebook: <code>notebooks/02_matmul_and_einsum.ipynb</code></li>
 </ul>
 

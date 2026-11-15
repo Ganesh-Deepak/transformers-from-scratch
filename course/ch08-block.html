@@ -19,6 +19,17 @@ stacked 32, 80, or 120 times, and explains every design choice that has changed 
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span><a href="ch04-embeddings.html">Ch&nbsp;04</a> &mdash; residual stream<br><a href="ch06-mha.html">Ch&nbsp;06</a> &mdash; the attention sublayer<div class="sep"></div><span class="k">Leads to</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; stack this and you have a model<br><a href="ch20-moe.html">Ch&nbsp;20</a> &mdash; MoE replaces exactly this chapter's MLP<div class="sep"></div><span class="k">Why this chapter</span>Communicate, then compute. Repeat 32 times.</div>
+<div class="box intuition">
+<span class="t">The whole chapter in five sentences</span>
+<p style="margin-bottom:0"><b>A block is attention (tokens talk) then an MLP (each token thinks), each on a
+normalised copy of the residual stream and each added back to it.</b> <b>RMSNorm before each sublayer</b> keeps
+the residual highway clean and lets models train to 100+ layers. <b>The MLP holds about two-thirds of the
+parameters and FLOPs</b>; SwiGLU's gate is the modern choice, with d_ff ≈ 8/3·d_model. <b>At scale, attention
+logits grow with the square of the weights</b> until the softmax saturates and training spikes, which QK-norm and
+sandwich norms are there to stop. <b>Each block's cost is countable</b>: about 2 FLOPs per weight per token, and
+tens of bytes of saved activations per token per feature for the backward pass.</p>
+</div>
+
 <h2>8.1 · The block, in four lines</h2>
 
 <pre><code>def block(x):
@@ -397,7 +408,183 @@ quote, and it's an honest summary of the state of activation-function research.<
 <p>Every one of these is a small, well-motivated change. None of them altered the fundamental architecture.
 That stability — nine years of tuning a fixed skeleton — is the real story of transformers.</p>
 
-<h2>8.6 · Exercises</h2>
+<h2>8.6 · Logit growth, and the norms that stop it</h2>
+
+<p>Pre-LN fixed the instability of 2017. Training models with tens of billions of parameters exposed a second
+one, and it has the same mathematical shape as the √d<sub>k</sub> argument of Chapter 5, taken one step further.
+Follow it in four steps.</p>
+
+<p><b>1. Logits grow with the square of the weights.</b> An attention logit is
+<code>(x W<sub>Q</sub>)·(x W<sub>K</sub>) / √d</code>. The input <code>x</code> is normalised, so its scale is fixed.
+But if training lets the norms of <code>W<sub>Q</sub></code> and <code>W<sub>K</sub></code> each grow by a factor
+<i>g</i>, every logit grows by <b>g²</b>. Nothing in a pre-LN block pushes back: the normalisation is before the
+projections, not after them.</p>
+
+<p><b>2. Large logits saturate the softmax.</b> <code>tfs.foundations.softmax_saturation</code> draws 64 logits
+from a standard normal, multiplies them by a scale, and measures the attention distribution:</p>
+
+<div class="tw">
+<table>
+<thead><tr><th class="num">logit scale</th><th class="num">(weights grown by)</th><th class="num">entropy (nats; max ln 64 = 4.16)</th><th class="num">largest weight</th><th class="num">softmax Jacobian, RMS</th></tr></thead>
+<tbody>
+<tr><td class="num">1</td><td class="num">1×</td><td class="num">3.51</td><td class="num">0.16</td><td class="num">0.026</td></tr>
+<tr><td class="num">2</td><td class="num">1.4×</td><td class="num">2.08</td><td class="num">0.51</td><td class="num">0.039</td></tr>
+<tr><td class="num">4</td><td class="num">2×</td><td class="num">0.44</td><td class="num">0.92</td><td class="num">0.013</td></tr>
+<tr><td class="num">8</td><td class="num">2.8×</td><td class="num">0.017</td><td class="num">0.998</td><td class="num">0.0004</td></tr>
+<tr><td class="num">16</td><td class="num">4×</td><td class="num">0.000</td><td class="num">1.000</td><td class="num">&lt; 10<sup>−5</sup></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Doubling the projection weights takes a head from spreading attention over many keys to putting 92% on one.
+Quadrupling them makes it a hard argmax.</p>
+
+<p><b>3. A saturated softmax has no gradient.</b> The last column is the size of the softmax's Jacobian,
+<code>diag(p) − p pᵀ</code>. Once one weight is ≈ 1 every entry of it is ≈ 0, so no gradient reaches the logits
+and the head cannot learn its way out. It is stuck attending to whatever it locked onto.</p>
+
+<p><b>4. Saturated heads cause loss spikes.</b> A head stuck on one key copies that key's value at full strength,
+and when the key changes (a new batch, a new document), its output jumps discontinuously. Dehghani et al. (2023)
+hit exactly this training ViT-22B: attention logits grew without bound and training diverged. Wortsman et al.
+(2023) reproduced the same instability in small models trained at high learning rates, which made it cheap to
+study, and showed that the fix below removes it.</p>
+
+<h3>QK-norm</h3>
+
+<p>Normalise each head's q and k after projection (Chapter 5 §5.10): <code>q̂ = RMSNorm(q)</code>,
+<code>k̂ = RMSNorm(k)</code>, each with its own learned gain. Now growing <code>W<sub>Q</sub></code> changes the
+<i>direction</i> of q but not its length, and the scaled logit is bounded by <code>√d · g<sub>q</sub>g<sub>k</sub></code>,
+11.3 for <code>d = 128</code> at unit gains. Only the gains, a few parameters per head, can sharpen attention, and
+weight decay keeps them modest. It costs two tiny norms per head and is now standard (OLMo 2, Gemma 3, Qwen3).</p>
+
+<h3>Sandwich norm and output norms</h3>
+
+<p>The same reasoning applied to the residual stream gives the other 2024–2025 change. In pre-LN, a sublayer's
+<i>input</i> is normalised but its <i>output</i> is not: one block whose output grows large can dominate the
+stream for every block after it (and Chapter 4 showed the stream already grows with depth). <b>Sandwich norm</b>
+(Gemma 2 and 3) normalises both:</p>
+
+<pre><code>x = x + norm_post_attn(attn(norm_pre_attn(x)))       # the branch output has RMS ≈ its gain
+x = x + norm_post_mlp(mlp(norm_pre_mlp(x)))</code></pre>
+
+<p>OLMo 2 keeps only the second norm of each pair (<code>x = x + norm(attn(x))</code>), and adds QK-norm. Either
+way, the residual highway itself stays un-normalised, so the identity path for gradients from §8.2 is untouched;
+what is bounded is how much any single sublayer can write into it per step. "More normalisation, placed off the
+residual path" (the box above) is this argument in one line.</p>
+
+<h2>8.7 · Parallel blocks: attention and MLP side by side</h2>
+
+<p>The block in §8.5 is <b>serial</b>: the MLP reads the stream after attention has written to it. GPT-J (2021)
+and PaLM (2022) used a <b>parallel</b> formulation instead, where both sublayers read the same normalised input
+and their outputs are added together:</p>
+
+<pre><code>class ParallelBlock(nn.Module):                     # tfs.foundations.ParallelBlock
+    def forward(self, x, cos, sin):
+        h = self.n(x)                               # ONE norm, shared
+        a, _ = self.attn(h, cos, sin)
+        return x + a + self.mlp(h)                  # both read h; neither sees the other's output</code></pre>
+
+<p>Why do it? The two input projections (attention's Q, K, V and the MLP's up and gate) now multiply the same
+<code>h</code>, so they can be fused into one larger matmul, and the two sublayers can run concurrently. The PaLM
+paper reports roughly <b>15% faster training at large scale</b>, with a small quality degradation at 8B
+parameters and none at 62B. It also saves one norm per block. Falcon and GPT-NeoX-20B used it too.</p>
+
+<p>Why did it fall out of favour? The Llama family (2023 onward), Mistral, Qwen, DeepSeek and most later open
+models are serial. The published evidence says parallel blocks cost a little quality at the scales most models
+are trained at, and a plausible reason the speed gain stopped being worth it is that at modern widths each
+sublayer's matmuls are already large enough to keep a GPU busy on their own, so fusing them buys less. The serial
+block also has a clean interpretation the parallel one lacks: the MLP can act on what attention just retrieved
+in the same layer. Treat the parallel block as a well-documented design point, not a mistake.</p>
+
+<h2>8.8 · A per-block budget: FLOPs, and what backward has to keep</h2>
+
+<p>Everything in a block is countable. <b>FLOPs</b> first: 2 per weight per token, plus attention's own two
+matmuls. For Llama-2-7B's block (<code>d = 4096</code>, 32 heads of 128, no GQA, SwiGLU with
+<code>d_ff = 11008</code>) at <code>T = 4096</code> with a causal mask
+(<code>tfs.foundations.block_flops_per_token</code>):</p>
+
+<pre><code class="nohl">Q and O projections   2 × 2 × 4096 × 4096       =  67.1 M FLOPs per token
+K and V projections   2 × 2 × 4096 × 4096       =  67.1 M
+MLP (3 matrices)      2 × 3 × 4096 × 11008      = 270.5 M      61.7% of the block
+scores + mix          2 × 2 × 4096 × 4096 / 2   =  33.6 M      (causal: half the keys on average)
+total                                           = 438.3 M FLOPs per token, forward</code></pre>
+
+<p>Training costs about three times that (Chapter 2). The MLP is the largest item until T approaches 6·d.</p>
+
+<p><b>Memory</b> is the less obvious budget. The backward pass needs inputs of every matmul and the outputs of
+several nonlinearities, so the forward pass must <b>save</b> them. Korthikanti et al. (2022) counted them for a
+GPT-style block (4h GELU MLP, dropout, 16-bit activations, no recomputation). Per layer, with sequence length
+<i>s</i>, micro-batch <i>b</i>, hidden size <i>h</i> and <i>a</i> heads:</p>
+
+<div class="mathblock">
+activations per layer = s·b·h·(34 + 5·a·s / h) bytes
+<span class="lbl">34·sbh: the matmul inputs, norm inputs, GELU input, dropout masks &nbsp;·&nbsp; 5·a·s²·b: the attention score, softmax and dropout matrices</span>
+</div>
+
+<p>For a 7B-class layer (<code>h = 4096</code>, <code>a = 32</code>) at <code>s = 4096</code>, <code>b = 1</code>
+(<code>activation_bytes_per_layer</code>):</p>
+
+<pre><code class="nohl">34 · s · b · h        =  0.57 GB
+5 · a · s² · b        =  2.68 GB         the T × T matrices dominate
+per layer             =  3.25 GB    × 32 layers = 104 GB, for ONE sequence
+with FlashAttention   =  0.57 GB    × 32 layers =  18 GB  (scores are recomputed in backward, not stored)</code></pre>
+
+<p>That is why FlashAttention matters for training memory, not only speed (Chapter 17), and why even 18 GB per
+sequence is too much at real batch sizes: the remaining fix is <b>activation checkpointing</b>, which stores only
+each block's input and recomputes the rest during backward, trading roughly one extra forward pass for most of
+this memory. Chapter 10 derives what is saved and why; Chapter 19 sets the policy at scale. (The 34 is specific to
+Korthikanti's block: SwiGLU, no dropout and RMSNorm change the coefficient, and the exercise below has you
+recount it.)</p>
+
+<div class="quiz" data-title="Checkpoint 2 — stability and budgets">
+<div class="qitem" data-answer="2">
+  <div class="qq">During training, the norms of W<sub>Q</sub> and W<sub>K</sub> in one head both double. By what factor do its attention logits grow, and what happens to the head?</div>
+  <div class="opts">
+    <div class="opt">2×; it becomes slightly sharper</div>
+    <div class="opt">√2×; nothing much</div>
+    <div class="opt">4×; at typical scales it goes from spread-out to nearly one-hot, and its softmax gradient almost vanishes</div>
+    <div class="opt">16×; it produces NaN</div>
+  </div>
+  <div class="expl"><b>The logit is a product of q and k.</b> Each doubles, so the logit quadruples. The table
+  shows scale 1 → 4 taking the largest weight from 0.16 to 0.92 and shrinking the Jacobian. QK-norm removes the
+  dependence on the weight norms entirely.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">What does sandwich norm add to a pre-LN block?</div>
+  <div class="opts">
+    <div class="opt">A norm on each sublayer's output before it is added to the stream, bounding how much one sublayer can write; the residual path itself stays un-normalised</div>
+    <div class="opt">A norm on the residual stream after every addition, like post-LN</div>
+    <div class="opt">A second residual connection</div>
+    <div class="opt">Normalisation of the attention weights</div>
+  </div>
+  <div class="expl"><b>Off the residual path.</b> Option B is post-LN, which puts a norm on the highway and
+  brings back the gradient problems of §8.2. Sandwich norm keeps the identity path clean.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">A 7B-class layer at 4,096 tokens saves about 3.25 GB of activations without FlashAttention and 0.57 GB with it. What accounts for the difference?</div>
+  <div class="opts">
+    <div class="opt">FlashAttention uses fp8</div>
+    <div class="opt">The 5·a·s²·b bytes of attention score, softmax and dropout matrices, which FlashAttention recomputes in the backward pass instead of storing</div>
+    <div class="opt">FlashAttention skips the MLP</div>
+    <div class="opt">The KV cache</div>
+  </div>
+  <div class="expl"><b>The T × T matrices.</b> They are quadratic in s and dominate at long sequence lengths.
+  FlashAttention keeps only the output and the softmax's log-sum-exp per row and rebuilds the rest tile by tile.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">Why can a parallel block fuse attention's and the MLP's input projections into one matmul, when a serial block cannot?</div>
+  <div class="opts">
+    <div class="opt">Parallel blocks have fewer parameters</div>
+    <div class="opt">Serial blocks use GQA</div>
+    <div class="opt">The MLP has no weights in a parallel block</div>
+    <div class="opt">Both sublayers read the same normalised input h; in a serial block the MLP's input depends on attention's output</div>
+  </div>
+  <div class="expl"><b>Same input, one matmul.</b> Concatenate the weights along the output axis and multiply h
+  once. In a serial block the MLP must wait for attention to finish and write to the stream.</div>
+</div>
+</div>
+
+<h2>8.9 · Exercises</h2>
 
 <div class="exercise">
 <div class="eh"><span class="n">8.1</span><span class="ti">Implement and verify both norms</span><span class="lvl">warm-up</span></div>
@@ -467,6 +654,61 @@ what sparse autoencoders were invented to untangle, and it's the frontier of int
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">8.5</span><span class="ti">Recount the activations for a Llama block</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>Korthikanti's 34·sbh assumes a GELU MLP with 4h width and dropout. Recount the bytes saved per token per layer
+(16-bit) for a Llama-style block: RMSNorm, GQA with 8 KV heads of 128 at <code>h = 4096</code>, SwiGLU with
+<code>d_ff = 14336</code>, no dropout, FlashAttention. List what each matmul and nonlinearity must keep.</p>
+<details class="reveal"><summary>One reasonable count</summary><div>
+<pre><code class="nohl">attention norm input            h          =  4096
+Q, K, V projections' input      h          =  4096   (shared: the normed x)
+Q, K, V outputs (for flash)     h + 2·1024 =  6144
+attention output (O's input)    h          =  4096
+flash log-sum-exp               32 heads   ≈    32   (fp32, negligible)
+MLP norm input                  h          =  4096
+gate and up inputs              h          =  4096   (shared)
+gate output (SiLU's input)      d_ff       = 14336
+up output                       d_ff       = 14336
+down projection's input         d_ff       = 14336
+                                total      ≈ 69,700 elements ≈ 139 KB per token per layer (bf16)
+                                           ≈ 34·h bytes per token, coincidentally close to Korthikanti's 34</code></pre>
+<p style="margin-bottom:0">Implementations differ (some recompute SiLU instead of storing both its input and
+output; some store the normed x once). The method is the point: walk the forward pass and write down what each
+backward needs. At 8,192 tokens and 32 layers that is about 36 GB per sequence, which is why checkpointing is not
+optional for long-context training.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">8.6</span><span class="ti">Predict, then measure: QK-norm bounds the logits</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Add QK-norm to <code>tfs.model.GroupedQueryAttention</code> (an <code>RMSNorm(d_head)</code> on q and on k,
+before RoPE). Then, on a randomly initialised model, multiply every <code>q_proj</code> and <code>k_proj</code>
+weight by 1, 2, 4 and 8, and record the maximum attention logit and the mean attention entropy of layer 0 with and
+without QK-norm. Predict both curves before you run it.</p>
+<details class="reveal"><summary>What you should see</summary><div>
+<p style="margin-bottom:0">Without QK-norm the maximum logit grows like the square of the multiplier (×64 at
+8×) and the entropy collapses as in §8.6's table. With QK-norm both are flat: the multiplier changes nothing at all,
+because RMSNorm divides it out. The maximum logit stays below √d<sub>head</sub> at unit gains. This is also an easy
+regression test to keep in a training codebase.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">8.7</span><span class="ti">Serial versus parallel, on the same budget</span><span class="lvl">exploration</span></div>
+<div class="eb">
+<p>Build two 4-layer models from <code>tfs.model.Block</code> and <code>tfs.foundations.ParallelBlock</code>
+with identical widths, train both on the same data for the same steps, and compare validation loss and step time.
+Then fuse the parallel block's attention and MLP input projections into one <code>Linear</code> and time it again.</p>
+<details class="reveal"><summary>What to expect</summary><div>
+<p style="margin-bottom:0">At this scale the parallel model is usually slightly worse per step, consistent with
+PaLM's 8B observation, and the fused version is faster per step on a GPU; on a CPU the speed difference is small.
+Whether the trade is worth it depends on which you are short of, time or quality. Be careful to give both the
+same number of norms' worth of parameters, or the comparison is not fair.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://arxiv.org/abs/1910.07467">Zhang &amp; Sennrich 2019 — Root Mean Square Layer Normalization</a></li>
@@ -474,6 +716,12 @@ what sparse autoencoders were invented to untangle, and it's the frontier of int
 <li><a href="https://arxiv.org/abs/2002.04745">Xiong et al. 2020 — On Layer Normalization in the Transformer Architecture</a> — the pre-LN vs post-LN analysis</li>
 <li><a href="https://arxiv.org/abs/2012.14913">Geva et al. 2021 — Transformer Feed-Forward Layers Are Key-Value Memories</a></li>
 <li><a href="https://magazine.sebastianraschka.com/p/the-big-llm-architecture-comparison">Raschka — The Big LLM Architecture Comparison</a> — every modern variant, side by side</li>
+<li><a href="https://arxiv.org/abs/2302.05442">Dehghani et al. 2023 — Scaling Vision Transformers to 22 Billion Parameters</a> (attention-logit growth, QK-norm)</li>
+<li><a href="https://arxiv.org/abs/2309.14322">Wortsman et al. 2023 — Small-scale proxies for large-scale Transformer training instabilities</a></li>
+<li><a href="https://arxiv.org/abs/2501.00656">OLMo Team 2024 — 2 OLMo 2 Furious</a> (output norms and QK-norm) · <a href="https://arxiv.org/abs/2408.00118">Gemma 2</a> (sandwich norm)</li>
+<li><a href="https://arxiv.org/abs/2204.02311">Chowdhery et al. 2022 — PaLM</a> (parallel blocks: ~15% faster, small loss at 8B)</li>
+<li><a href="https://arxiv.org/abs/2205.05198">Korthikanti et al. 2022 — Reducing Activation Recomputation in Large Transformer Models</a> (the activation-memory formula)</li>
+<li>Reference code: <code>tfs/foundations.py</code> (Ch 8 section) · tests: <code>tests/test_foundations.py</code></li>
 <li>Companion notebook: not written yet (planned as <code class="planned">notebooks/08_the_block.ipynb</code>)</li>
 </ul>
 
