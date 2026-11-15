@@ -58,6 +58,16 @@ def test_llama3_8b_activation_memory():
     assert round(mem[4], 2) == 7.25 and round(mem[8], 2) == 13.69
 
 
+def test_llama3_70b_exercise():
+    """Exercise 10.5."""
+    e = M.saved_elements_per_token(8192, 64, 128, 28672)
+    assert e == 196_674
+    assert round(e * 8192 * 2 * 80 / GB, 1) == 257.8
+    assert round(80 * 8192 * 8192 * 2 / GB, 1) == 10.7
+    assert round((e + 8192) * 8192 * 2 / GB, 1) == 3.4
+    assert round(M.best_checkpoint_interval(80, e, 8192), 2) == 1.79
+
+
 def test_logits_dominate_after_checkpointing():
     """10.8: the (B*T, V) tensors at the end, Llama-3 vocabulary."""
     V = 128_256
@@ -457,6 +467,40 @@ def test_attention_share_and_long_context_recipes():
     assert 1000 * 1920 * 32768 == 1000 * 480 * 131072 == 62_914_560_000
     # Llama 3 405B Table 4: TP x CP x PP x DP
     assert 8 * 1 * 16 * 64 == 8192 and 8 * 16 * 16 * 8 == 16384 and 8 * 1 * 16 * 128 == 16384
+
+
+def test_exercise_and_prose_arithmetic():
+    """Numbers quoted in the new exercises (10.x, 11.7, 12.6, 19.5, 19.7, 21.4-21.6)."""
+    assert len(D.shingles(DOC_A) | D.shingles(DOC_D)) == 101
+    # 19.6 / Ex 19.5: an 8B layer's activations at 128k, and per-rank memory with CP
+    assert round(98_338 * 131_072 * 2 / GB, 1) == 25.8
+    total = (32 * 131_072 * 4096 * 2 + 98_338 * 131_072 * 2 + 131_072 * 4096 * 2) / GB
+    assert round(total) == 61 and round(total / 8, 1) == 7.7 and round(total / 16, 1) == 3.8
+    # Ex 19.7
+    mtbf = 54 * 24 * 3600 / 419 * 4
+    w120 = P.expected_waste(P.young_daly_interval(120, mtbf), 120, mtbf, 600)
+    w5 = P.expected_waste(P.young_daly_interval(5, mtbf), 5, mtbf, 600)
+    assert round(P.young_daly_interval(120, mtbf) / 60) == 54 and round(w120, 3) == 0.087
+    assert round(P.young_daly_interval(5, mtbf) / 60) == 11 and round(w5, 3) == 0.028
+    assert round((w120 - w5) * 4096 * 24, -2) == 5700
+    # Ex 11.7: 70B, 15T tokens, 8192 H100 at 40% MFU
+    per_tok = 6 * 70e9 + 12 * 80 * 8192 * 8192
+    days = per_tok * 15e12 / (8192 * 989e12 * 0.40) / 86400
+    assert round(days) == 26 and round(12 * 80 * 8192 * 8192 / per_tok, 2) == 0.13
+    # Ex 12.6: where per-tensor e4m3 scaling pushes |x| ~ 1 below the smallest normal
+    assert round(448 * 64 / 3) == 9557
+    # Ex 21.4 / 21.5 / 21.6
+    N, Dt = S.rule_of_20(1e24)
+    assert round(N / 1e9, 1) == 91.3 and round(Dt / 1e12, 2) == 1.83
+    assert round(1e24 / (6 * 12e12) / 1e9, 1) == 13.9 and round(S.effective_data(3, 4), 1) == 11.2
+    assert round(S.coverage(0.3, 10), 3) == 0.972
+    f = lambda T: 6 * 8e9 + 12 * 32 * 4096 * T
+    assert round(f(131_072) / f(8192), 1) == 4.2
+    assert round((62.9e9 * f(32_768) + 62.9e9 * f(131_072)) / f(8192) / 1e12, 2) == 0.37
+    assert S.attention_share(8e9, 32, 4096, 30_000) < 0.5 < S.attention_share(8e9, 32, 4096, 32_768)
+    assert S.attention_share(405e9, 126, 16384, 98_000) < 0.5 < S.attention_share(405e9, 126, 16384, 100_000)
+    # 21.3: DeepSeek-V3 tokens per active parameter
+    assert round(14.8e12 / 37e9) == 400
 
 
 def main():

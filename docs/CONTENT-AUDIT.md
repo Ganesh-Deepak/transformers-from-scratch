@@ -135,29 +135,49 @@ its bf16 weights (said "more than"). Missing: a decoder-only vs encoder-decoder 
 and modern embedding/reranker models (they are still BERT-shaped; one paragraph on how they are
 trained, contrastively, would help engineers who build retrieval).
 
-### Ch 10 · The Backward Pass — **A**
-Every derivation checks numerically (softmax Jacobian at [1, 2, 0.5]; p − y at [2, 1, 0.1]; the
-RMSNorm correction term and its orthogonality to x; attention backward). Missing, by value:
-1. **Memory of the backward pass**: what is saved for backward per layer, activation memory in
-   bytes for a real config, and activation checkpointing derived here (Ch 11 only tabulates it).
-2. The vocabulary-sized logits: (B·T·V) in fp32 is often the largest tensor in training;
-   chunked / fused cross-entropy (Liger-style) as the fix, with numbers.
-3. Embedding backward as scatter-add, SwiGLU backward, and RoPE backward (the inverse rotation).
-4. Mixed-precision gradients: where bf16 gradients lose information and why reductions run in fp32.
+### Ch 10 · The Backward Pass — **A** (raised to the standard, November 2026)
+Every derivation checks numerically (softmax Jacobian at [1, 2, 0.5]; p − y at [2, 1, 0.1]; the RMSNorm
+correction term and its orthogonality to x; attention backward). This pass added (2.6k → 6.1k words, 3 → 10 quiz
+questions, 4 → 8 exercises), all numbers from `tfs/memory.py`, asserted in `tests/test_training.py`:
+1. §10.7 memory of backward: what a Block saves, as a formula (6C + 2 + 4·H·dh + H + 4·d_ff per token) that matches
+   autograd's saved tensors byte for byte (1,018,880); the GQA-expansion and shared-storage details; Llama-3-8B at 8k
+   = 51.6 GB; checkpointing derived (k* = √(L·b/(a+b)) = 1.13, so per-layer, 3.83 GB, ~33% compute).
+2. §10.8 the logits: 10.5 GB at the end for V = 128k; `chunked_cross_entropy` (Liger-style, exact to 1e-12, saves no
+   N·V tensor; measured).
+3. §10.9 embedding backward (scatter-add), SwiGLU backward, RoPE backward (inverse rotation), each autograd-checked.
+4. §10.10 low-precision gradients: bf16 running total of 64 micro-batches 7.4e-3 vs fp32 1.1e-7; where frameworks
+   keep sums in fp32.
+Remaining nice-to-have: a measured GPU peak-memory plot for exercise 10.7.
 
-### Ch 11 · Training a Transformer — **A−**
-Real measured runs, the bits-per-byte lesson, and the double-shift case study are excellent.
-Fixed: GPT-3 175B's learning rate was 0.6e-4, not 1.5e-4. Missing, by value (this chapter is
-where a pretraining engineer's job actually lives):
-1. **Data**: deduplication (exact and MinHash), quality filtering (FineWeb-Edu-style classifiers),
-   mixture weights, and annealing on high-quality data at the end of a WSD run. Today the chapter's
-   only data section is packing.
-2. Batch size: critical batch size, why it grows during training, and batch-size warmup.
-3. Hyperparameter transfer (μP) and LR scaling with width, so the reader can pick an LR for a
-   model they cannot afford to sweep.
-4. Throughput: tokens/s and MFU measured on the repo's own model, and how to find the bottleneck.
-5. Loss spikes at scale: z-loss on the output, QK-norm, skipping batches, and restart policy.
-6. Checkpointing and exact resumption (data-loader state, RNG), which every long run needs.
+### Ch 11 · Training a Transformer — **A** (raised to the standard, November 2026)
+Real measured runs, the bits-per-byte lesson and the double-shift case study kept. Fixed earlier: GPT-3 175B's LR.
+This pass (3.4k → 9.8k words, 3 → 13 quiz questions, 3 → 7 exercises), code in `tfs/data.py` and `tfs/trainkit.py`,
+asserted in `tests/test_training.py`:
+1. §11.6 dedup: exact hashing; MinHash with a worked example (J = 0.873 / 0.735, 101/112 and 85/112 slots, unbiased over
+   200 seeds); LSH S-curve with FineWeb's 14 × 8 and a caught vs a missed copy; FineWeb's per-crawl-vs-global finding;
+   Llama 3's URL / MinHash / line-level pipeline.
+2. §11.7 quality: Gopher rules implemented; FineWeb-Edu's distil-a-judge recipe and Llama 3's classifiers; mixture
+   weights by temperature with epochs per source; Llama 3's final mix; annealing in WSD (Llama 3, OLMo 2 souping,
+   DeepSeek-V3's schedule).
+3. §11.8 batch size: noise scale (estimator implemented, measured on the Ex 11.1 model), the S/E trade-off and B_crit,
+   batch ramps of GPT-3, Llama 3 405B, DeepSeek-V3.
+4. §11.9 μP: measured one-Adam-step output change 0.025 → 0.332 (standard) vs flat (μP) from width 256 to 4096.
+5. §11.10 MFU: exact FLOPs/token for the Ex 11.1 model, measured throughput and MFU on CPU, profiler recipe.
+6. §11.12 spikes: z-loss, QK-norm, OLMo 2's stability list, PaLM's roll-back-and-skip, a spike detector.
+7. §11.13 exact resumption: what state, and a test that resumes bit-identically (and fails if one integer is lost).
+Also fixed: the checkpointing row said "~√L" (it is per-layer for transformers; Ch 10 §10.7); an axis colour used for
+"warmup" in the schedule figure.
+
+### Ch 12 · Precision in Training — audited November 2026: **A−** → **A**
+Audited this pass: the underflow trajectory, loss-scale table, matmul errors and accumulation table reproduce from
+`notebooks/12_precision.ipynb`; bit layouts and finfo values check. Missing before this pass: (1) fp8 scaling done by
+hand, with the granularity trade measured; (2) delayed scaling and its saturation failure; (3) pure-bf16 weights and the
+two fixes (stochastic rounding, Kahan); (4) links to where precision meets gradient sums (Ch 10), cluster-scale FP8
+(Ch 19) and precision scaling laws (Ch 21); (5) only 3 quiz questions for 6 sections and no whole-chapter summary.
+All added (4.1k → 5.9k words, 3 → 8 quiz questions, 5 → 7 exercises), code in `tfs/fp8.py`, asserted in
+`tests/test_training.py`: §12.7 per-tensor vs per-128 e4m3 (2.64% vs 2.58% at a 100× outlier; 3.63% / 4.6% zeros vs
+2.59% / 0.17% at 10⁴×: floating fp8 tolerates outliers that would break int8), delayed scaling clipping 5.0 to 3.4;
+§12.8 1.0 + 1000 × 0.001 in bf16 = 1.0 (nearest), 2.005 (stochastic, mean of 20), 2.0 (Kahan).
 
 ### Ch 13 · Decoding — **B+** (checked; sampler arithmetic correct)
 Missing: best-of-n / self-consistency, stop sequences, batch-dependent nondeterminism, grammar engines (XGrammar) and token-boundary issues in constrained decoding.
@@ -166,7 +186,7 @@ Missing: best-of-n / self-consistency, stop sequences, batch-dependent nondeterm
 Ridge points, decode ceilings and prefill/decode numbers check. **§14.4 is wrong**: it claims d_head is 64/128 because of 128-byte cache lines and that "you never see 48, 80, 96". Counterexamples: Phi-2 (80), Phi-3-mini and GPT-NeoX-20B (96), Gemma (256), DeepSeek-V3 (192 q/k). The real constraints are tensor-core multiples and which head sizes kernels ship tuned versions of. Rewrite §14.4 and its quiz. Fixed this pass: raw LaTeX (`d_{head}`, `\sqrt`) shown literally to readers in Ch 7, 14, 16, 19.
 
 ### Not yet audited in this pass
-Ch 15–19, 21–26 (Ch 12 and Ch 0 were rewritten in October). Add a check_ui rule rejecting raw LaTeX outside code.
+Ch 15–19, 21–26 (Ch 0 was rewritten in October; Ch 12 is audited above). Add a check_ui rule rejecting raw LaTeX outside code.
 
 ### Ch 14 · §14.4 — now FIXED
 Rewritten: tensor cores require multiples of 16 (32 for fp8); 64/128 dominate because attention kernels ship
@@ -199,20 +219,29 @@ Speculative-decoding arithmetic (2.77, 6.13), PagedAttention waste figures check
 3. Multi-LoRA serving, KV offload tiers (CPU/SSD, LMCache), structured-output engines (XGrammar).
 4. FP8 / FP4 (NVFP4, MXFP4) weight serving, linking Ch 0's formats to deployment.
 
-### Ch 19 · Distributed Training — **A−**
-ZeRO floors, TP traffic (0.54 / 0.81 / 0.94 GB per layer, 75 GB over 80 layers) and the bubble table check.
-Missing, by value: **context / sequence parallelism** (ring attention, DeepSpeed-Ulysses) — how every
-long-context model is trained, absent today; HSDP; FP8 training at scale; fault tolerance and checkpoint
-cadence at thousands of GPUs; the activation-memory formula (Korthikanti et al.) with real numbers.
+### Ch 19 · Distributed Training — **A** (raised to the standard, November 2026)
+ZeRO floors, TP traffic and the bubble table check. This pass (2.8k → 7.0k words, 3 → 10 quiz questions, 4 → 7
+exercises), code in `tfs/parallel.py` / `tfs/memory.py`, asserted in `tests/test_training.py`:
+1. §19.6 context parallelism: ring attention (bytes per rank, overlap condition c ≥ F/BW · n_kv/H, 4,945 / 9,890 tokens
+   on IB), zigzag load balance (3/7/11/15 → 9/9/9/9 blocks), Llama 3's all-gather CP, DeepSpeed-Ulysses (bytes ∝ 1/cp,
+   cp ≤ n_kv), the ring/Ulysses crossover at cp = 5 for GQA, comparison table, composition with DP/TP.
+2. §19.7 Korthikanti's activation formula with GPT-3 numbers (275 → 55.6 → 34.4 → 10.3 → 4.83 GB), SP vs CP.
+3. §19.8 FP8 at scale: what stays high-precision, which-peak MFU (Llama 4 Behemoth 390 TFLOP/s = 19.7% / 39.4%).
+4. §19.9 fault tolerance: Llama 3's 466/419 interruptions, MTBF 3.09 h, Young–Daly intervals and waste table.
+5. §19.10 the 5-D mesh with Llama 3's Table 4 checked row by row; HSDP vs FSDP traffic (41.3 GB vs 3.06 GB inter-node).
+Also fixed: raw LaTeX (`W_1^{(a)}`, `\gtrsim`, `\in \{`) that `check_ui.js`'s pattern list missed.
 
-### Ch 21 · Scaling Laws and Long Context — **B+**
-Chinchilla arithmetic checks (51.2B / 1,023B for GPT-3's budget; token ratios). Fixed: the NTK snippet reused
-`scale` with the inverse meaning of the PI snippet (now `s = target/trained`, with the 10000 → ~82,700 value);
-Gemma 2 alternates local/global 1:1, Gemma 3 is 5:1. Note: the fitted law's own optimum is N ∝ C^0.45,
-D ∝ C^0.55 (α ≠ β); the chapter's "both √C" is the 20-tokens-per-parameter rule, and should say so. Missing:
-data-constrained scaling (repeating data, Muennighoff et al. 2023), test-time compute scaling, MoE and
-precision scaling laws (link Ch 20, Ch 12), and the staged long-context training recipe (e.g. Llama 3's
-8k → 128k extension).
+### Ch 21 · Scaling Laws and Long Context — **A** (raised to the standard, November 2026)
+Chinchilla arithmetic checks. This pass (2.4k → 5.8k words, 4 → 10 quiz questions, 3 → 6 exercises), code in
+`tfs/scaling.py`, asserted in `tests/test_training.py`:
+1. Corrected "both √C": the fitted law's own optimum is N ∝ C^0.45, D ∝ C^0.55 (24.5B on 2.14T, 87 tokens/param at
+   GPT-3's budget, ratio drifting 50 → 191), stated next to the 20-token rule, with Besiroglu et al.'s refit
+   (C^0.51, ~19 tokens/param). The worked example now labels which "optimum" each number is.
+2. §21.2 data-constrained scaling (Muennighoff): effective data table, 4 / 16 epochs, the 16.4× ceiling.
+3. §21.3 MoE and precision scaling laws, cross-linked to Ch 20 and Ch 12.
+4. §21.4 test-time compute: coverage, unbiased pass@k, Brown et al. (15.9% → 56%), Snell et al. (4×, 14×).
+5. §21.5 the staged long-context recipe: attention share of FLOPs (405B: 7.7% at 8k → 57.2% at 128k), Llama 3's six
+   stages / ~800B tokens, DeepSeek-V3's 4K → 32K → 128K (62.9B tokens each, 4.3% of GPU-hours).
 
 ### Ch 22 · The 2026 Frontier — **B**
 Most needs refreshing, by design. Fixed: added the 2025 major-lab linear-attention hybrids (Qwen3-Next:
