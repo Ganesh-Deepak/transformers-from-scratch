@@ -21,3 +21,4 @@ Flesch (higher is easier; 60-70 is plain English).
 | ch10-backprop.html | 9.9 | 0.0 | 19.6 | 17.7 | 16.4 | 17.4 | 61.2 | 63.4 |
 | ch11-training.html | 8.2 | 0.1 | 15.0 | 13.8 | 18.6 | 19.2 | 55.6 | 57.9 |
 | ch12-precision.html | 11.9 | 0.0 | 16.8 | 15.9 | 17.9 | 17.9 | 59.8 | 62.8 |
+| ch13-decoding.html | 8.5 | 0.0 | 16.1 | 14.2 | 16.9 | 17.7 | 53.8 | 57.7 |
