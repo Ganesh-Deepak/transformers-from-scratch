@@ -3,6 +3,16 @@
    No dependencies.
    ========================================================================= */
 
+/* -------------------------------------------------------------- course */
+/* This file is shared verbatim by every course in the library (docs/PLATFORM.md).
+   What differs per course lives in its own assets/chapters.js, as COURSE:
+     slug   the registry id ("transformers")       store  its progress key
+     title  shown in the masthead, HTML allowed     home   the course's index page
+   Without a COURSE (an older chapters.js) this falls back to Transformers. */
+const COURSE_CFG = Object.assign(
+  { slug: "transformers", title: "Transformers <i>From Scratch</i>", store: "tfs-progress-v1" },
+  typeof COURSE === "object" && COURSE ? COURSE : {});
+
 /* ------------------------------------------------------------- storage */
 
 /* Progress lives in ONE localStorage key holding a JSON object. The original
@@ -13,7 +23,7 @@
    applies only its own change, and writes that back; and a `storage` event
    from another tab refreshes the in-memory copy. */
 const Store = (() => {
-  const KEY = "tfs-progress-v1";
+  const KEY = COURSE_CFG.store;
   let ok = true;
   const read = () => {
     try { const v = JSON.parse(localStorage.getItem(KEY) || "{}"); return v && typeof v === "object" ? v : {}; }
@@ -113,7 +123,9 @@ function buildTopbar(currentId) {
   bar.className = "topbar";
   bar.innerHTML =
     `<button class="sb-toggle" type="button" aria-label="Chapters">${ICON_MENU}</button>` +
-    `<a class="home" href="index.html">Transformers <i>From Scratch</i></a>` +
+    `<a class="home" href="index.html">${COURSE_CFG.title}</a>` +
+    `<button class="lib-toggle" type="button" aria-expanded="false" aria-controls="library" ` +
+      `aria-label="Library: every course">${ICON_LIB}<span>Library</span></button>` +
     (ch ? `<div class="crumb">${part ? part.n + " &middot; " : ""}Ch ${ch.id}</div>` : "") +
     `<div class="spacer"></div>` +
     (ch ? `<button class="focus-toggle" type="button" aria-pressed="false">Focus</button>` : "") +
@@ -122,9 +134,129 @@ function buildTopbar(currentId) {
   document.body.prepend(bar);
   bar.querySelector(".theme-toggle").onclick = Theme.toggle;
   bar.querySelector(".sb-toggle").onclick = toggleSidebar;
+  Library.attach(bar.querySelector(".lib-toggle"));
   Theme.apply();
   if (!ch) buildHomeStudy();
 }
+
+/* ------------------------------------------------------------- library */
+/* The course switcher (docs/PLATFORM.md section 4). Every course vendors the
+   registry as assets/courses.js (AIE_COURSES, AIE_TRACKS). All courses live on
+   one origin, so each course's progress key is readable from any of them. */
+
+const ICON_LIB = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h3.5v16H4zM9.5 4H13v16H9.5z"/><path d="m15.2 5.1 3.3-.9 3.6 15.4-3.3.9z"/></svg>';
+
+const Library = (() => {
+  const SITE = "https://ganesh-deepak.github.io";
+  /* Root-relative URLs work on the live site and on a local server that mirrors
+     it (platform/serve.py). From file:// they would point at the disk root. */
+  const abs = u => (location.protocol === "file:" ? SITE : "") + u;
+  let btn = null, panel = null, loading = null;
+
+  function load() {
+    if (typeof AIE_COURSES !== "undefined") return Promise.resolve(true);
+    if (loading) return loading;
+    const me = [...document.scripts].find(s => /assets\/course\.js/.test(s.src));
+    const src = me ? me.src.replace(/course\.js(\?.*)?$/, "courses.js$1") : "assets/courses.js";
+    loading = new Promise(res => {
+      const s = document.createElement("script");
+      s.src = src; s.onload = () => res(true); s.onerror = () => res(false);
+      document.head.appendChild(s);
+    });
+    return loading;
+  }
+
+  function progressOf(c) {
+    if (c.slug === COURSE_CFG.slug) {
+      const done = Object.entries(Store.all()).filter(([k, v]) => k.startsWith("done:") && v).length;
+      return done;
+    }
+    try {
+      const o = JSON.parse(localStorage.getItem(c.store) || "{}") || {};
+      return Object.entries(o).filter(([k, v]) => k.startsWith("done:") && v).length;
+    } catch (e) { return 0; }
+  }
+
+  const STATUS = { live: "", preview: "Outline", planned: "Planned" };
+
+  function render() {
+    const here = COURSE_CFG.slug;
+    const row = c => {
+      const n = progressOf(c), cur = c.slug === here;
+      const go = c.status !== "planned";
+      const meta = c.status === "live"
+        ? `${n}/${c.chapters}<span> ch</span>`
+        : `<span class="lib-status">${STATUS[c.status] || c.status}</span>`;
+      const inner =
+        `<span class="lib-n" style="--pc:var(--part-${c.ink})">${String(c.no).padStart(2, "0")}</span>` +
+        `<span class="lib-t">${c.title}<small>${c.short}</small></span>` +
+        `<span class="lib-m">${meta}</span>` +
+        (c.status === "live" && c.chapters ? `<span class="lib-bar" style="--pc:var(--part-${c.ink})"><i style="width:${Math.min(100, n / c.chapters * 100)}%"></i></span>` : "");
+      return go
+        ? `<a class="lib-c${cur ? " here" : ""}" href="${abs(c.url)}"${cur ? ' aria-current="page"' : ""}>${inner}</a>`
+        : `<div class="lib-c off" aria-disabled="true">${inner}</div>`;
+    };
+    panel.innerHTML =
+      `<div class="lib-h"><span>The library</span><a href="${abs("/")}">All courses &amp; tracks &rarr;</a></div>` +
+      `<div class="lib-list">${AIE_COURSES.map(row).join("")}</div>` +
+      `<div class="lib-f">Progress is shared by every course in this browser.</div>`;
+  }
+
+  function open() {
+    load().then(ok => {
+      if (!panel) {
+        panel = document.createElement("div");
+        panel.id = "library"; panel.className = "library";
+        panel.setAttribute("role", "dialog"); panel.setAttribute("aria-label", "Library");
+        document.body.appendChild(panel);
+      }
+      if (ok && typeof AIE_COURSES !== "undefined") render();
+      else panel.innerHTML = `<div class="lib-h"><span>The library</span></div>` +
+        `<div class="lib-f">The course list could not be loaded. <a href="${SITE}/">Open the library &rarr;</a></div>`;
+      panel.hidden = false;
+      const r = btn.getBoundingClientRect(), w = panel.offsetWidth;
+      panel.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + "px";
+      panel.style.top = (r.bottom + 10) + "px";
+      btn.setAttribute("aria-expanded", "true");
+      (panel.querySelector(".lib-c.here") || panel.querySelector("a"))?.focus({ preventScroll: true });
+    });
+  }
+  function close(refocus) {
+    if (!panel || panel.hidden) return;
+    panel.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+    if (refocus) btn.focus();
+  }
+  const isOpen = () => panel && !panel.hidden;
+
+  function attach(b) {
+    if (!b) return;
+    btn = b;
+    btn.onclick = e => { e.stopPropagation(); isOpen() ? close(true) : open(); };
+    document.addEventListener("click", e => {
+      if (isOpen() && !panel.contains(e.target) && e.target !== btn) close(false);
+    });
+    document.addEventListener("keydown", e => { if (e.key === "Escape" && isOpen()) close(true); });
+    load().then(markXrefs);
+  }
+
+  /* Cross-course links: <a class="xref" data-course="slug" data-ch="15">.
+     Mark the ones whose target chapter this reader has finished. */
+  function markXrefs() {
+    if (typeof AIE_COURSES === "undefined") return;
+    document.querySelectorAll("a.xref[data-course][data-ch]").forEach(a => {
+      const c = AIE_COURSES.find(x => x.slug === a.dataset.course);
+      if (!c) return;
+      if (location.protocol === "file:" && a.getAttribute("href").startsWith("/")) a.href = SITE + a.getAttribute("href");
+      let o = {};
+      try { o = c.slug === COURSE_CFG.slug ? Store.all() : JSON.parse(localStorage.getItem(c.store) || "{}") || {}; } catch (e) { /* blocked */ }
+      if (o["done:" + a.dataset.ch]) { a.classList.add("done"); a.title = "You finished this chapter"; }
+      if (!a.title) a.title = c.title;
+    });
+  }
+
+  return { attach, open, close, load, progressOf };
+})();
 
 /* ----------------------------------------------------------- prev/next */
 
@@ -877,7 +1009,7 @@ function buildHomeStudy() {
     <div class="home-study-mark">${hasResume ? "Resume" : "Start small"}</div>
     <div class="home-study-copy">
       <strong id="home-study-title">${hasResume ? chapter.id + ". " + chapter.t : "One focused bite is enough."}</strong>
-      <span>${hasResume ? resume.section : "Open Chapter 1 with everything except the first section tucked away."}</span>
+      <span>${hasResume ? resume.section : "Open the first chapter with everything except its first section tucked away."}</span>
       <small>${sectionDone} sections · ${exerciseDone} exercises · ${quizDone} checks saved</small>
     </div>
     <a class="btn primary" href="${href}">${hasResume ? "Continue this bite" : "Start a 10-min bite"} &rarr;</a>`;
@@ -901,10 +1033,13 @@ function buildSidebar(currentId) {
      chapter is a raised card whose section list folds with its own button.
      By default only the part you are reading is open (on the index, all of
      them), so the list stays short. Whatever you open or fold is remembered
-     (tfs-side-parts / tfs-side-secs); the part you are reading always opens. */
+     (tfs-side-parts / tfs-side-secs); the part you are reading always opens.
+     Part folding is per course (part 2 means something different in each);
+     Transformers keeps its original key so existing readers lose nothing. */
+  const PART_KEY = COURSE_CFG.slug === "transformers" ? "tfs-side-parts" : COURSE_CFG.slug + "-side-parts";
   const store = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } };
   let partState = {};
-  try { partState = JSON.parse(store("tfs-side-parts") || "{}"); } catch (e) { partState = {}; }
+  try { partState = JSON.parse(store(PART_KEY) || "{}"); } catch (e) { partState = {}; }
   if (!partState || Array.isArray(partState) || typeof partState !== "object") partState = {};
   const secsFolded = store("tfs-side-secs") === "closed";
   const CARET = `<svg class="caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
@@ -956,7 +1091,7 @@ function buildSidebar(currentId) {
       body.hidden = !open;
       const pi = +btn.closest(".sb-part").dataset.pi;
       partState[pi] = open ? "open" : "closed";
-      store("tfs-side-parts", JSON.stringify(partState));
+      store(PART_KEY, JSON.stringify(partState));
     });
   });
   const secBtn = aside.querySelector(".sb-sec-toggle");

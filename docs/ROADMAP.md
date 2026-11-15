@@ -10,19 +10,29 @@ the `<<< >>>` placeholders at the top of the prompt.
 
 ## Status
 
-| # | Course | Slug | Repo (Pages path) | Ink | Status |
-|---|---|---|---|---|---|
-| 0 | Transformers From Scratch | `transformers` | `/transformers-from-scratch/` | `--part-2` | **live**, 28 chapters, being raised to grade A throughout |
-| 1 | Evaluation & Experimentation for LLM Systems | `evals` | `/llm-evaluation/` | `--part-4` | planned, build first |
-| 2 | Post-Training in Practice | `posttraining` | `/post-training/` | `--part-1` | planned |
-| 3 | GPU Programming: CUDA & Triton | `gpu` | `/gpu-programming/` | `--part-3` | planned |
-| 4 | Inference Engineering at Scale | `inference` | `/inference-engineering/` | `--part-5` | planned |
-| 5 | Retrieval & Context Engineering | `retrieval` | `/retrieval/` | `--part-6` | planned |
-| 6 | Agents & Tool Use | `agents` | `/agents/` | `--part-0` | planned |
-| 7 | Production AI Systems | `production` | `/production-ai/` | `--part-7` | planned |
-| 8 | AI Security & Red Teaming | `security` | `/ai-security/` | `--part-1` | planned |
-| 9 | Mathematics for ML, from First Principles | `maths` | `/ml-maths/` | `--part-6` | planned |
-| 10 | Multimodal & Generative Models Beyond Text | `multimodal` | `/multimodal/` | `--part-3` | planned |
+The library is live at <https://ganesh-deepak.github.io/>, with a **Library** switcher in
+every course's masthead. Each new course below has a complete **outline site**: every chapter
+page exists with its planned sections, its "Builds on" links (into Transformers and across
+courses) and what the reader builds. The detailed curricula are in the hub repository,
+`curricula/<slug>.txt` (source) and `docs/curricula/<slug>.md` (readable); the outline sites
+are generated from them, so the outline under review is the outline each course is built against.
+
+| # | Course | Slug | Pages path | Ink | Chapters | Planned hours | Status |
+|---|---|---|---|---|---|---|---|
+| 0 | Transformers From Scratch | `transformers` | `/transformers-from-scratch/` | `--part-2` | 28 | ~83 | **live**, every chapter graded A |
+| 1 | Evaluation & Experimentation for LLM Systems | `evals` | `/llm-evaluation/` | `--part-4` | 18 | ~23 | outline, build first |
+| 2 | Post-Training in Practice | `posttraining` | `/post-training/` | `--part-1` | 20 | ~25 | outline |
+| 3 | GPU Programming: CUDA & Triton | `gpu` | `/gpu-programming/` | `--part-3` | 22 | ~29 | outline |
+| 4 | Inference Engineering at Scale | `inference` | `/inference-engineering/` | `--part-5` | 20 | ~26 | outline |
+| 5 | Retrieval & Context Engineering | `retrieval` | `/retrieval/` | `--part-6` | 18 | ~22 | outline |
+| 6 | Agents & Tool Use | `agents` | `/agents/` | `--part-0` | 18 | ~22 | outline |
+| 7 | Production AI Systems | `production` | `/production-ai/` | `--part-7` | 16 | ~18 | outline |
+| 8 | AI Security & Red Teaming | `security` | `/ai-security/` | `--part-1` | 14 | ~17 | outline |
+| 9 | Mathematics for ML, from First Principles | `maths` | `/ml-maths/` | `--part-6` | 20 | ~20 | outline |
+| 10 | Multimodal & Generative Models Beyond Text | `multimodal` | `/multimodal/` | `--part-3` | 18 | ~22 | outline |
+
+Planned hours are reading-and-exercise estimates from each chapter's planned minutes; written
+Transformers chapters came out about 15% longer than planned, so expect the same.
 
 Inks repeat after eight; no two courses in the same track share one.
 

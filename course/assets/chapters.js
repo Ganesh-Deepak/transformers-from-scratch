@@ -3,6 +3,14 @@
    and the sidebar). Order here IS the dependency order: each chapter uses what
    the previous one built. */
 
+/* This course's identity in the library (docs/PLATFORM.md). course.js reads
+   it for the masthead, the progress key and the Library switcher. */
+const COURSE = {
+  slug: "transformers",
+  title: "Transformers <i>From Scratch</i>",
+  store: "tfs-progress-v1",
+};
+
 const PARTS = [
   {
     n: "Part 0", t: "Learning to See Numbers and Tensors",

@@ -7,6 +7,13 @@ Built for someone starting with LLMs who wants **real depth**, and who finds ten
 and matrix operations hard to picture. Every dimension is drawn. Every claim is derived or
 measured. Nothing is asserted and left there.
 
+It is the first course of [**the library**](https://ganesh-deepak.github.io/): eleven courses
+on one origin that share one design, one record of progress and links between chapters. The
+**Library** button in every course's top bar switches between them. The hub, the registry and
+the curricula of the ten other courses live in
+[Ganesh-Deepak/ganesh-deepak.github.io](https://github.com/Ganesh-Deepak/ganesh-deepak.github.io);
+`docs/PLATFORM.md` here is the contract they all follow.
+
 ---
 
 ## Start here
@@ -52,8 +59,8 @@ course/            28 interactive chapters. Open with serve.py. This is the cour
                      numfmt.js (every number format, verified against PyTorch)
                      chapters.js — the outline; chapter order lives here and nowhere else
 
-notebooks/         26 runnable notebooks, one per chapter (Ch 22 is covered by its tests,
-                     the capstone is the project). Every cell asserts the claim it recomputes.
+notebooks/         28 runnable notebooks, one per chapter; 27_capstone is the capstone's grader
+                     (every milestone's tests, runnable). Every cell asserts the claim it recomputes.
 tfs/               Reference implementation — working, tested code, shapes on every line
   tokenizer.py       byte-level BPE (pure Python, no deps)
   model.py           RMSNorm + RoPE + GQA + SwiGLU + KV cache
@@ -106,7 +113,7 @@ data/              downloaded corpus + trained tokenizers (created on first run)
 | **VI · Making it useful** | 23–26 | SFT, **LoRA**, RLHF/PPO with GAE, **DPO derived line by line**, GRPO & RLVR, **evaluating LLMs** |
 | **VII · Capstone** | 27 | Build the whole thing: RMSNorm+RoPE+GQA+SwiGLU+cache, trained, DPO-aligned, LoRA-tuned, evaluated |
 
-~83 hours of work, 159k words. 244 quiz questions, 182 exercises, 15 interactive widgets, 26 companion
+~83 hours of work, 159k words. 244 quiz questions, 182 exercises, 15 interactive widgets, 28 companion
 notebooks and 199 tests. Every chapter is graded **A** in [`docs/CONTENT-AUDIT.md`](docs/CONTENT-AUDIT.md).
 
 ### Four chapters that are usually missing

@@ -2875,6 +2875,629 @@ def _nb25():
     ]
 
 
+@notebook("22_frontier")
+def _nb22():
+    return [
+        md("""
+        # Chapter 22 — The 2026 frontier: sparse, windowed and linear attention
+
+        Every number in Chapter 22, recomputed from `tfs/linear_attention.py` and `tfs/foundations.py`, plus
+        small working versions of the mechanisms the chapter describes: a top-k sparse-attention layer in the
+        style of DeepSeek Sparse Attention, a sliding-window mask, a softmax with a sink, linear attention in its
+        two forms, the delta rule as a gradient step, the chunked training algorithm, and the memory and FLOP
+        arithmetic of hybrids. Each cell **asserts** what it checks, so `python tests/run_notebooks.py 22` fails
+        if the chapter and the code disagree.
+
+        Shapes are written for **one head**: `q, k : (T, dk)`, `v : (T, dv)`, the state `S : (dv, dk)`.
+        """),
+        code(SETUP, """
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+        import tfs.linear_attention as LA
+        from tfs.foundations import softmax_with_sink
+        def qkvba(T=100, dk=16, dv=8, seed=0):
+            g = torch.Generator().manual_seed(seed)
+            q = torch.randn(T, dk, generator=g, dtype=torch.float64)                      # (T, dk)
+            k = F.normalize(torch.randn(T, dk, generator=g, dtype=torch.float64), dim=-1)   # (T, dk) unit keys
+            v = torch.randn(T, dv, generator=g, dtype=torch.float64)                      # (T, dv)
+            b = torch.rand(T, generator=g, dtype=torch.float64)                            # (T,)  write strength
+            a = torch.rand(T, generator=g, dtype=torch.float64) * 0.5 + 0.5                # (T,)  forget gate
+            return q, k, v, b, a
+        """),
+        md("""
+        ## 22.1 — sparse attention: index cheaply, attend to the top k
+
+        A toy of DSA's two stages. A cheap *indexer* (here: a 4-wide projection of q and k, ReLU-gated) scores
+        every past position; real attention then runs over only the `k` best. Two checks: with `k = T` the
+        layer **is** dense causal attention, and the expensive stage's score count falls from `T(T+1)/2` to
+        about `T·k`.
+        """),
+        code("""
+        torch.manual_seed(0)
+        T, d, d_idx, topk = 256, 32, 4, 32
+        q, k, v = torch.randn(T, d), torch.randn(T, d), torch.randn(T, d)          # (T, d) each
+        Wq_i, Wk_i = torch.randn(d, d_idx), torch.randn(d, d_idx)                   # the indexer's projections
+        causal = torch.ones(T, T, dtype=torch.bool).tril()                          # (T, T)
+
+        def dense(q, k, v):
+            s = (q @ k.T) / math.sqrt(d)                                            # (T, T)
+            return s.masked_fill(~causal, float("-inf")).softmax(-1) @ v            # (T, d)
+
+        def sparse(q, k, v, topk):
+            idx = F.relu((q @ Wq_i) @ (k @ Wk_i).T)                                 # (T, T)  cheap scores
+            idx = idx.masked_fill(~causal, float("-inf"))
+            kk = min(topk, T)
+            sel = idx.topk(kk, dim=-1).indices                                      # (T, kk) chosen positions
+            keep = torch.zeros(T, T, dtype=torch.bool).scatter_(1, sel, True) & causal
+            s = (q @ k.T) / math.sqrt(d)
+            return s.masked_fill(~keep, float("-inf")).softmax(-1) @ v, keep.sum().item()
+
+        full, _ = sparse(q, k, v, T)
+        assert torch.allclose(full, dense(q, k, v), atol=1e-5)                    # k = T recovers dense attention
+        out, n_scores = sparse(q, k, v, topk)
+        dense_scores = T * (T + 1) // 2
+        print(f"expensive scores: dense {dense_scores:,}  top-{topk} {n_scores:,}  ({dense_scores / n_scores:.1f}x fewer)")
+        assert n_scores <= T * topk and dense_scores / n_scores > 4                 # O(L^2) -> O(L k)
+        """),
+        md("""
+        ## 22.2 — windows: the KV cache that stops growing
+
+        gpt-oss-120b: 36 layers, half of them banded to 128 tokens, 8 KV heads of width 64, bf16. The chapter's
+        numbers, then a mask check that a window layer really reads only the last `w` tokens.
+        """),
+        code("""
+        per_tok = LA.kv_cache_bytes_per_token(18, 8, 64)                 # the 18 full layers
+        window = per_tok * 128                                            # the 18 window layers, capped
+        T = 131_072
+        alternating, all_full = per_tok * T + window, 2 * per_tok * T
+        print(f"per token {per_tok:,} B  window total {window / 1e6:.1f} MB  "
+              f"alternating {alternating / 1e9:.2f} GB  all-full {all_full / 1e9:.2f} GB")
+        assert per_tok == 36_864 and window == 4_718_592
+        assert round(per_tok * T / 1e9, 2) == 4.83 and round(all_full / 1e9, 2) == 9.66
+        assert abs(alternating / all_full - 0.5) < 0.001                  # "halves the cache, almost exactly"
+
+        w, n = 4, 10
+        i = torch.arange(n)
+        band = (i[:, None] >= i[None, :]) & (i[:, None] - i[None, :] < w) # (n, n) query i sees keys i-w+1..i
+        assert band.sum(-1).tolist() == [1, 2, 3, 4, 4, 4, 4, 4, 4, 4]    # cost O(w), not O(T)
+        """),
+        md("## 22.2 — the worked example: a sink logit lets a head attend to nothing"),
+        code("""
+        scores = [2.0, 1.0, 0.5]
+        none = torch.tensor(scores, dtype=torch.float64).softmax(-1)
+        s0, s4 = softmax_with_sink(scores, 0.0), softmax_with_sink(scores, 4.0)
+        print("no sink", none.numpy().round(4), " s=0", s0.numpy().round(4), round(s0.sum().item(), 4),
+              " s=4 sum", round(s4.sum().item(), 4))
+        assert [round(x, 4) for x in none.tolist()] == [0.6285, 0.2312, 0.1402]
+        assert [round(x, 4) for x in s0.tolist()] == [0.5793, 0.2131, 0.1293] and round(s0.sum().item(), 4) == 0.9216
+        assert round(s4.sum().item(), 4) == 0.1772
+        # s = 0 is the "off-by-one" softmax: e^x / (1 + sum e^x)
+        e = torch.tensor(scores, dtype=torch.float64).exp()
+        assert torch.allclose(s0, e / (1 + e.sum()))
+        # and the order of real weights never changes: the sink only scales them down
+        assert torch.allclose(s4 / s4.sum(), none)
+        """),
+        md("""
+        ## 22.3 — linear attention: one recurrence, one masked matmul
+
+        Drop the softmax and attention becomes `o = ((Q Kᵀ) ⊙ causal) V`. Reassociate and it is a recurrence
+        on a `(dv, dk)` state: write `S += v kᵀ`, read `S q`. Both forms, equal to float64 precision.
+        """),
+        code("""
+        q, k, v, _, _ = qkvba()
+        o_rec, S = LA.linear_attention_recurrent(q, k, v)                # (T, dv), (dv, dk)
+        o_par = LA.linear_attention_parallel(q, k, v)                    # (T, dv)
+        print("state", tuple(S.shape), " max |rec - par|", (o_rec - o_par).abs().max().item())
+        assert S.shape == (8, 16) and torch.allclose(o_rec, o_par, atol=1e-10)
+        # the state is the sum of outer products: memory constant in T
+        assert torch.allclose(S, v.T @ k)
+        """),
+        md("""
+        ## 22.4 — the delta rule: write by correcting the error
+
+        The 2-D worked example: write `(k₁, v₁)`, `(k₂, v₂)`, then a **new** value for `k₁`. Linear attention
+        returns the sum of both `k₁` values; the delta rule returns the new one. Then the identity the chapter
+        builds on: one delta-rule write is one SGD step on `½‖S k − v‖²` with learning rate β.
+        """),
+        code("""
+        lin, delta, S_lin, S_delta = LA.overwrite_demo()
+        print("read k1 -> linear", lin, " delta", delta)
+        assert lin == [2.0, 5.0] and delta == [-1.0, 4.0]
+        assert S_lin == [[2.0, 0.0], [5.0, 2.0]] and S_delta == [[-1.0, 0.0], [4.0, 2.0]]
+
+        torch.manual_seed(0)
+        S0 = torch.randn(4, 3, dtype=torch.float64, requires_grad=True)          # (dv, dk)
+        kk = F.normalize(torch.randn(3, dtype=torch.float64), dim=0)
+        vv, beta = torch.randn(4, dtype=torch.float64), 0.7
+        (0.5 * (S0 @ kk - vv).pow(2).sum()).backward()
+        sgd = S0.detach() - beta * S0.grad
+        _, S1 = LA.delta_rule_recurrent(kk[None], kk[None], vv[None],
+                                        torch.tensor([beta], dtype=torch.float64), S0=S0.detach())
+        assert torch.allclose(sgd, S1, atol=1e-12)
+        print("delta write == one SGD step: True")
+        """),
+        md("""
+        ## 22.4 — what the state can remember
+
+        Associative recall with one 64-wide head. With orthogonal keys both rules are exact up to `dk` pairs.
+        With random unit keys, linear attention's error grows like `√((n−1)/dk)`; the delta rule degrades far
+        more slowly; softmax attention, which keeps every pair, stays exact.
+        """),
+        code("""
+        for n in (8, 32, 64):
+            assert LA.recall_error(n, 64, "linear", "orthogonal") < 1e-10
+            assert LA.recall_error(n, 64, "delta", "orthogonal") < 1e-10
+        print(f"{'n':>5} {'linear':>8} {'sqrt law':>9} {'delta':>7} {'softmax':>8}")
+        lin = {}
+        for n in (8, 64, 256, 1024):
+            lin[n] = LA.recall_error(n, 64, "linear")
+            print(f"{n:5d} {lin[n]:8.3f} {LA.interference_std(n, 64):9.3f} "
+                  f"{LA.recall_error(n, 64, 'delta'):7.3f} {LA.recall_error(n, 64, 'softmax'):8.1e}")
+        assert [round(lin[n], 3) for n in (8, 64, 256, 1024)] == [0.278, 1.022, 1.983, 4.005]
+        for n in (64, 256, 1024):
+            assert abs(lin[n] / LA.interference_std(n, 64) - 1) < 0.04
+        assert round(LA.recall_error(1024, 64, "delta"), 3) == 1.349
+        assert LA.recall_error(1024, 64, "softmax") < 1e-6
+        """),
+        md("""
+        ### Exercise — recall by age (dk = 32)
+
+        The square-root law's predictions, the measured linear-attention errors, and the delta rule's bias
+        toward the recent past: the newest tenth of 512 pairs is recalled better than the oldest tenth.
+        """),
+        code("""
+        for n, pred in ((32, 0.984), (128, 1.992), (512, 3.996)):
+            assert round(LA.interference_std(n, 32), 3) == pred
+        assert round(LA.recall_error(128, 32, "linear"), 3) == 2.130
+        assert round(LA.recall_error(512, 32, "linear"), 3) == 3.989
+        old, new = LA.recall_error_by_age(512, 32, "delta")
+        lo, ln_ = LA.recall_error_by_age(512, 32, "linear")
+        print(f"delta  oldest {old:.3f}  newest {new:.3f}     linear  oldest {lo:.3f}  newest {ln_:.3f}")
+        assert (round(old, 3), round(new, 3)) == (1.460, 0.970) and new < old      # recency-weighted
+        assert (round(lo, 3), round(ln_, 3)) == (3.925, 4.014)                     # linear: no recency at all
+        """),
+        md("""
+        ## 22.5 — the chunked form equals the recurrence
+
+        Training cannot loop over 100k tokens. Within a chunk of `C` tokens the delta rule is a few matmuls and
+        one triangular solve; only the chunk-to-chunk state is sequential. Every chunk size, gated and ungated,
+        must give the recurrence's outputs **and** final state.
+        """),
+        code("""
+        q, k, v, b, a = qkvba()
+        for C in (1, 7, 16, 64, 100):
+            o1, S1 = LA.gated_delta_rule_recurrent(q, k, v, b, a)
+            o2, S2 = LA.chunked_delta_rule(q, k, v, b, a, chunk=C)
+            assert torch.allclose(o1, o2, atol=1e-10) and torch.allclose(S1, S2, atol=1e-10)
+            o1, _ = LA.delta_rule_recurrent(q, k, v, b)
+            o2, _ = LA.chunked_delta_rule(q, k, v, b, chunk=C)
+            assert torch.allclose(o1, o2, atol=1e-10)
+        print("chunked == recurrent for C in 1, 7, 16, 64, 100 (gated and ungated)")
+
+        f_lin = LA.chunked_delta_flops_per_token(64, 128, 128)
+        f_4k = LA.softmax_attention_flops_per_token(4096, 128, 128)
+        f_256k = LA.softmax_attention_flops_per_token(262_144, 128, 128)
+        print(f"FLOPs/token: chunked delta {f_lin:,}   softmax @4k {f_4k:,.0f}   @256k {f_256k:,.0f}")
+        assert (f_lin, f_4k, f_256k) == (155_648, 1_048_576, 67_108_864)
+        # softmax attention's per-token cost passes the delta rule's at a few hundred tokens
+        cross = next(T for T in range(2, 10_000) if LA.softmax_attention_flops_per_token(T, 128, 128) > f_lin)
+        print("crossover at T =", cross)
+        assert 500 < cross < 700
+        """),
+        md("""
+        ## 22.6 — hybrids: the memory arithmetic
+
+        Qwen3-Next-80B-A3B: 12 gated-attention layers (2 KV heads × 256) and 36 Gated DeltaNet layers (32 heads,
+        128 × 128 state, fp32). At a 262,144-token context the hybrid needs about a quarter of the memory of the
+        same model with attention in every layer. Exercise 22.5's 1 : 3 design breaks even at 512 tokens.
+        """),
+        code("""
+        assert LA.kv_cache_bytes_per_token(12, 2, 256) == 24_576
+        assert LA.linear_state_bytes(36, 32, 128, 128) == 75_497_472
+        hyb, dense_b = LA.qwen3_next_memory(262_144)
+        print(f"hybrid {hyb / 1e9:.3f} GB   all-attention {dense_b / 1e9:.3f} GB   ratio {hyb / dense_b:.3f}")
+        assert round(hyb / 1e9, 3) == 6.518 and round(dense_b / 1e9, 3) == 25.770
+        # the delta state is FIXED: at short context the hybrid is the more expensive one
+        short_h, short_d = LA.qwen3_next_memory(512)
+        assert short_h > short_d
+        even_h, even_d = LA.qwen3_next_memory(1024)
+        assert even_h == even_d                     # break-even at exactly 1,024 tokens
+
+        # Exercise 22.5: 64 attention layers vs 16 attention + 48 delta layers, 8 KV heads x 128
+        full, hybrid_kv = LA.kv_cache_bytes_per_token(64, 8, 128), LA.kv_cache_bytes_per_token(16, 8, 128)
+        state = LA.linear_state_bytes(48, 32, 128, 128)
+        assert (full, hybrid_kv, state) == (262_144, 65_536, 100_663_296)
+        print("break-even context:", state // (full - hybrid_kv), "tokens")
+        assert state / (full - hybrid_kv) == 512
+        """),
+        md("""
+        ## Summary
+
+        | claim | checked |
+        |---|---|
+        | top-k sparse attention with k = T is dense attention; k ≪ T cuts the expensive scores to ~T·k | §22.1 |
+        | gpt-oss alternation: 36,864 B/token, 4.7 MB of window cache, 4.83 vs 9.66 GB at 131k | §22.2 |
+        | sink weights 0.6285/0.2312/0.1402 → 0.9216 total at s = 0 → 0.1772 at s = 4 | §22.2 |
+        | linear attention's recurrent and parallel forms agree | §22.3 |
+        | the delta rule overwrites; one write is one SGD step | §22.4 |
+        | recall error √((n−1)/dk) for linear attention; the delta rule is recency-weighted | §22.4 |
+        | the chunked algorithm equals the recurrence; 155,648 FLOPs/token, independent of T | §22.5 |
+        | Qwen3-Next: 6.518 vs 25.770 GB at 262k; the 1 : 3 hybrid breaks even at 512 tokens | §22.6 |
+        """),
+    ]
+
+
+@notebook("27_capstone")
+def _nb27():
+    return [
+        md("""
+        # Chapter 27 — The capstone, as a grader
+
+        The capstone is a project you build yourself. This notebook is its **test bench**: every "tests that
+        must pass" block of Milestones 1–7, written as cells that run. Out of the box it grades the course's
+        reference implementation (`tfs/`), at a scale that runs on a laptop CPU in a few minutes, so every
+        assertion is known to be achievable.
+
+        **To grade your own build**, change the imports in the next cell to point at your modules (your
+        tokenizer, `Config`, `Model`, LoRA wrapper and `sequence_logp`). They must keep the same signatures:
+        `model(ids, targets=None, caches=None, pos_offset=0) -> (logits, loss, caches)`.
+
+        The scale here is deliberately tiny (a few hundred training steps on the course's own prose). The full
+        milestone targets, such as validation loss 1.6–2.2 on TinyStories, need the real run described in the
+        chapter; this notebook checks *correctness*, which is the part that does not depend on compute.
+        """),
+        code(SETUP, CORPUS_HELPER, """
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+        import time, random
+        # ----- swap these for your own modules to grade your build -----
+        from tfs.tokenizer import BPETokenizer
+        from tfs.model import Config, Model, apply_rope, build_rope_cache
+        from tfs.lora import apply_lora, lora_modules, merge_all, unmerge_all, trainable_params
+        from tfs.dpo import sequence_logp, dpo_loss
+        # ----------------------------------------------------------------
+        from tfs.evals import (pass_at_k, ngrams, ngram_overlap, bootstrap_ci, paired_bootstrap_diff,
+                               unpaired_bootstrap_diff, n_items_paired)
+        TEXT = course_text("ch05-attention.html", "ch08-block.html", "ch11-training.html", "ch15-kvcache.html")
+        print(f"corpus: {len(TEXT):,} characters of course prose")
+        """),
+        md("""
+        ## The specification
+
+        The chapter's `Config` must count to 12,587,904 parameters with tied embeddings, by hand and in the
+        built model.
+        """),
+        code("""
+        spec = Config()                                   # vocab 8192, d 384, 6 layers, 6/2 heads, d_ff 1024
+        built = sum(p.numel() for p in Model(spec).parameters())
+        print(f"hand count {spec.n_params():,}   built {built:,}")
+        assert spec.n_params() == built == 12_587_904
+        """),
+        md("""
+        ## Milestone 1 — the tokenizer
+
+        Trained here with 512 tokens of vocabulary on ~40k characters, so it finishes in seconds. Round-trip
+        on random slices and on non-ASCII text (byte-level), every id inside the vocabulary, and real compression.
+        The chapter's ≥ 2.5× target is for an 8192 vocabulary; at 512 the bar is ≥ 1.8×.
+        """),
+        code("""
+        t0 = time.time()
+        tok = BPETokenizer().train(TEXT[:40_000], vocab_size=512)
+        tok.add_special_tokens(["<|bos|>", "<|eos|>", "<|user|>", "<|assistant|>"])
+        print(f"trained in {time.time() - t0:.1f}s, vocab {tok.vocab_size}")
+        rng = random.Random(0)
+        for _ in range(1000):
+            i = rng.randrange(len(TEXT) - 200); s = TEXT[i:i + rng.randrange(1, 200)]
+            assert tok.decode(tok.encode(s)) == s
+        exotic = "🤖 émoji ñ 中文"
+        assert tok.decode(tok.encode(exotic)) == exotic                   # byte-level: nothing is out of vocabulary
+        held = TEXT[40_000:60_000]                                        # compression on text it did not train on
+        ratio = len(held.encode()) / len(tok.encode(held))
+        print(f"held-out compression {ratio:.2f} bytes/token")
+        assert ratio >= 1.8
+        assert all(i < tok.vocab_size for i in tok.encode(held))
+        sp = tok.encode("<|user|>hi<|assistant|>")
+        assert len(sp) == 1 + len(tok.encode("hi")) + 1                   # each special token is ONE id
+        """),
+        md("""
+        ## Milestone 2 — the model: the seven tests
+
+        A small config with the same structure (GQA 6 query heads over 2 KV heads, RoPE, SwiGLU, tied embeddings).
+        """),
+        code("""
+        torch.manual_seed(0)
+        cfg = Config(vocab_size=tok.vocab_size, d_model=96, n_layer=2, n_head=6, n_kv_head=2,
+                     d_head=16, d_ff=256, max_T=128)
+        model = Model(cfg)
+        ids = torch.randint(0, cfg.vocab_size, (2, 16))
+
+        # 1. shapes
+        logits, loss, _ = model(ids, targets=ids)
+        assert logits.shape == (2, 16, cfg.vocab_size)
+        # 2. loss at init ~ ln V
+        print(f"loss at init {loss.item():.3f}   ln V {math.log(cfg.vocab_size):.3f}")
+        assert abs(loss.item() - math.log(cfg.vocab_size)) < 0.3
+        # 3. causality: perturb token 8, outputs before it must not move
+        ids2 = ids.clone(); ids2[0, 8] = (ids2[0, 8] + 1) % cfg.vocab_size
+        a, b = model(ids)[0], model(ids2)[0]
+        assert torch.allclose(a[0, :8], b[0, :8], atol=1e-5) and not torch.allclose(a[0, 8], b[0, 8])
+        # 4. RoPE scores depend only on the offset
+        cos, sin = build_rope_cache(64, 16)
+        qv, kv = torch.randn(1, 1, 1, 16), torch.randn(1, 1, 1, 16)
+        def score(i, j):
+            qi, _ = apply_rope(qv, qv, cos[i:i + 1], sin[i:i + 1])
+            _, kj = apply_rope(kv, kv, cos[j:j + 1], sin[j:j + 1])
+            return (qi * kj).sum().item()
+        assert abs(score(5, 8) - score(50, 53)) < 1e-5
+        """),
+        code("""
+        # 5. GQA grouping: a per-head loop, written from the definition, equals the vectorised module
+        attn = model.blocks[0].attn
+        x = torch.randn(2, 16, cfg.d_model)
+        cos, sin = model.cos[:16], model.sin[:16]
+        def gqa_loop(x):
+            B, T, _ = x.shape
+            q = attn.q_proj(x).view(B, T, 6, 16).transpose(1, 2)            # (B, 6, T, 16)
+            k = attn.k_proj(x).view(B, T, 2, 16).transpose(1, 2)            # (B, 2, T, 16)
+            v = attn.v_proj(x).view(B, T, 2, 16).transpose(1, 2)
+            q, k = apply_rope(q, k, cos, sin)
+            mask = torch.ones(T, T, dtype=torch.bool).tril()
+            heads = []
+            for h in range(6):
+                g = h // 3                                                  # query heads 0,1,2 -> KV head 0
+                s = (q[:, h] @ k[:, g].transpose(-1, -2)) / math.sqrt(16)   # (B, T, T)
+                heads.append(s.masked_fill(~mask, float("-inf")).softmax(-1) @ v[:, g])   # (B, T, 16)
+            return attn.o_proj(torch.cat(heads, -1))                        # (B, T, C)
+        assert torch.allclose(gqa_loop(x), attn(x, cos, sin)[0], atol=1e-5)
+        # 6. every parameter receives a gradient
+        model.zero_grad(); model(ids, targets=ids)[1].backward()
+        for n, p in model.named_parameters():
+            assert p.grad is not None and p.grad.abs().sum() > 0, n
+        # 7. the hand count matches
+        assert abs(cfg.n_params() - sum(p.numel() for p in model.parameters())) < 10
+        print("all seven model tests pass")
+        """),
+        md("""
+        ## Milestone 3 — training
+
+        First the overfit-one-batch test (loss < 0.1 on one fixed batch within 500 steps), then a short real
+        run on the tokenized corpus with AdamW, warmup and cosine decay. The run must beat the unigram baseline
+        on held-out text, the first evidence that it learned context and not only token frequencies.
+        """),
+        code("""
+        torch.manual_seed(0)
+        m = Model(cfg)
+        opt = torch.optim.AdamW(m.parameters(), lr=3e-3)
+        fixed = torch.randint(0, cfg.vocab_size, (4, 32))
+        for step in range(500):
+            _, l, _ = m(fixed, targets=fixed)
+            opt.zero_grad(); l.backward(); opt.step()
+            if l.item() < 0.1:
+                break
+        print(f"overfit one batch: loss {l.item():.4f} at step {step}")
+        assert l.item() < 0.1
+        """),
+        code("""
+        from tfs.train import make_optimizer, lr_at, get_batch, bits_per_byte
+        data = torch.tensor(tok.encode(TEXT), dtype=torch.long)
+        n_val = len(data) // 10
+        train_d, val_d = data[:-n_val], data[-n_val:]
+        bytes_per_tok = len(TEXT.encode()) / len(data)
+
+        @torch.no_grad()
+        def val_loss(model, iters=10):
+            model.eval(); g = torch.Generator().manual_seed(1)
+            out = []
+            for _ in range(iters):
+                i = torch.randint(0, len(val_d) - 65, (8,), generator=g)
+                x = torch.stack([val_d[j:j + 64] for j in i])
+                out.append(model(x, targets=x)[1].item())
+            model.train(); return sum(out) / len(out)
+
+        torch.manual_seed(1337)
+        base = Model(cfg)
+        opt = make_optimizer(base, 3e-3)
+        steps, t0 = 400, time.time()
+        v0 = val_loss(base)
+        for step in range(steps):
+            for g in opt.param_groups: g["lr"] = lr_at(step, 3e-3, 40, steps)
+            x = get_batch(train_d, 16, 64)
+            _, l, _ = base(x, targets=x)
+            opt.zero_grad(); l.backward(); torch.nn.utils.clip_grad_norm_(base.parameters(), 1.0); opt.step()
+        v1 = val_loss(base)
+        counts = torch.bincount(train_d, minlength=cfg.vocab_size).float() + 1
+        unigram = -(counts / counts.sum()).log()[val_d].mean().item()      # best context-free model
+        print(f"{steps} steps in {time.time() - t0:.0f}s: val {v0:.3f} -> {v1:.3f}  "
+              f"(unigram {unigram:.3f}, {bits_per_byte(v1, bytes_per_tok):.2f} bits/byte)")
+        assert abs(v0 - math.log(cfg.vocab_size)) < 0.3                   # the step-0 check
+        assert v1 < unigram - 0.3                                          # learned context
+        """),
+        md("""
+        ## Milestone 4 — the KV cache
+
+        The test that catches all three cache bugs of Chapter 15 (RoPE offset, causal mask at decode, stale
+        cache): greedy decoding with and without the cache must produce identical tokens. Then the timing:
+        cached decoding gets faster relative to uncached as the sequence grows.
+        """),
+        code("""
+        prompt = torch.tensor([tok.encode("The attention ")])
+        torch.manual_seed(0); a = base.generate(prompt, 60, temperature=0, use_cache=False)
+        torch.manual_seed(0); b = base.generate(prompt, 60, temperature=0, use_cache=True)
+        assert torch.equal(a, b), "cache changes the output: check the RoPE offset and is_causal"
+        print("greedy sample:", repr(tok.decode(b[0].tolist())[:160]))
+
+        def timed(use_cache, n=100):
+            t0 = time.perf_counter(); base.generate(prompt, n, temperature=0, use_cache=use_cache)
+            return time.perf_counter() - t0
+        timed(True, 5)                                                     # warm-up
+        t_c, t_u = timed(True), timed(False)
+        print(f"100 tokens: cached {t_c * 1e3:.0f} ms, uncached {t_u * 1e3:.0f} ms ({t_u / t_c:.1f}x)")
+        assert t_u > t_c
+        """),
+        md("""
+        ## Milestone 5 — SFT with prompt masking, then DPO
+
+        A synthetic preference axis, as the chapter suggests: answer *briefly* (chosen) rather than *ramble*
+        (rejected). SFT first, with prompt tokens masked to −100, on a mix of both styles, so the SFT model
+        rambles about half the time and DPO has something to fix. Then DPO at β = 0.1 against the frozen SFT
+        model. Ranking accuracy on **held-out** pairs must exceed 0.8.
+
+        The second assertion is the one people skip. DPO's loss can be driven to zero by pushing *both*
+        responses' log-probabilities down, the rejected one faster. The ranking is then perfect and the model
+        is broken. When this notebook was first written, a learning rate of 5 × 10⁻⁴ did exactly that: loss
+        0.000, held-out accuracy 1.00, and the share of short answers *fell* from 1.00 to 0.30 in M7. So the
+        cell also checks that the chosen responses' log-probability did not collapse relative to the reference.
+        """),
+        code("""
+        import copy
+        rng = random.Random(0)
+        WORDS = TEXT.split()
+        def triple():
+            w = rng.choice(WORDS[:3000])
+            p = f"<|user|>define {w}<|assistant|>"
+            return p, f"{w} is a word.<|eos|>", f"{w} is a word, and also, well, it is a word, a word.<|eos|>"
+        def packed(p, r):
+            pi, ri = tok.encode(p), tok.encode(r)
+            ids = torch.tensor(pi + ri); lab = ids.clone(); lab[:len(pi)] = -100
+            return ids, lab
+        def pad(seqs):
+            T = max(len(s) for s in seqs)
+            return torch.stack([F.pad(s, (0, T - len(s)), value=0) for s in seqs])
+        def pad_lab(seqs):
+            T = max(len(s) for s in seqs)
+            return torch.stack([F.pad(s, (0, T - len(s)), value=-100) for s in seqs])
+        train_t = [triple() for _ in range(256)]; held_t = [triple() for _ in range(64)]
+
+        # (a) SFT on BOTH styles, half and half, prompt masked: the SFT model rambles about half the time
+        sft = copy.deepcopy(base); opt = torch.optim.AdamW(sft.parameters(), lr=1e-3)
+        for step in range(60):
+            batch = [packed(p, rng.choice((c, r))) for p, c, r in rng.sample(train_t, 16)]
+            ids_b, lab_b = pad([x for x, _ in batch]), pad_lab([y for _, y in batch])
+            _, l, _ = sft(ids_b, targets=lab_b)
+            opt.zero_grad(); l.backward(); opt.step()
+        print(f"SFT loss on responses only: {l.item():.3f}")
+
+        def logps(model, trip):
+            ch = [packed(p, c) for p, c, _ in trip]; rj = [packed(p, r) for p, _, r in trip]
+            return (sequence_logp(model, pad([x for x, _ in ch]), pad_lab([y for _, y in ch])),
+                    sequence_logp(model, pad([x for x, _ in rj]), pad_lab([y for _, y in rj])))
+        """),
+        code("""
+        # (b) DPO, beta = 0.1, the SFT model frozen as the reference
+        ref = copy.deepcopy(sft).eval()
+        for p_ in ref.parameters(): p_.requires_grad_(False)
+        policy = copy.deepcopy(sft); opt = torch.optim.AdamW(policy.parameters(), lr=5e-5)
+        with torch.no_grad(): rc_h, rr_h = logps(ref, held_t)
+        for step in range(30):
+            trip = rng.sample(train_t, 16)
+            with torch.no_grad(): rc, rr = logps(ref, trip)
+            pc, pr = logps(policy, trip)
+            loss, cr, rr_rew, acc = dpo_loss(pc, pr, rc, rr, beta=0.1)
+            opt.zero_grad(); loss.backward(); opt.step()
+        with torch.no_grad():
+            pc_h, pr_h = logps(policy, held_t)
+            _, cr_h, rj_h, acc_h = dpo_loss(pc_h, pr_h, rc_h, rr_h, beta=0.1)
+        margin = (cr_h - rj_h).mean().item()
+        drift = (pc_h - rc_h).mean().item()                # absolute change in log P(chosen) vs the reference
+        print(f"DPO: train loss {loss.item():.3f}; held-out accuracy {acc_h.item():.2f}, margin {margin:.2f}, "
+              f"log P(chosen) moved {drift:+.2f} nats")
+        assert acc_h.item() > 0.8 and margin > 0
+        assert drift > -3.0                                # the chosen answers did not collapse along with the rejected
+        """),
+        md("""
+        ## Milestone 6 — LoRA, then merge
+
+        The chapter's hand count first, on the full specification: r = 8 on all seven projections is 325,632
+        trainable parameters (2.59%); q and v only would be 61,440. Then the three mechanical tests on the
+        trained small model, and merging.
+        """),
+        code("""
+        big = Model(Config())
+        apply_lora(big, ["q_proj", "k_proj", "v_proj", "o_proj", "gate", "up", "down"], r=8, alpha=16)
+        n_all = trainable_params(big)
+        qv = Model(Config()); apply_lora(qv, ["q_proj", "v_proj"], r=8, alpha=16)
+        print(f"all seven: {n_all:,} ({n_all / 12_587_904:.2%})   q,v only: {trainable_params(qv):,}")
+        assert n_all == 325_632 and trainable_params(qv) == 61_440 and round(n_all / 12_587_904 * 100, 2) == 2.59
+
+        lm = copy.deepcopy(base)
+        apply_lora(lm, ["q_proj", "k_proj", "v_proj", "o_proj", "gate", "up", "down"], r=8, alpha=16)
+        x = ids[:, :16]
+        # 2. at step 0 the wrapped model IS the pretrained model (B starts at zero)
+        assert torch.equal(lm(x)[0], base(x)[0])
+        # 3. after one backward pass only B has a gradient, and the base has none
+        lm(x, targets=x)[1].backward()
+        assert all(m.A.grad.abs().max() == 0 and m.B.grad.abs().max() > 0 for m in lora_modules(lm))
+        assert all(p.grad is None for p in lm.parameters() if not p.requires_grad)
+        # 4. train a few steps, then merging changes nothing and unmerging restores the weights
+        opt = torch.optim.AdamW([p for p in lm.parameters() if p.requires_grad], lr=5e-3)
+        for _ in range(20):
+            xb = get_batch(train_d, 8, 32); l = lm(xb, targets=xb)[1]
+            opt.zero_grad(); l.backward(); opt.step()
+        W0 = lora_modules(lm)[0].base.weight.detach().clone()
+        y = lm(x)[0]; merge_all(lm)
+        assert torch.allclose(lm(x)[0], y, atol=1e-5)
+        unmerge_all(lm)
+        assert torch.allclose(lora_modules(lm)[0].base.weight, W0, atol=1e-6)
+        print("LoRA: count, identity at init, B-only gradient, merge and unmerge all pass")
+        """),
+        md("""
+        ## Milestone 7 — evaluation, with error bars
+
+        Contamination (no 13-gram of the benchmark appears in the training text), the unbiased pass@k estimator,
+        and the paired-versus-unpaired comparison on the SFT and DPO models' own outputs: 64 held-out prompts,
+        n = 10 samples each at temperature 0.8, scored by a program ("the answer is under 8 words"). DPO must
+        beat SFT with a paired interval that excludes zero.
+
+        Pairing narrows an interval only as much as the two models' per-prompt scores are correlated. On this
+        toy the prompts differ only by one random word, so they are nearly equally hard: the correlation is
+        small and the two intervals come out close. On a real benchmark, where some items are hard for every
+        model, the paired interval is the much narrower one. The cell prints the correlation so you can see
+        which case you are in.
+        """),
+        code("""
+        train_text = " ".join(p + c + r for p, c, r in train_t) + " " + TEXT
+        train_ng = ngrams(train_text.lower().split(), 13)
+        bench = [f"explain in your own words what happens when {w} meets an unfamiliar context today please"
+                 for w in ("zebra", "quasar", "fjord", "kiln")]
+        assert max(ngram_overlap(item, train_ng, n=13) for item in bench) == 0.0
+        assert abs(pass_at_k(10, 3, 5) - (1 - math.comb(7, 5) / math.comb(10, 5))) < 1e-12
+
+        eos = tok.encode("<|eos|>")[0]
+        def short_rate(model, n=10):
+            torch.manual_seed(0); out = []
+            for p, _, _ in held_t:
+                pr = torch.tensor([tok.encode(p)]).repeat(n, 1)
+                g = model.generate(pr, 24, temperature=0.8, eos_id=eos)[:, pr.size(1):]
+                ok = []
+                for row in g.tolist():
+                    txt = tok.decode(row[:row.index(eos)] if eos in row else row)
+                    ok.append(int(len(txt.split()) < 8 and eos in row))
+                out.append(ok)
+            return out
+        s_sft, s_dpo = short_rate(sft), short_rate(policy)
+        p1_sft = [sum(o) / len(o) for o in s_sft]; p1_dpo = [sum(o) / len(o) for o in s_dpo]
+        pk = lambda rows, k: sum(pass_at_k(len(o), sum(o), k) for o in rows) / len(rows)
+        print(f"pass@1  SFT {sum(p1_sft) / 64:.3f}  DPO {sum(p1_dpo) / 64:.3f}    "
+              f"pass@5  SFT {pk(s_sft, 5):.3f}  DPO {pk(s_dpo, 5):.3f}")
+        lo_p, hi_p = paired_bootstrap_diff(p1_sft, p1_dpo, n_boot=4000)
+        lo_u, hi_u = unpaired_bootstrap_diff(p1_sft, p1_dpo, n_boot=4000)
+        print(f"DPO - SFT: paired [{lo_p:+.3f}, {hi_p:+.3f}]  unpaired [{lo_u:+.3f}, {hi_u:+.3f}]  "
+              f"width ratio {(hi_u - lo_u) / (hi_p - lo_p):.2f}")
+        corr = torch.corrcoef(torch.tensor([p1_sft, p1_dpo]))[0, 1].item()
+        print(f"per-prompt correlation between the models: {corr:+.2f}")
+        assert pk(s_sft, 5) >= sum(p1_sft) / 64 - 1e-9                    # pass@5 never below pass@1
+        assert lo_p > 0                                                   # DPO's gain is real, not noise
+        assert (hi_p - lo_p) < 1.15 * (hi_u - lo_u)                       # pairing is never much worse
+        """),
+        md("""
+        ## What this notebook does not grade
+
+        The milestone *deliverables* that need the full-scale run: the TinyStories loss target, the β sweep and
+        its collapse at β = 0.01, LoRA-vs-full curves, the rank sweep, and the 300-prompt benchmark. Those are
+        judgement calls you make looking at curves and samples, and the chapter's "what success looks like"
+        boxes say what to look for. Everything above is the part with a right answer.
+        """),
+    ]
+
+
 # ============================================================ END NOTEBOOKS
 
 

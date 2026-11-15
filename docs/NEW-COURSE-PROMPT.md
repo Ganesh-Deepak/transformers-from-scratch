@@ -24,6 +24,17 @@ that exact system**, not to design a new one.
 
 ## 0. First action, before you write anything
 
+**The outline already exists.** Every planned course has a reviewed curriculum in the
+hub repository (`Ganesh-Deepak/ganesh-deepak.github.io`): `curricula/<slug>.txt` is the
+source, `docs/curricula/<slug>.md` the readable form, and the course repository already
+holds a generated outline site (one page per chapter with its sections, "Builds on"
+links and what the reader builds). Write the chapters against that outline. If the
+argument needs a change (a chapter split, merged or moved), change `curricula/<slug>.txt`
+first and rerun `tools/build.py` in the hub, so the registry, search, prerequisite map and
+every cross-course link stay correct. When a chapter's prose is written it replaces its
+outline page; when the whole course is written, set `status: live` in the curriculum and
+the build stops generating its pages.
+
 Clone the reference course and read these files end to end. They are the
 specification; this prompt is a summary of them.
 

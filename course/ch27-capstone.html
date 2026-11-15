@@ -6,7 +6,7 @@
 <title>Ch 27 — Capstone: Build a Modern LLM End to End</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=28">
+<link rel="stylesheet" href="assets/style.css?v=29">
 </head>
 <body>
 <main>
@@ -18,7 +18,7 @@ GQA, SwiGLU, KV cache — train it, make it generate efficiently, align it with 
 evaluate it with error bars you can defend. On a laptop CPU, in a few hours.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; the architecture<br><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; training<br><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; the cache<br><a href="ch16-gqa-mla.html">Ch&nbsp;16</a> &mdash; GQA<br><a href="ch23-sft-rlhf.html">Ch&nbsp;23</a> &mdash; SFT and LoRA<br><a href="ch24-dpo.html">Ch&nbsp;24</a> &mdash; DPO<br><a href="ch26-evaluation.html">Ch&nbsp;26</a> &mdash; evaluation<div class="sep"></div><span class="k">Why this chapter</span>Everything, assembled. If you build this, you have built the thing.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; the architecture<br><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; training<br><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; the cache<br><a href="ch16-gqa-mla.html">Ch&nbsp;16</a> &mdash; GQA<br><a href="ch23-sft-rlhf.html">Ch&nbsp;23</a> &mdash; SFT and LoRA<br><a href="ch24-dpo.html">Ch&nbsp;24</a> &mdash; DPO<br><a href="ch26-evaluation.html">Ch&nbsp;26</a> &mdash; evaluation<div class="sep"></div><span class="k">Why this chapter</span>Everything, assembled. If you build this, you have built the thing.<div class="sep"></div><span class="k">The grader</span><code>notebooks/27_capstone.ipynb</code> runs every &ldquo;tests that must pass&rdquo; block below. It grades the reference code out of the box; point its imports at your modules to grade yours.</div>
 <div class="box intuition">
 <span class="t">Why this matters more than reading another paper</span>
 <p style="margin-bottom:0">You can follow every chapter of this course and still not be able to build one.
@@ -373,6 +373,13 @@ rate and not in your programmatic scorer, Chapter 26's length bias is the first 
 
 <h2>Where to go next</h2>
 
+<p>This course is the first of eleven in <a href="https://ganesh-deepak.github.io/">the library</a> (the
+<b>Library</b> button in the top bar). Everyone should take
+<a class="xref" data-course="evals" data-ch="01" href="/llm-evaluation/course/ch01-define.html">Evaluation&nbsp;Ch&nbsp;01</a>
+next: every later skill is unverifiable without it. Then follow a track: systems (GPU programming, then
+inference engineering), applied (retrieval, then agents), or model (post-training). The others are below,
+with outside reading.</p>
+
 <ul>
 <li><b>Interpretability</b> — <a href="https://transformer-circuits.pub/">Transformer Circuits</a>, sparse
 autoencoders, superposition. The most intellectually interesting open problem in the field.</li>
@@ -393,10 +400,10 @@ idea. If you built this, you have built the thing. Everything else is more of it
 
 </main>
 
-<script src="assets/chapters.js?v=28"></script>
-<script src="assets/course.js?v=28"></script>
-<script src="assets/viz.js?v=28"></script>
-<script src="assets/axes.js?v=28"></script>
+<script src="assets/chapters.js?v=29"></script>
+<script src="assets/course.js?v=29"></script>
+<script src="assets/viz.js?v=29"></script>
+<script src="assets/axes.js?v=29"></script>
 <script>initChapter("27");</script>
 </body>
 </html>

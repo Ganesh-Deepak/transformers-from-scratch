@@ -4,8 +4,20 @@
     {
       "name": "course",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["serve.py", "--no-open"],
+      "runtimeArgs": [
+        "serve.py",
+        "--no-open"
+      ],
       "port": 8777
+    },
+    {
+      "name": "library",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "sites/ganesh-deepak.github.io/tools/serve.py",
+        "8790"
+      ],
+      "port": 8790
     }
   ]
 }

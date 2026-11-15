@@ -237,7 +237,9 @@ console.log("\n=== MANIFEST INTEGRITY ==========================");
   const dead = [];
   for (const f of fs.readdirSync(ROOT).filter(f => f.endsWith(".html"))) {
     const html = fs.readFileSync(path.join(ROOT, f), "utf8");
-    for (const m of html.matchAll(/href="([^"#:]+\.html)(?:#[^"]*)?"/g)) {
+    // root-relative hrefs ("/llm-evaluation/...") are other courses on the same origin:
+    // the hub's tools/check_platform.py resolves those against every course
+    for (const m of html.matchAll(/href="(?!\/)([^"#:]+\.html)(?:#[^"]*)?"/g)) {
       if (!fs.existsSync(path.join(ROOT, m[1]))) dead.push(`${f} -> ${m[1]}`);
     }
   }
@@ -327,7 +329,7 @@ for (const file of ["index.html", ...manifestFiles]) {
     const unplanned = s.replace(/<code class="planned">[^<]*<\/code>/g, "");
     for (const m of unplanned.matchAll(/(notebooks\/[\w\-.]+\.ipynb|tfs\/[\w\-.]+\.py|tests\/[\w\-.]+\.py)/g))
       if (!fs.existsSync(path.join(REPO, m[1]))) missing.push(f + " -> " + m[1]);
-    for (const m of s.matchAll(/href="([^"#:]+\.html)/g))
+    for (const m of s.matchAll(/href="(?!\/)([^"#:]+\.html)/g))      // cross-course: check_platform.py
       if (!names.has(m[1])) broken.push(f + " -> " + m[1]);
     const me = /^ch(\d\d)/.exec(f), b = /<span class="k">Builds on<\/span>([\s\S]*?)<div class="sep">/.exec(s);
     if (me && b) for (const m of b[1].matchAll(/ch(\d\d)-/g))

@@ -32,6 +32,7 @@ if (!CHROME) { console.error("\n  Chrome not found — this test drives headless
 
 const COURSE = path.join(__dirname, "..", "course");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "tfs-int-"));
+process.on("exit", () => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) {} });   // even when a run is killed
 const ALL = process.argv.includes("--all");
 const PAGE = process.argv.filter(a => a.endsWith(".html"))[0] || "ch06-mha.html";
 
@@ -722,6 +723,49 @@ const ins2 = run([
 ].join("\n"), "ch06-mha.html", { "tfs-inspector": "closed" });
 if (ins2.error) ok(false, "inspector reload scenario ran", ins2.error);
 else ok(ins2.hidden && ins2.pad < 100, "inspector: stays closed on the next page, and gives the column back", JSON.stringify(ins2));
+
+/* ------------------------------- the Library switcher (PLATFORM.md §4) ---- */
+console.log("\n library switcher");
+const LIB = [
+  "var r = {}, btn = $('.lib-toggle');",
+  "r.btn = !!btn && btn.getAttribute('aria-expanded') === 'false';",
+  "btn.click();",
+  // courses.js is fetched on first use (a real script load), so wait on a real timer
+  "return new Promise(function (res) { window.__realTimeout(function () {",
+  "  var p = document.getElementById('library');",
+  "  r.open = !!p && !p.hidden && btn.getAttribute('aria-expanded') === 'true';",
+  "  r.rows = p.querySelectorAll('.lib-c').length; r.registry = (typeof AIE_COURSES !== 'undefined') ? AIE_COURSES.length : -1;",
+  "  var here = p.querySelector('.lib-c.here');",
+  "  r.here = here && here.getAttribute('aria-current') === 'page' && /Transformers/.test(here.textContent);",
+  "  r.count = here ? here.querySelector('.lib-m').textContent : '';",
+  "  r.focusInside = p.contains(document.activeElement);",
+  "  var ev = [].slice.call(p.querySelectorAll('a.lib-c')).map(function (a) { return a.getAttribute('href'); });",
+  "  r.offline = ev.filter(function (h) { return h.indexOf('https://ganesh-deepak.github.io/') === 0; }).length;",
+  "  key(document, 'Escape');",
+  "  r.escClosed = p.hidden && btn.getAttribute('aria-expanded') === 'false' && document.activeElement === btn;",
+  "  btn.click();",
+  "  window.__realTimeout(function () {",
+  "    r.reopened = !p.hidden;",
+  "    document.querySelector('main').dispatchEvent(new MouseEvent('click', { bubbles: true }));",
+  "    r.outsideClosed = p.hidden;",
+  "    var x = document.querySelector('a.xref');",
+  "    r.xrefNone = !x;",
+  "    res(r);",
+  "  }, 100);",
+  "}, 400); });",
+].join("\n");
+const lib = run(LIB, "ch05-attention.html", { "tfs-progress-v1": JSON.stringify({ "done:01": true, "done:03": true }) });
+if (lib.error) ok(false, "library scenario ran", lib.error);
+else {
+  ok(lib.btn, "library: a topbar control, collapsed at first");
+  ok(lib.open && lib.rows === lib.registry && lib.rows > 1, "library: opens, one row per registered course", lib.rows + "/" + lib.registry);
+  ok(lib.here, "library: the current course is marked (aria-current)");
+  ok(/^2\/28/.test(lib.count), "library: shows this course's progress from the shared store", lib.count);
+  ok(lib.focusInside, "library: focus moves into the panel");
+  ok(lib.offline === lib.rows, "library: from file:// every link goes to the live site, not the disk root", lib.offline + "/" + lib.rows);
+  ok(lib.escClosed, "library: Escape closes it and returns focus to the button");
+  ok(lib.reopened && lib.outsideClosed, "library: a click outside closes it");
+}
 
 /* ------------------------------- MoE router widget (Ch 20 §20.4) ---------- */
 console.log("\n MoE router widget");

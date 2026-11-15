@@ -181,6 +181,13 @@ Each course still runs its own full suite (`check_ui`, `check_responsive`,
 
 ## 8. Build order
 
+**Status, November 2026:** steps 1 and 2 are done. Transformers has the Library control
+(`course.js` reads `COURSE` from `chapters.js` and the vendored `assets/courses.js`); the hub
+repository holds the registry, the canonical assets, the library page (tracks, cards with
+progress, the prerequisite map, search), `tools/build.py`, `tools/check_platform.py` and
+`tools/serve.py`; and all ten new courses have generated outline sites under their final
+paths, so switching, shared progress and cross-course links are exercised for real.
+
 1. **Prepare *Transformers From Scratch*** (this repository): add the Library
    control to `course.js`, read `courses.js`, and keep `tfs-progress-v1`. This is
    the template every new course copies.

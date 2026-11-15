@@ -36,6 +36,7 @@ if (!CHROME) {
 
 const COURSE = path.join(__dirname, "..", "course");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "tfs-resp-"));
+process.on("exit", () => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) {} });   // even when a run is killed
 
 const WIDTHS = [320, 375, 390, 430, 768, 1024, 1440, 1920];
 const PAGES = ["index.html", "ch00-numbers.html", "ch01-tensors.html", "ch05-attention.html", "ch06-mha.html",

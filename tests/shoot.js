@@ -37,7 +37,7 @@ const CHROME = [
 ].find(p => fs.existsSync(p));
 if (!CHROME) { console.error("Chrome not found"); process.exit(2); }
 
-const COURSE = path.join(__dirname, "..", "course");
+const COURSE = path.resolve(opt("--root", path.join(__dirname, "..", "course")));   // --root: another course in the library
 let PAGES = fs.readdirSync(COURSE).filter(f => /^(index|ch\d\d-.*)\.html$/.test(f)).sort();
 if (ONLY) PAGES = PAGES.filter(p => ONLY.split(",").some(o => p.startsWith(o)));
 
@@ -287,6 +287,11 @@ async function launch() {
   const send = (method, params = {}, sessionId) => new Promise((res, rej) => {
     const i = ++id; pending.set(i, { res, rej }); ws.send(JSON.stringify({ id: i, method, params, sessionId }));
   });
+  // the profile is ~100 MB per run: remove it when Chrome exits, and on any exit of this script
+  // (55 leftover profiles once filled the disk and hung the next suite)
+  const rm = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {} };
+  proc.on("exit", rm);
+  process.on("exit", () => { try { proc.kill(); } catch (e) {} rm(); });
   return { proc, dir, send, on: f => listeners.push(f), close: () => { try { ws.close(); } catch (e) {} proc.kill(); } };
 }
 
