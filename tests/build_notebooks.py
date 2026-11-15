@@ -2674,6 +2674,206 @@ def _nb23():
     ]
 
 
+@notebook("25_grpo")
+def _nb25():
+    return [
+        md("""
+        # Chapter 25 — DPO Variants, GRPO, and RLVR
+
+        Every number and code cell in Chapter 25, recomputed, using `tfs/dpo.py` (`dpo_loss`, `simpo_loss`)
+        where it applies. Each cell **asserts** what it checks, so `python tests/run_notebooks.py 25` fails
+        if the chapter and the code disagree. Exercise 25.2 (GRPO on GSM8K with an instruct model) becomes a
+        small analogue: GRPO on a verifiable toy task (addition mod 10) with a tabular policy, which
+        reproduces the three behaviours the exercise asks about — learning from group-relative advantages,
+        doing nothing from a 0% start, and the fraction of groups dynamic sampling would filter.
+        """),
+        code(SETUP, "from tfs.dpo import dpo_loss, simpo_loss\n"),
+        md("""
+        ## 25.1 — IPO targets a finite margin; DPO's sigmoid only bottoms out at infinity
+        """),
+        code("""
+        beta = 0.1
+        h = torch.linspace(-5, 60, 6501, dtype=torch.float64, requires_grad=True)
+        ipo = (h - 1 / (2 * beta)) ** 2
+        dpo = -F.logsigmoid(beta * h)
+        assert abs(h[ipo.argmin()].item() - 1 / (2 * beta)) < 0.02          # IPO minimum at h = 1/(2 beta) = 5
+        dpo.sum().backward()
+        assert (h.grad < 0).all()                                            # DPO: always pushing the margin up
+        print(f"IPO optimum at h = {h[ipo.argmin()].item():.2f};  DPO gradient at h=60 still {h.grad[-1].item():.2e}")
+        # dpo_loss in tfs/dpo.py is this sigmoid on beta * h
+        pc, pr, rc, rr = (torch.tensor([v]) for v in (-10.0, -14.0, -11.0, -12.0))
+        l, *_ = dpo_loss(pc, pr, rc, rr, beta=beta)
+        assert torch.isclose(l, -F.logsigmoid(beta * torch.tensor((-10 + 14) - (-11 + 12.0))))
+        """),
+        md("""
+        ## 25.1 — SimPO is length-normalised and reference-free; DPO's summed log-prob grows with length
+
+        A response repeated twice has the same per-token log-probability but twice the summed log-prob.
+        """),
+        code("""
+        per_token = torch.tensor([-0.5, -1.0, -0.8])
+        short, long_ = per_token.sum(), per_token.repeat(2).sum()
+        assert torch.isclose(long_, 2 * short)                              # DPO sees a different number
+        assert torch.isclose(short / 3, long_ / 6)                           # SimPO sees the same average
+        lc, lr_ = torch.tensor([-12.0]), torch.tensor([-18.0])
+        s1 = simpo_loss(lc, lr_, torch.tensor([6.0]), torch.tensor([9.0]))
+        s2 = simpo_loss(2 * lc, 2 * lr_, torch.tensor([12.0]), torch.tensor([18.0]))
+        assert torch.isclose(s1, s2)                                         # doubling both lengths: no change
+        manual = -F.logsigmoid(torch.tensor(2.0 * (-12 / 6) - 2.0 * (-18 / 9) - 0.5))
+        assert torch.isclose(s1, manual)                                     # beta/|y| log pi, margin gamma
+        """),
+        md("""
+        ## 25.1 — ORPO's odds ratio
+        """),
+        code("""
+        def log_odds(p): return math.log(p / (1 - p))
+        pw, pl = 0.6, 0.2
+        l_or = -math.log(1 / (1 + math.exp(-(log_odds(pw) - log_odds(pl)))))
+        print(f"odds ratio {(pw / (1 - pw)) / (pl / (1 - pl)):.1f}  ->  L_OR = {l_or:.4f}")
+        assert abs((pw / (1 - pw)) / (pl / (1 - pl)) - 6.0) < 1e-12 and l_or < math.log(2)
+        assert abs(-math.log(1 / (1 + math.exp(-(log_odds(0.3) - log_odds(0.3))))) - math.log(2)) < 1e-12
+        """),
+        md("""
+        ## 25.2 — the RLVR reward function, as printed
+
+        `extract_boxed` is not defined in the chapter; this is the obvious one.
+        """),
+        code(r'''
+        import re
+        def extract_boxed(s):
+            m = re.search(r"\\boxed\{(.*?)\}", s)
+            return m.group(1) if m else None
+        ground_truth = {"2+2": "4"}
+        def reward(prompt, completion):
+            r = 0.1 if re.search(r"<think>.*?</think>.*?\\boxed\{.*?\}", completion, re.S) else 0.0
+            if extract_boxed(completion) == ground_truth[prompt]:
+                r += 1.0
+            return r
+        cases = {"<think>2 and 2</think> so \\boxed{4}": 1.1, "\\boxed{4}": 1.0,
+                 "<think>hmm</think>\n\\boxed{5}": 0.1, "four": 0.0}
+        for c, want in cases.items():
+            print(f"{reward('2+2', c):.1f}  <- {c!r}")
+            assert abs(reward("2+2", c) - want) < 1e-12
+        '''),
+        md("""
+        ## 25.3 — the worked example: three groups of 8
+        """),
+        code("""
+        def advantages(rewards):
+            r = torch.tensor(rewards, dtype=torch.float)
+            return (r - r.mean()) / (r.std(unbiased=False) + 1e-4)
+        A_ = advantages([1, 0, 1, 0, 1, 0, 0, 1])
+        Bz = advantages([1] * 8)
+        Cc = advantages([0, 0, 0, 1, 0, 0, 0, 0])
+        print([round(v, 3) for v in A_.tolist()], Bz.tolist(), [round(v, 3) for v in Cc.tolist()])
+        assert torch.allclose(A_, torch.tensor([1., -1, 1, -1, 1, -1, -1, 1]), atol=1e-3)
+        assert Bz.abs().sum() < 1e-3 and advantages([0] * 8).abs().sum() < 1e-3   # all-right = all-wrong = 0
+        r = torch.tensor([0., 0, 0, 1, 0, 0, 0, 0])
+        assert round(r.mean().item(), 3) == 0.125 and round(r.std(unbiased=False).item(), 4) == 0.3307
+        assert round(Cc[3].item(), 3) == 2.645 and all(round(v, 3) == -0.378 for i, v in enumerate(Cc.tolist()) if i != 3)
+        """),
+        md("""
+        ## The chapter's two code cells disagree on the standard deviation
+
+        **DISCREPANCY (code consistency).** `advantages()` z-scores with `r.std(unbiased=False)`, which gives
+        the worked example's +2.645 / −0.378. The `grpo_step` sketch below it uses `rewards.std()`, which in
+        PyTorch is Bessel-corrected (divide by G − 1): for the same group that gives **+2.474 / −0.353**, and
+        group A gives ±0.935 instead of ±1. Either convention trains, but the sketch does not reproduce the
+        worked numbers; one of the two should change.
+        """),
+        code("""
+        rr_ = torch.tensor([0., 0, 0, 1, 0, 0, 0, 0])
+        sketch = (rr_ - rr_.mean()) / (rr_.std() + 1e-4)                      # as in grpo_step
+        print([round(v, 3) for v in sketch.tolist()])
+        assert round(sketch[3].item(), 3) == 2.474 and round(sketch[0].item(), 3) == -0.353
+        ga = torch.tensor([1., 0, 1, 0, 1, 0, 0, 1])
+        assert round(((ga - ga.mean()) / (ga.std() + 1e-4))[0].item(), 3) == 0.935
+        """),
+        md("""
+        ## 25.3 — the k3 KL estimator in `grpo_step` is non-negative and unbiased
+
+        With samples from π, E[exp(log π_ref − log π) − (log π_ref − log π) − 1] = KL(π‖π_ref).
+        """),
+        code("""
+        torch.manual_seed(0)
+        pi, ref = torch.randn(20).softmax(-1), torch.randn(20).softmax(-1)
+        x = torch.multinomial(pi, 400_000, replacement=True)
+        d = ref.log()[x] - pi.log()[x]
+        k3 = d.exp() - d - 1
+        exact = (pi * (pi / ref).log()).sum()
+        print(f"k3 estimate {k3.mean():.4f}   exact KL {exact:.4f}")
+        assert (k3 >= 0).all() and abs(k3.mean() - exact) < 0.01
+        """),
+        md("""
+        ## Exercise 25.2 (analogue) — GRPO on a verifiable task
+
+        Prompts are pairs (a, b); the answer is (a + b) mod 10; reward 1 if correct. The policy is a table of
+        logits, one row per prompt, sampled G = 8 times per prompt. Loss = −mean(Â · log π(answer)) with the
+        worked example's advantages (on-policy, so the PPO ratio is 1), plus β = 0.04 times the k3 KL to the
+        starting policy.
+        """),
+        code("""
+        prompts = [(a, b) for a in range(10) for b in range(10)]
+        truth = torch.tensor([(a + b) % 10 for a, b in prompts])
+        def grpo(init_logits, steps=60, G=8, beta=0.04, lr=0.5, n_prompts=32, seed=0):
+            torch.manual_seed(seed)
+            logits = init_logits.clone().requires_grad_(True)
+            ref = init_logits.clone()
+            opt = torch.optim.Adam([logits], lr=lr)
+            acc, filtered, zero_grad_steps = [], [], 0
+            for _ in range(steps):
+                idx = torch.randperm(100)[:n_prompts]
+                logp = logits[idx].log_softmax(-1)                          # (P, 10)
+                ans = torch.multinomial(logp.exp().detach(), G, replacement=True)   # (P, G)
+                rew = (ans == truth[idx, None]).float()
+                adv = (rew - rew.mean(1, keepdim=True)) / (rew.std(1, unbiased=False, keepdim=True) + 1e-4)
+                lp = logp.gather(1, ans)
+                d = ref[idx].log_softmax(-1).gather(1, ans) - lp
+                loss = -(adv * lp - beta * (d.exp() - d - 1)).mean()
+                opt.zero_grad(); loss.backward()
+                if logits.grad.abs().max() < 1e-6: zero_grad_steps += 1
+                opt.step()
+                filtered.append(((rew.sum(1) == 0) | (rew.sum(1) == G)).float().mean().item())
+                acc.append(logits.detach().softmax(-1)[torch.arange(100), truth].mean().item())
+            return acc, filtered, zero_grad_steps
+        acc, filtered, _ = grpo(torch.zeros(100, 10))
+        print(f"expected accuracy: start {acc[0]:.0%} -> step 20 {acc[20]:.0%} -> end {acc[-1]:.0%}")
+        assert acc[-1] > 0.9 and acc[-1] > acc[0] + 0.5
+        """),
+        md("""
+        **A 0% start does nothing**, exactly as the practical note says: every group is all-wrong, every
+        advantage is zero, and with β = 0 the gradient is exactly zero at every step.
+        """),
+        code("""
+        hopeless = torch.zeros(100, 10)
+        hopeless[torch.arange(100), truth] = -30.0                     # the right answer is never sampled
+        acc0, filt0, zero_steps = grpo(hopeless, steps=20, beta=0.0)
+        print(f"0% start: accuracy {acc0[0]:.1e} -> {acc0[-1]:.1e}; zero-gradient steps {zero_steps}/20; filtered {filt0[0]:.0%}")
+        assert zero_steps == 20 and acc0[-1] == acc0[0] and filt0[0] == 1.0
+        """),
+        md("""
+        **Dynamic sampling.** The share of groups that come back all-correct or all-wrong (and would be
+        filtered) is p⁸ + (1 − p)⁸ for a prompt answered correctly with probability p: high at the very
+        start, lowest around p = 0.5, and back in the chapter's 20–60% band once the model is decent
+        (p ≈ 0.85–0.93). In the run above it was 43% at the uniform start (p = 0.1) and climbs toward 100%
+        as the policy converges.
+        """),
+        code("""
+        frac = lambda p, G=8: p ** G + (1 - p) ** G
+        print({p: round(frac(p), 3) for p in (0.1, 0.5, 0.8, 0.85, 0.9, 0.94, 0.97)})
+        assert round(frac(0.1), 2) == 0.43 and frac(0.5) < 0.01
+        assert all(0.2 <= frac(p) <= 0.6 for p in (0.85, 0.9, 0.93))
+        assert abs(filtered[0] - frac(0.1)) < 0.15 and filtered[-1] > 0.6
+        """),
+        md("## 25.3 — models in memory: PPO 4, GRPO 3 (and the reward may be a program)"),
+        code("""
+        ppo = {"policy", "reference", "reward model", "value model"}
+        grpo_models = ppo - {"value model"}
+        assert len(ppo) == 4 and len(grpo_models) == 3
+        """),
+    ]
+
+
 # ============================================================ END NOTEBOOKS
 
 
