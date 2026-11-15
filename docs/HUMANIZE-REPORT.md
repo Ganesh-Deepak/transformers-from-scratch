@@ -27,3 +27,4 @@ Flesch (higher is easier; 60-70 is plain English).
 | ch16-gqa-mla.html | 12.7 | 0.0 | 17.8 | 17.1 | 15.6 | 13.5 | 62.0 | 68.9 |
 | ch17-flashattention.html | 10.3 | 0.0 | 18.8 | 17.9 | 17.2 | 14.0 | 57.6 | 66.7 |
 | ch18-serving.html | 8.2 | 0.0 | 18.3 | 17.6 | 17.5 | 14.6 | 58.2 | 64.6 |
+| ch19-distributed.html | 11.0 | 0.0 | 19.7 | 19.0 | 18.4 | 15.2 | 58.8 | 65.5 |
