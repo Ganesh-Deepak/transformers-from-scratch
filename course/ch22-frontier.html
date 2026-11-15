@@ -13,21 +13,21 @@
 
 <h1>22 · The 2026 Frontier</h1>
 <p class="lead">
-Everything so far is settled engineering. This chapter is the moving edge: what changed in the last two
-years, what is actually shipping in production today, and which of it is likely to still matter in three
+Everything so far is settled engineering. This chapter covers the moving edge: what changed in the last two
+years, what is actually shipping in production today, and which of it will probably still matter in three
 years. Most of it is one question asked several ways: <b>how do you stop paying for every past token on
-every new one?</b> Sparse attention looks at fewer of them, sliding windows forget the old ones, and linear
+every new one?</b> Sparse attention looks at fewer of them. Sliding windows forget the old ones. Linear
 attention compresses all of them into a fixed-size memory. The middle of the chapter builds that last idea,
-the delta rule, from scratch, because it is now inside two major labs' production models. Read the rest with
+the delta rule, from scratch, because it is now inside the production models of two major labs. Read the rest with
 more scepticism than the rest of the course.
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; attention as a soft lookup<br><a href="ch16-gqa-mla.html">Ch&nbsp;16</a> &mdash; MLA and the KV cache<br><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; FlashAttention<br><a href="ch20-moe.html">Ch&nbsp;20</a> &mdash; MoE<br><a href="ch21-scaling.html">Ch&nbsp;21</a> &mdash; long context<div class="sep"></div><span class="k">Leads to</span><a href="ch25-grpo.html">Ch&nbsp;25</a> &mdash; RL with verifiable rewards, where agents are trained<br><a href="ch27-capstone.html">Ch&nbsp;27</a> &mdash; the capstone is a small version of this<div class="sep"></div><span class="k">Why this chapter</span>The moving edge. Every computed number in §22.2&ndash;22.6 comes from <code>tfs/linear_attention.py</code> and is asserted in <code>tests/test_foundations.py</code>.</div>
 <div class="box warn">
 <span class="t">Dated content</span>
-<p style="margin-bottom:0">Written <b>August 2026</b>, revised <b>November 2026</b>. Chapters 1–21 will age
-well: the mechanisms are stable. This chapter will not. Treat it as a snapshot and a map of where to look,
-not as durable fact. The exception is §22.3–22.5: the delta rule is a mechanism, and it will outlast the
+<p style="margin-bottom:0">Written <b>August 2026</b>, revised <b>November 2026</b>. Chapters 1 to 21 will age
+well, because the mechanisms are stable. This chapter will not. Treat it as a snapshot and a map of where to look,
+not as lasting fact. The exception is §22.3 to 22.5. The delta rule is a mechanism, and it will outlast the
 models that use it today.</p>
 </div>
 
@@ -35,29 +35,29 @@ models that use it today.</p>
 <span class="t">The whole chapter in six sentences</span>
 <p style="margin-bottom:0"><b>Softmax attention keeps every past key and value</b>, so its memory grows
 with the context and every new token reads all of it. <b>Sparse and windowed attention</b> read fewer of
-them; gpt-oss alternates 128-token windows with full layers and gives every head a learned "attend to
-nothing" sink. <b>Linear attention drops the softmax</b>, which lets the past be summed into one d×d matrix,
-a fast-weight memory that is written once per token and read by a matrix-vector product. <b>The delta rule
-writes into that memory by correcting its error</b> rather than adding blindly, which is one step of gradient
-descent per token, and a forget gate turns it into Gated DeltaNet. <b>Chunking makes it trainable</b>: inside
-a chunk everything is a matmul, and only the chunk-to-chunk state is sequential. <b>A fixed-size memory cannot
-recall arbitrary old tokens exactly</b>, so Qwen3-Next and Kimi Linear keep one full-attention layer in four.</p>
+them. gpt-oss alternates 128-token windows with full layers and gives every head a learned "attend to
+nothing" sink. <b>Linear attention drops the softmax.</b> That lets the past be summed into one d×d matrix,
+a fast-weight memory that is written once per token and read with a matrix-vector product. <b>The delta rule
+writes into that memory by correcting its error</b> instead of adding blindly. That is one step of gradient
+descent per token, and a forget gate turns it into Gated DeltaNet. <b>Chunking makes it trainable.</b> Inside
+a chunk everything is a matmul, and only the state passed from chunk to chunk is sequential. <b>A fixed-size memory cannot
+recall any old token exactly</b>, so Qwen3-Next and Kimi Linear keep one full-attention layer in four.</p>
 </div>
 
 <h2>22.1 · Sparse attention: not attending to everything</h2>
 
-<p>FlashAttention removed the memory wall but left the FLOPs quadratic (Chapter 17). At 128k+ tokens that
-quadratic finally dominates. The 2025–2026 answer is to make attention <b>genuinely sparse</b> — compute
-only the scores that matter.</p>
+<p>FlashAttention removed the memory wall but left the FLOPs quadratic (Chapter 17). Past 128k tokens that
+quadratic cost finally dominates. The answer in 2025 and 2026 has been to make attention <b>truly sparse</b>:
+compute only the scores that matter.</p>
 
 <h3>DeepSeek Sparse Attention (DSA)</h3>
 
 <p>Shipped in <b>DeepSeek-V3.2</b>. The mechanism has two stages:</p>
 
 <ol>
-<li><b>Lightning indexer.</b> A very cheap scoring network — few heads, low-rank projections, FP8 arithmetic
-— scores every previous token against the current query using a ReLU-gated dot product. It is roughly an
-order of magnitude cheaper per FLOP than the main MLA attention.</li>
+<li><b>Lightning indexer.</b> A very cheap scoring network (few heads, low-rank projections, FP8 arithmetic)
+scores every previous token against the current query using a ReLU-gated dot product. Per FLOP it is roughly
+ten times cheaper than the main MLA attention.</li>
 <li><b>Top-k selection, then real attention.</b> Take the <code>k</code> highest-scoring positions and run
 full MLA attention over only those.</li>
 </ol>
@@ -67,28 +67,28 @@ O(L²) &nbsp;→&nbsp; O(L·k) &nbsp;&nbsp;&nbsp; with k ≪ L
 <span class="lbl">the indexer still scans all L, but at a small constant; the expensive attention sees only k</span>
 </div>
 
-<p>DeepSeek reports substantial long-context training and inference speedups at "virtually identical" output
-quality. The related earlier work, <b>NSA (Native Sparse Attention)</b>, trains sparsity in from scratch
-rather than retrofitting it, combining coarse token compression, selective fine-grained attention, and a
+<p>DeepSeek reports large speedups in long-context training and inference at "virtually identical" output
+quality. The earlier related work, <b>NSA (Native Sparse Attention)</b>, trains sparsity in from the start
+instead of adding it later. It combines coarse token compression, selective fine-grained attention and a
 sliding window.</p>
 
 <div class="box intuition">
 <span class="t">Why this took so long</span>
 <p style="margin-bottom:0">Sparse attention is an old idea (Longformer, BigBird, Reformer, 2020). Those used
-<b>fixed</b> patterns — strided, local, random — chosen in advance, and they consistently lost to dense
-attention on quality. The 2025–26 versions are <b>learned and content-dependent</b>: which tokens matter is
-decided per query at runtime. That difference, plus hardware-aware kernels that make irregular access
-patterns actually fast, is what finally made sparsity competitive.</p>
+<b>fixed</b> patterns (strided, local, random) chosen in advance, and they kept losing to dense
+attention on quality. The 2025-26 versions are <b>learned and depend on the content</b>: which tokens matter is
+decided for each query at run time. That difference, plus kernels built for the hardware that make irregular memory
+access actually fast, is what finally made sparsity competitive.</p>
 </div>
 
 <h2>22.2 · Windows and sinks: the cheap version (gpt-oss)</h2>
 
-<p>The simplest sparsity is a fixed one: let a layer see only the last <i>w</i> tokens. A sliding-window
-layer's KV cache stops growing at <i>w</i> entries, and its cost per token is O(w) instead of O(T). Used
-alone it cannot see far, so models <b>alternate</b> window layers with full ones. OpenAI's open-weights
+<p>The simplest sparsity is a fixed one: let a layer see only the last <i>w</i> tokens. The KV cache of a sliding-window
+layer stops growing at <i>w</i> entries, and its cost per token is O(w) instead of O(T). On its own
+it cannot see far, so models <b>alternate</b> window layers with full ones. OpenAI's open-weights
 <b>gpt-oss</b> models (August 2025) do exactly this. Their model card states that attention blocks
 "alternate between banded window and fully dense patterns", with a band of <b>128 tokens</b>, following
-GPT-3. Gemma 2 alternates windows and global layers 1 : 1, Gemma 3 uses 5 : 1 (Chapter 21).</p>
+GPT-3. Gemma 2 alternates windows and global layers 1 : 1, and Gemma 3 uses 5 : 1 (Chapter 21).</p>
 
 <p>The memory arithmetic, for gpt-oss-120b (36 layers, 8 KV heads of width 64, bf16 cache):</p>
 
@@ -99,17 +99,17 @@ at a 131,072-token context:
   alternating:       36,864 × 131,072 + 4.7 MB   = 4.83 GB + 0.005 GB
   all 36 layers full                             = 9.66 GB</code></pre>
 
-<p>So alternation halves the cache at long context, almost exactly: the window layers' contribution is a
+<p>So alternating almost exactly halves the cache at long context. The window layers' share is a
 rounding error. That is the cheap end of the design space. The rest of this chapter is about the expensive
 end, where most layers keep <i>no</i> per-token cache at all.</p>
 
 <h3>Attention sinks: letting a head attend to nothing</h3>
 
-<p>A softmax must sum to 1. A head that has nothing useful to read at this position still has to put its
-weight somewhere, and trained models learn to dump it on the first token, which then acts as an
-<b>attention sink</b> (Xiao et al. 2023 found this, and that evicting the first token from a sliding-window
-cache makes such models fall apart). Chapter 5 shows the mechanism in detail. gpt-oss makes the sink
-explicit: in its model card's words, "each attention head has a learned bias in the denominator of the
+<p>A softmax must sum to 1. A head with nothing useful to read at this position still has to put its
+weight somewhere, and trained models learn to dump it on the first token. That token then acts as an
+<b>attention sink</b>. (Xiao et al. 2023 found this, and found that evicting the first token from a sliding-window
+cache makes such models fall apart.) Chapter 5 shows the mechanism in detail. gpt-oss makes the sink
+explicit. In its model card's words, "each attention head has a learned bias in the denominator of the
 softmax", so the head can pay "no attention to any tokens". That is one extra logit with no value behind it.</p>
 
 <div class="example">
@@ -121,13 +121,13 @@ value vector (<code>tfs.foundations.softmax_with_sink</code>):</p>
 <b>1.0000</b>. The head must read something.</div></div>
 <div class="step"><div class="i">2</div><div>
 <b><i>s</i> = 0</b> (the fixed "off-by-one" softmax, <code>e<sup>x<sub>i</sub></sup> / (1 + Σ e<sup>x<sub>j</sub></sup>)</code>):
-weights <code>0.5793 0.2131 0.1293</code>, sum <b>0.9216</b>. 7.8% of the mass goes nowhere.</div></div>
+weights <code>0.5793 0.2131 0.1293</code>, sum <b>0.9216</b>. 7.8% of the weight goes nowhere.</div></div>
 <div class="step"><div class="i">3</div><div>
 <b><i>s</i> = 4</b> (learned, large): the real weights sum to <b>0.1772</b>. The head is mostly switched off at
-this position, without having to find a junk token to park its attention on.</div></div>
+this position, and it did not have to find a junk token to park its attention on.</div></div>
 <p style="margin-bottom:0">Because <i>s</i> is a learned parameter per head, each head decides how readily it
-abstains. The cost is one scalar per head and one extra term in every softmax denominator; FlashAttention-style
-kernels fold it into the running sum of Chapter 17's online softmax.</p>
+holds back. The cost is one scalar per head and one extra term in every softmax denominator. FlashAttention-style
+kernels fold it into the running sum of the online softmax from Chapter 17.</p>
 </div>
 
 <div class="quiz" data-title="Checkpoint 1 — looking at fewer tokens">
@@ -139,9 +139,9 @@ kernels fold it into the running sum of Chapter 17's online softmax.</p>
     <div class="opt">It uses a fixed sliding window</div>
     <div class="opt">It removes attention from most layers</div>
   </div>
-  <div class="expl"><b>Index cheaply, attend selectively.</b> Option A is MLA (Ch 16) — DeepSeek-V3.2 uses
-  both, and they're complementary: MLA shrinks what you store, DSA shrinks what you look at. Option C is
-  the older fixed-pattern approach that lost on quality; option D describes hybrids.</div>
+  <div class="expl"><b>Index cheaply, attend selectively.</b> Option A is MLA (Ch 16). DeepSeek-V3.2 uses
+  both, and they work together: MLA shrinks what you store, and DSA shrinks what you look at. Option C is
+  the older fixed-pattern approach that lost on quality, and option D describes hybrids.</div>
 </div>
 <div class="qitem" data-answer="2">
   <div class="qq">gpt-oss-120b alternates 128-token window layers with full layers. At a 131k-token context, roughly what fraction of an all-full-attention KV cache does it need?</div>
@@ -149,10 +149,10 @@ kernels fold it into the running sum of Chapter 17's online softmax.</p>
     <div class="opt">About 1/8: the window is tiny</div>
     <div class="opt">About 1/36: only one layer is full</div>
     <div class="opt">About 1/2: half the layers are full, and the window layers' 4.7 MB is negligible</div>
-    <div class="opt">The same: windows only save FLOPs, not memory</div>
+    <div class="opt">The same, because windows only save FLOPs, not memory</div>
   </div>
-  <div class="expl"><b>4.83 GB vs 9.66 GB.</b> The 18 full layers still store every token. The window layers
-  cap at 128 entries each, so they contribute a fixed 4.7 MB. To shrink the cache further you must make
+  <div class="expl"><b>4.83 GB against 9.66 GB.</b> The 18 full layers still store every token. The window layers
+  stop at 128 entries each, so they add a fixed 4.7 MB. To shrink the cache further you must make
   more layers stop storing tokens, which is what hybrids do.</div>
 </div>
 <div class="qitem" data-answer="0">
@@ -163,8 +163,8 @@ kernels fold it into the running sum of Chapter 17's online softmax.</p>
     <div class="opt">The softmax overflowed and was renormalised</div>
     <div class="opt">It is a linear-attention head, which has no normalisation</div>
   </div>
-  <div class="expl"><b>Mass went to the sink.</b> With an extra logit that has no value vector, the weights over
-  real tokens sum to less than 1. With <i>s</i> = 4 and scores [2, 1, 0.5] they sum to 0.1772. Without a sink
+  <div class="expl"><b>The weight went to the sink.</b> With an extra logit that has no value vector, the weights over
+  real tokens sum to less than 1. With <i>s</i> = 4 and scores [2, 1, 0.5] they sum to 0.1772. Without a sink,
   the model has to fake this by attending to a junk token, usually the first one.</div>
 </div>
 </div>
@@ -178,7 +178,7 @@ o<sub>t</sub> = <span class="op">Σ</span><sub>i≤t</sub> softmax<sub>i</sub>(q
 <span class="lbl">every past (k<sub>i</sub>, v<sub>i</sub>) pair is kept, and every one is touched again for every new query</span>
 </div>
 
-<p>The softmax is what forces that. Its normaliser couples query <i>t</i> to all keys at once, so the only way
+<p>The softmax is what forces that. Its normaliser ties query <i>t</i> to all keys at once, so the only way
 to compute <code>o<sub>t</sub></code> is to keep all of them. <b>Delete the softmax</b> (Katharopoulos et al. 2020,
 "Transformers are RNNs") and use the raw dot product as the weight. Then the sum can be regrouped,
 because a dot product times a vector is a matrix times a vector:</p>
@@ -190,8 +190,8 @@ o<sub>t</sub> = <span class="op">Σ</span><sub>i≤t</sub> (q<sub>t</sub>·k<sub
 <span class="lbl">S<sub>t</sub> is a d<sub>v</sub> × d<sub>k</sub> matrix: the whole past, summed</span>
 </div>
 
-<p>The bracket does not depend on the query. Call it <b>the state</b> <code>S<sub>t</sub></code>. It obeys a
-one-line recurrence, and that recurrence is the whole layer at inference time:</p>
+<p>The bracket does not depend on the query. Call it <b>the state</b> <code>S<sub>t</sub></code>. It follows a
+one-line recurrence, and at inference time that recurrence is the whole layer:</p>
 
 <div class="mathblock">
 S<sub>t</sub> = S<sub>t−1</sub> + v<sub>t</sub> k<sub>t</sub>ᵀ &nbsp;&nbsp;&nbsp;&nbsp; o<sub>t</sub> = S<sub>t</sub> q<sub>t</sub>
@@ -211,24 +211,24 @@ S @ q_t         (dv,)        read: what does the memory return for this query?</
 <p>Look at what <code>S</code> is: a matrix that takes a d<sub>k</sub>-vector and returns a d<sub>v</sub>-vector.
 It is a <b>linear layer</b>. The model's ordinary weights (<code>W<sub>Q</sub></code>, <code>W<sub>K</sub></code>,
 <code>W<sub>V</sub></code>) change slowly, once per optimizer step, and are the same for every input. <code>S</code>
-is a second set of weights that changes <b>at every token</b>, is different for every sequence, and is thrown
-away at the end. The slow weights learn <i>what to write</i> (which keys and values to produce); the fast
-weights hold <i>what was written</i>. Schmidhuber called this a fast-weight programmer in 1992; Schlag, Irie and
-Schmidhuber (2021) showed linear attention is exactly one.</p>
+is a second set of weights. It changes <b>at every token</b>, is different for every sequence, and is thrown
+away at the end. The slow weights learn <i>what to write</i> (which keys and values to produce), and the fast
+weights hold <i>what was written</i>. Schmidhuber called this a fast-weight programmer in 1992, and Schlag, Irie and
+Schmidhuber (2021) showed that linear attention is exactly one.</p>
 
-<p>Writing <code>v k<sup>T</sup></code> into <code>S</code> stores an association "key k → value v": if you
+<p>Writing <code>v k<sup>T</sup></code> into <code>S</code> stores an association "key k → value v". If you
 later read with <code>q = k</code> and k has unit length, <code>S k = v (k·k) = v</code>. Reading with any query
-returns a mixture of every stored value, weighted by how similar its key is to the query. That is
-attention's soft lookup (Chapter 5), but stored in a fixed-size matrix instead of a growing list.</p>
+returns a mix of every stored value, weighted by how similar its key is to the query. That is the
+soft lookup of attention (Chapter 5), but stored in a fixed-size matrix instead of a growing list.</p>
 
 <p>The same output can also be computed all at once, like attention, without the recurrence:
 <code>O = ((Q Kᵀ) ⊙ M) V</code> with <code>M</code> the causal mask and no softmax.
 <code>test_ch22_linear_attention_two_forms</code> checks that the two forms agree. The parallel form costs
-O(T²) like attention; the recurrent form costs O(T) but is sequential. Section 22.5 gets the best of both.</p>
+O(T²) like attention, while the recurrent form costs O(T) but runs step by step. Section 22.5 gets the best of both.</p>
 
 <h3>What a sum cannot do: forget, or overwrite</h3>
 
-<p>Plain linear attention only ever <i>adds</i>. Two consequences follow, and both are fatal at scale.</p>
+<p>Plain linear attention only ever <i>adds</i>. That has two consequences, and both are fatal at scale.</p>
 
 <div class="example">
 <span class="t">Worked example — store two facts, then change one (d<sub>k</sub> = d<sub>v</sub> = 2)</span>
@@ -253,12 +253,12 @@ in the next section produces exactly
 </div>
 
 <p>The second problem is <b>interference</b>. A d<sub>k</sub>-dimensional key space holds at most
-d<sub>k</sub> mutually orthogonal keys. Real keys are not orthogonal, and there are far more tokens than
+d<sub>k</sub> keys at right angles to each other. Real keys are not at right angles, and there are far more tokens than
 dimensions. Reading key <i>j</i> returns its own value plus <code>(k<sub>i</sub>·k<sub>j</sub>) v<sub>i</sub></code>
 from every other stored pair. For random unit keys each dot product is about <code>±1/√d<sub>k</sub></code>, so
 with <i>n</i> pairs stored the noise grows like <b>√((n − 1)/d<sub>k</sub>)</b> times the signal.
-<code>LA.recall_error</code> measures it: store <i>n</i> random pairs in one d<sub>k</sub> = 64 head, read
-each key back, report the mean relative error.</p>
+<code>LA.recall_error</code> measures it. It stores <i>n</i> random pairs in one d<sub>k</sub> = 64 head, reads
+each key back, and reports the mean relative error.</p>
 
 <div class="tw">
 <table>
@@ -272,18 +272,18 @@ each key back, report the mean relative error.</p>
 </table>
 </div>
 
-<p>At <i>n</i> = d<sub>k</sub> the noise is already as large as the signal; at 1024 pairs it is four times
-larger. Softmax attention, which keeps every pair and sharpens onto the best match, reads every one back
-exactly. With orthogonal keys (n ≤ d<sub>k</sub>) linear attention is exact too: the problem is not the
-read, it is that a sum of rank-1 writes has nowhere to put the 65th fact. This table is the reason
+<p>At <i>n</i> = d<sub>k</sub> the noise is already as large as the signal, and at 1024 pairs it is four times
+larger. Softmax attention keeps every pair and sharpens onto the best match, so it reads every one back
+exactly. With orthogonal keys (n ≤ d<sub>k</sub>) linear attention is exact too. So the read is fine. The
+problem is that a sum of rank-1 writes has nowhere to put the 65th fact. This table is why
 linear attention lost to softmax attention for five years.</p>
 
 <h2>22.4 · The delta rule: write by correcting the error</h2>
 
 <p>The fix is to write the <i>difference</i> between what the memory currently returns for a key and what it
 should return. Before writing <code>(k<sub>t</sub>, v<sub>t</sub>)</code>, ask the memory what it thinks
-<code>k<sub>t</sub></code> maps to, <code>S<sub>t−1</sub>k<sub>t</sub></code>, and write only the
-correction, scaled by a <b>write strength</b> β<sub>t</sub> ∈ (0, 1) that the model computes per token
+<code>k<sub>t</sub></code> maps to, <code>S<sub>t−1</sub>k<sub>t</sub></code>. Then write only the
+correction, scaled by a <b>write strength</b> β<sub>t</sub> ∈ (0, 1) that the model computes for each token
 (a sigmoid of a projection of x<sub>t</sub>):</p>
 
 <div class="mathblock">
@@ -293,14 +293,14 @@ S<sub>t</sub> = S<sub>t−1</sub> − β<sub>t</sub> (S<sub>t−1</sub>k<sub>t</
 </div>
 
 <p>Read the second form from left to right. <code>(I − β k kᵀ)</code> <b>erases</b> a fraction β of whatever
-S stored along the direction k, and leaves every direction orthogonal to k untouched. Then
-<code>β v kᵀ</code> <b>writes</b> the new value into the space just cleared. With β = 1 and a unit key the old
-association for k is replaced completely. That is step 3 of the worked example above:
+S stored along the direction k, and leaves every direction at right angles to k untouched. Then
+<code>β v kᵀ</code> <b>writes</b> the new value into the space just cleared. With β = 1 and a unit key, the old
+association for k is replaced completely. That is step 3 of the worked example above, and
 <code>test_ch22_overwrite</code> checks both matrices.</p>
 
 <h3>It is one step of gradient descent, per token</h3>
 
-<p>Here is the reason the delta rule is the right update and not just a patch. Treat <code>S</code> as a
+<p>Here is why the delta rule is the right update and more than a quick fix. Treat <code>S</code> as a
 linear model and each (k<sub>t</sub>, v<sub>t</sub>) as one training example, with the squared-error loss</p>
 
 <div class="mathblock">
@@ -310,25 +310,25 @@ linear model and each (k<sub>t</sub>, v<sub>t</sub>) as one training example, wi
 
 <p>So a delta-rule layer <b>trains a small linear regression on the fly</b>, one example per token, and its
 output is that regression's prediction for the current query. <code>test_ch22_delta_is_a_gradient_step</code>
-runs autograd on ½‖Sk − v‖², takes one SGD step, and checks the result equals one step of
+runs autograd on ½‖Sk − v‖², takes one SGD step, and checks that the result equals one step of
 <code>delta_rule_recurrent</code> to 10<sup>−12</sup>. Plain linear attention is the same picture with a
-worse loss: its update <code>v kᵀ</code> is the gradient of <code>−⟨S k, v⟩</code>, a loss that rewards
-making the output ever larger along v and never says "that is enough". This view, attention layers as
-test-time optimisers, is also where Titans and the "test-time training" line of work come from.</p>
+worse loss. Its update <code>v kᵀ</code> is the gradient of <code>−⟨S k, v⟩</code>, a loss that rewards
+making the output ever larger along v and never says "that is enough". This view of attention layers as
+optimisers that run at test time is also where Titans and the "test-time training" line of work come from.</p>
 
 <div class="box math-note">
 <span class="t">Why the keys are L2-normalised</span>
 <p style="margin-bottom:0">Along k the erase factor is <code>1 − β‖k‖²</code>. With ‖k‖ = 1 and β ∈ (0, 1)
-that is in (0, 1): the old content shrinks, never flips sign or grows. With an unnormalised key of norm 2
-and β = 0.9 it is −2.6, and the state explodes within a few tokens. DeltaNet and Gated DeltaNet therefore
-L2-normalise q and k per head, and compute β with a sigmoid. It is the same stability condition as a
-learning rate that must stay below 2 / (curvature) in ordinary gradient descent.</p>
+that is in (0, 1), so the old content shrinks and never flips sign or grows. With an unnormalised key of norm 2
+and β = 0.9 it is −2.6, and the state explodes within a few tokens. So DeltaNet and Gated DeltaNet
+L2-normalise q and k per head, and compute β with a sigmoid. It is the same stability condition as in ordinary gradient
+descent, where the learning rate must stay below 2 / (curvature).</p>
 </div>
 
 <h3>Forgetting on purpose: the gate</h3>
 
-<p>The delta rule can overwrite a key it is shown again, but it never forgets a key it is not. When the
-topic changes, old associations linger and add interference. The second ingredient is a <b>decay</b>
+<p>The delta rule can overwrite a key it sees again, but it never forgets a key it does not see again. When the
+topic changes, old associations stay and add interference. The second ingredient is a <b>decay</b>
 α<sub>t</sub> ∈ (0, 1], also computed per token, that shrinks the whole state before the write:</p>
 
 <div class="mathblock">
@@ -336,10 +336,10 @@ S<sub>t</sub> = α<sub>t</sub> S<sub>t−1</sub> (I − β<sub>t</sub> k<sub>t</
 <span class="lbl">the gated delta rule (Yang, Kautz &amp; Hatamizadeh 2025, "Gated Delta Networks") &nbsp;·&nbsp; weight decay on the fast weights</span>
 </div>
 
-<p>α near 1 keeps the memory; α near 0 wipes it, which the model learns to do at document boundaries and
-topic shifts. In the gradient picture α is weight decay on the fast weights. The gated form is the one
-<code>gated_delta_rule_recurrent</code> implements; <code>alpha=None</code> gives the plain delta rule. Most
-of the linear-attention zoo is one row of this table, which is the most useful single thing to take from this
+<p>α near 1 keeps the memory, and α near 0 wipes it. The model learns to wipe it at document boundaries and
+topic shifts. In the gradient picture, α is weight decay on the fast weights. <code>gated_delta_rule_recurrent</code>
+implements the gated form, and <code>alpha=None</code> gives the plain delta rule. Most
+of the many linear-attention variants are one row of this table, which is the most useful single thing to take from this
 section:</p>
 
 <div class="tw">
@@ -357,30 +357,30 @@ section:</p>
 
 <p>The Mamba-2 row is worth a second look. Dao and Gu (2024) showed that Mamba-2's state-space recurrence,
 with its scalar-times-identity transition, is gated linear attention under another name: its B, C and x
-play the roles of k, q and v. So "SSM versus linear attention" is not really a contest between two ideas;
-it is a choice of row. The rows that won in 2025 add the delta rule's error-correcting write.</p>
+play the roles of k, q and v. So "SSM versus linear attention" is less a contest between two ideas
+than a choice of row. The rows that won in 2025 add the delta rule's error-correcting write.</p>
 
 <p>Re-run the recall measurement with the delta rule (β = 1). With orthogonal keys it is exact up to
-n = d<sub>k</sub>, like linear attention. With random keys at n = 1024 the error is <b>1.35</b> instead of 4.01:
-it stops growing, because each write clears space instead of piling on. But it does not go to zero either.
-A d<sub>v</sub> × d<sub>k</sub> matrix has d<sub>k</sub> directions; the delta rule keeps the recent writes
-sharp and lets the old ones be overwritten. Hold on to that: it is the argument of §22.6.</p>
+n = d<sub>k</sub>, like linear attention. With random keys at n = 1024 the error is <b>1.35</b> instead of 4.01.
+It stops growing, because each write clears space instead of piling on. But it does not go to zero either.
+A d<sub>v</sub> × d<sub>k</sub> matrix has d<sub>k</sub> directions, so the delta rule keeps the recent writes
+sharp and lets the old ones be overwritten. Remember that, because §22.6 depends on it.</p>
 
 <h2>22.5 · Training it in parallel: the chunked form</h2>
 
 <p>The recurrence is perfect for inference: one token in, one state update, constant memory. It is terrible
-for training. A 4096-token sequence is 4096 <b>sequential</b> steps, each a d×d matrix-vector product that
+for training. A 4096-token sequence is 4096 <b>sequential</b> steps. Each is a d×d matrix-vector product that
 is bandwidth-bound (Chapter 14) and cannot use tensor cores, and backpropagation would need the state at
-every step. Linear attention without the delta rule has the escape hatch of the O(T²) parallel form above.
-The delta rule does not: <code>S<sub>t</sub></code> depends on <code>S<sub>t−1</sub></code> through the
-product <code>S<sub>t−1</sub>k<sub>t</sub></code>, not just a sum. Yang et al. (2024) found the way out,
-and it is the reason DeltaNet went from a 2021 curiosity to a 2025 production layer.</p>
+every step. Linear attention without the delta rule has a way out: the O(T²) parallel form above.
+The delta rule does not. <code>S<sub>t</sub></code> depends on <code>S<sub>t−1</sub></code> through the
+product <code>S<sub>t−1</sub>k<sub>t</sub></code>, which is more than a sum. Yang et al. (2024) found the way out,
+and it is why DeltaNet went from a 2021 curiosity to a 2025 production layer.</p>
 
 <p><b>Split the sequence into chunks of C tokens</b> (C = 64 is typical). Pass the state between chunks
-sequentially, and do everything inside a chunk with matmuls. The trick is to rewrite the delta rule's
+one after another, and do everything inside a chunk with matmuls. The trick is to rewrite the delta rule's
 writes inside a chunk. Let <code>S<sub>0</sub></code> be the state entering the chunk. Each step writes a
 "corrected value" <code>n<sub>t</sub> = β<sub>t</sub>(v<sub>t</sub> − S<sub>t−1</sub>k<sub>t</sub>)</code>, so the
-state after step t is the entry state plus all corrections so far:</p>
+state after step t is the entry state plus all the corrections so far:</p>
 
 <div class="mathblock">
 S<sub>t</sub> = S<sub>0</sub> + <span class="op">Σ</span><sub>i≤t</sub> n<sub>i</sub> k<sub>i</sub>ᵀ
@@ -405,11 +405,11 @@ O = Q S<sub>0</sub>ᵀ + ((Q Kᵀ) ⊙ M) N &nbsp;&nbsp;&nbsp;&nbsp; S<sub>C</su
 </div>
 
 <p>Look at what happened to the shapes. Every operation is (C × d) by (d × C), (C × C) by (C × d), or
-(C × d) by (d × d): tensor-core matmuls. The only inherently sequential piece is a C × C triangular
+(C × d) by (d × d), which are all tensor-core matmuls. The only piece that must run step by step is a C × C triangular
 solve per chunk, and the number of sequential steps over the sequence falls from T to T/C.
-With a forget gate the same derivation goes through with each term weighted by the decay accumulated
+With a forget gate the same derivation works, with each term weighted by the decay built up
 between positions, <code>g<sub>t</sub>/g<sub>i</sub></code> where <code>g<sub>t</sub> = α<sub>1</sub>⋯α<sub>t</sub></code>
-inside the chunk; those ratios are at most 1, so it is computed in log space without overflow.
+inside the chunk. Those ratios are at most 1, so they are computed in log space without overflow.
 <code>chunked_delta_rule</code> implements the gated version in about twenty lines:</p>
 
 <pre><code>for s in range(0, T, chunk):
@@ -424,14 +424,14 @@ inside the chunk; those ratios are at most 1, so it is computed in log space wit
 
 <p><code>test_ch22_chunked_equals_recurrent</code> checks it against the token-by-token recurrence for chunk
 sizes 1, 7, 16, 64 and 100 on a 100-token sequence, with and without the gate, to 10<sup>−10</sup> in float64.
-Production kernels (the <code>flash-linear-attention</code> library's Triton kernels are what Qwen3-Next and
-Kimi Linear ship against) do the same algebra, with more care for memory traffic and for the backward pass.</p>
+Production kernels do the same algebra, with more care for memory traffic and for the backward pass.
+(Qwen3-Next and Kimi Linear ship against the Triton kernels of the <code>flash-linear-attention</code> library.)</p>
 
 <h3>What it costs</h3>
 
-<p>Count leading-order matmul FLOPs per token, per head, at d<sub>k</sub> = d<sub>v</sub> = 128 and C = 64
-(<code>chunked_delta_flops_per_token</code>): K Kᵀ and Q Kᵀ are 2Cd<sub>k</sub> each, the triangular solve
-and (Q Kᵀ)N about 3Cd<sub>v</sub>, and the three products with the state 6d<sub>k</sub>d<sub>v</sub>. The total
+<p>Count the leading matmul FLOPs per token, per head, at d<sub>k</sub> = d<sub>v</sub> = 128 and C = 64
+(<code>chunked_delta_flops_per_token</code>). K Kᵀ and Q Kᵀ are 2Cd<sub>k</sub> each, the triangular solve
+and (Q Kᵀ)N are about 3Cd<sub>v</sub>, and the three products with the state are 6d<sub>k</sub>d<sub>v</sub>. The total
 is <b>155,648 FLOPs per token, whatever the context length</b>. Causal softmax attention at the same width
 does T·(d<sub>k</sub> + d<sub>v</sub>) per token on average:</p>
 
@@ -447,9 +447,9 @@ does T·(d<sub>k</sub> + d<sub>v</sub>) per token on average:</p>
 </table>
 </div>
 
-<p>At short context the two are within an order of magnitude and attention's kernels are better tuned, so the
-linear layer buys little. The advantage is entirely a long-context one, which is why every hybrid is
-marketed on 128k-plus contexts.</p>
+<p>At short context the two are within a factor of ten, and attention's kernels are better tuned, so the
+linear layer buys little. The advantage is all at long context, which is why every hybrid is
+marketed on contexts of 128k or more.</p>
 
 <div class="quiz" data-title="Checkpoint 2 — the delta rule">
 <div class="qitem" data-answer="2">
@@ -457,12 +457,12 @@ marketed on 128k-plus contexts.</p>
   <div class="opts">
     <div class="opt">The softmax is the most expensive operation in attention</div>
     <div class="opt">Without the softmax, attention no longer needs keys</div>
-    <div class="opt">The softmax's normaliser couples the query to every key at once; without it, Σ (q·k<sub>i</sub>) v<sub>i</sub> regroups as (Σ v<sub>i</sub>k<sub>i</sub>ᵀ) q, and the bracket can be accumulated once</div>
+    <div class="opt">The softmax's normaliser ties the query to every key at once; without it, Σ (q·k<sub>i</sub>) v<sub>i</sub> regroups as (Σ v<sub>i</sub>k<sub>i</sub>ᵀ) q, and the bracket can be added up once</div>
     <div class="opt">The softmax prevents causal masking</div>
   </div>
   <div class="expl"><b>Associativity.</b> A dot product times a vector is a rank-1 matrix times a vector, so the
   sum over the past can be computed before the query arrives. With a softmax, the weight on each key depends on
-  all the other keys' scores for <i>this</i> query, and nothing can be precomputed.</div>
+  all the other keys' scores for <i>this</i> query, so nothing can be computed ahead.</div>
 </div>
 <div class="qitem" data-answer="1">
   <div class="qq">A delta-rule layer with β = 1 and unit keys sees key k with value (3, 1), then later sees the same key with value (−1, 4). What does it return for query k afterwards?</div>
@@ -485,18 +485,18 @@ marketed on 128k-plus contexts.</p>
   </div>
   <div class="expl"><b>The fast weights are trained, the slow weights are not.</b> At inference only S changes.
   Each token is one regression example (k → v), and β is the per-token step size that the slow weights compute.
-  Option A is the confusion this framing is designed to prevent.</div>
+  Option A is the confusion this way of thinking is meant to prevent.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">What makes the chunked form fast to train, when the delta rule is a sequential recurrence?</div>
   <div class="opts">
-    <div class="opt">Inside a chunk the corrected values solve one C × C lower-triangular system, and everything else is a matmul; only T/C chunk-to-chunk steps are sequential</div>
+    <div class="opt">Inside a chunk the corrected values solve one C × C lower-triangular system, and everything else is a matmul; only T/C steps between chunks are sequential</div>
     <div class="opt">It approximates the delta rule with linear attention inside each chunk</div>
     <div class="opt">It runs the T steps on different GPUs in parallel</div>
     <div class="opt">It drops the dependence of S<sub>t</sub> on S<sub>t−1</sub></div>
   </div>
   <div class="expl"><b>Exact, not approximate.</b> The test checks chunked against recurrent to 10<sup>−10</sup>.
-  The dependence between steps is kept; it is just expressed as dot products of keys within a chunk, which
+  The dependence between steps is kept. It is just written as dot products of keys within a chunk, which
   a matmul computes for all pairs at once.</div>
 </div>
 </div>
@@ -504,39 +504,39 @@ marketed on 128k-plus contexts.</p>
 <h2>22.6 · Hybrids: why some full-attention layers stay</h2>
 
 <p>If the delta rule is this good, why does every production model that uses it keep some softmax layers?
-Because of a counting argument, and a test that checks it.</p>
+The answer is a counting argument, and a test that checks it.</p>
 
 <h3>The associative-recall argument</h3>
 
-<p>The diagnostic task is <b>multi-query associative recall</b> (MQAR; Arora et al. 2023, "Zoology"): the context
-is a list of key–value pairs, later the keys are asked for again, and the model must return each value.
-It is a distilled version of "what was the function name defined 40k tokens ago" or "copy this phone number
-from the document", and it is the skill behind in-context learning's induction heads. Arora et al. found that
-how well a fixed-state model does on it tracks <b>the size of its state</b>, and that attention solves it at
-any length. Jelassi et al. (2024) proved the copying version: a model with a fixed-size state cannot copy
+<p>The diagnostic task is <b>multi-query associative recall</b> (MQAR; Arora et al. 2023, "Zoology"). The context
+is a list of key-value pairs, later the keys are asked for again, and the model must return each value.
+It is a boiled-down version of "what was the function name defined 40k tokens ago" or "copy this phone number
+from the document", and it is the skill behind the induction heads of in-context learning. Arora et al. found that
+how well a fixed-state model does on it follows <b>the size of its state</b>, and that attention solves it at
+any length. Jelassi et al. (2024) proved the copying version. A model with a fixed-size state cannot copy
 strings longer than its state can encode, while a two-layer transformer can.</p>
 
-<p>Make it concrete for a real model. A Gated DeltaNet head in Qwen3-Next has a 128 × 128 state. From §22.3:
-at most 128 orthogonal key directions, and with n random keys the read noise of a pure sum is
+<p>Make it concrete for a real model. A Gated DeltaNet head in Qwen3-Next has a 128 × 128 state. From §22.3,
+that is at most 128 orthogonal key directions, and with n random keys the read noise of a pure sum is
 √((n−1)/d<sub>k</sub>). At 262,144 tokens that is √(262,143/128) ≈ <b>45 times the signal</b>. The delta rule
-and the gate keep the noise bounded by forgetting, so the state is a sharp memory of the <i>recent</i> past and
-a blurred one of the rest. That is fine for most tokens, which need local syntax and a gist of the topic. It is
+and the gate keep the noise bounded by forgetting. So the state is a sharp memory of the <i>recent</i> past and
+a blurred one of the rest. That is fine for most tokens, which need local syntax and a rough idea of the topic. It is
 not fine for the token that needs one exact fact from 200k tokens back. <b>Softmax attention keeps every key
-and can sharpen onto any one of them</b>; it is the only layer in the stack that can do an exact lookup.</p>
+and can sharpen onto any one of them.</b> It is the only layer in the stack that can do an exact lookup.</p>
 
 <div class="box intuition">
 <span class="t">The division of labour</span>
-<p style="margin-bottom:0">Linear layers do the bulk sequence mixing at O(1) memory per token; a minority of
-full-attention layers provide the exact-lookup path. A lookup does not need to happen at every layer: the
-retrieved value lands in the residual stream (Chapter 4) and every later layer can read it. So the question
-is not "linear or attention" but "how many attention layers are enough for retrieval", and in 2025 two labs
-independently answered <b>one in four</b>.</p>
+<p style="margin-bottom:0">Linear layers do most of the sequence mixing at O(1) memory per token, and a minority of
+full-attention layers provide the exact-lookup path. A lookup does not need to happen at every layer. The
+retrieved value lands in the residual stream (Chapter 4), and every later layer can read it. So the question
+is how many attention layers are enough for retrieval. In 2025 two labs
+answered it separately, and both said <b>one in four</b>.</p>
 </div>
 
 <h3>Qwen3-Next: 3 Gated DeltaNet : 1 gated attention</h3>
 
-<p>Qwen3-Next-80B-A3B (Alibaba, September 2025) is the cleanest public example, because its
-<code>config.json</code> spells the layout out:</p>
+<p>Qwen3-Next-80B-A3B (Alibaba, September 2025) is the clearest public example, because its
+<code>config.json</code> spells out the layout:</p>
 
 <pre><code class="nohl">num_hidden_layers        48
 full_attention_interval   4     every 4th layer is softmax attention: 12 attention, 36 Gated DeltaNet
@@ -547,14 +547,14 @@ linear layers      linear_num_key_heads 16, linear_num_value_heads 32,
                    linear_key_head_dim 128, linear_value_head_dim 128, linear_conv_kernel_dim 4
 MoE                num_experts 512, num_experts_per_tok 10                       (Ch 20)</code></pre>
 
-<p>So the stack is 12 repetitions of [DeltaNet, DeltaNet, DeltaNet, attention]. The linear layers have 32 value
-heads sharing 16 key heads (the same grouping idea as GQA), each with a 128 × 128 state, plus a short causal
-convolution (kernel 4) on the inputs that gives the layer cheap access to the last few tokens. The attention
-layers add a sigmoid <b>output gate</b> after the attention (Qiu et al. 2025, "Gated Attention"), which,
-like gpt-oss's sink, lets a head output nothing.</p>
+<p>So the stack is 12 repeats of [DeltaNet, DeltaNet, DeltaNet, attention]. The linear layers have 32 value
+heads sharing 16 key heads (the same grouping idea as GQA), each with a 128 × 128 state. They also have a short causal
+convolution (kernel 4) on the inputs, which gives the layer cheap access to the last few tokens. The attention
+layers add a sigmoid <b>output gate</b> after the attention (Qiu et al. 2025, "Gated Attention"). Like
+gpt-oss's sink, it lets a head output nothing.</p>
 
-<p>Now the memory. bf16 KV cache for the attention layers, and assume the delta states are kept in fp32
-(kernels accumulate them in fp32; <code>qwen3_next_memory</code> takes the state precision as an argument):</p>
+<p>Now the memory. Take a bf16 KV cache for the attention layers, and assume the delta states are kept in fp32
+(kernels add them up in fp32; <code>qwen3_next_memory</code> takes the state precision as an argument):</p>
 
 <pre><code class="nohl">attention layers, per token:  12 × 2 × 2 KV heads × 256 × 2 bytes   = 24,576 bytes
 delta states, fixed:          36 × 32 heads × 128 × 128 × 4 bytes   = 75.5 MB, for any context length
@@ -564,16 +564,16 @@ at 262,144 tokens:
   same model, all 48 attention                                        = 25.77 GB   (4× more)</code></pre>
 
 <p>The fixed state costs as much as the KV cache of about 3,000 tokens, and after that it is free. Note that the
-saving is exactly the 3 : 1 ratio: three quarters of the layers stopped storing tokens.</p>
+saving is exactly the 3 : 1 ratio, because three quarters of the layers stopped storing tokens.</p>
 
 <h3>Kimi Linear: 3 KDA : 1 MLA, and an ablation of the ratio</h3>
 
-<p>Moonshot's Kimi Linear (October 2025) is a 48B-total, 3B-active MoE that interleaves
+<p>Moonshot's Kimi Linear (October 2025) is a 48B-total, 3B-active MoE. It interleaves
 <b>Kimi Delta Attention</b> with MLA (Chapter 16) in what its paper calls "a uniform 3:1 ratio". KDA is the last
 row of the table in §22.4: Gated DeltaNet with a decay per key channel instead of one per head, so different
 channels of the memory can forget at different speeds. The paper reports up to <b>75% less KV cache</b> (the
 3 : 1 ratio again) and up to <b>6× decoding throughput at a 1M-token context</b> against full MLA. Its MLA
-layers use no positional encoding at all (NoPE, Chapter 7): the KDA layers, being recurrences, already know
+layers use no positional encoding at all (NoPE, Chapter 7). The KDA layers are recurrences, so they already know
 the order of tokens.</p>
 
 <p>The paper's ratio ablation (Table 1, validation perplexity, lower is better) is the best public evidence for
@@ -589,9 +589,9 @@ the order of tokens.</p>
 </div>
 
 <p>Two things stand out. Hybrids from 1 : 1 to 7 : 1 all beat pure attention at this scale, so the linear layers
-are not only cheaper, they help. And quality falls off once attention becomes too rare (15 : 1), which is the
+help quality as well as cost. And quality falls off once attention becomes too rare (15 : 1). That is the
 associative-recall argument showing up in a perplexity number. 3 : 1 is the cheapest ratio that is still at the
-optimum. Treat the exact numbers as one paper's ablation at one scale, not a law.</p>
+best value. Treat the exact numbers as one paper's ablation at one scale, not a law.</p>
 
 <h3>The wider family</h3>
 
@@ -628,37 +628,37 @@ gated linear attention without the delta rule:</p>
 <div class="box sota">
 <span class="t">The honest late-2026 summary</span>
 <p style="margin-bottom:0">Hybrids are clearly better than pure transformers at very long context
-(256k+) on cost and latency, and in Kimi Linear's ablation not worse at short context either. But the largest
-and strongest models — DeepSeek-V3.x, Qwen3, Kimi K2.x, and the closed frontier models — remain
-attention-based, typically with MoE and increasingly with sparse attention. The direction of travel is
-clear: the 2025 hybrids from major labs chose <i>delta-rule</i> linear attention over Mamba-style SSMs, and
+(256k+) on cost and latency, and in Kimi Linear's ablation they are not worse at short context either. But the largest
+and strongest models (DeepSeek-V3.x, Qwen3, Kimi K2.x and the closed frontier models) are still
+attention-based, usually with MoE and more and more with sparse attention. The direction is
+clear. The 2025 hybrids from major labs chose <i>delta-rule</i> linear attention over Mamba-style SSMs, and
 both chose 3 : 1. Whether they reach the frontier depends mostly on kernels and on how they behave in long
-agentic contexts (§22.8), not on the mathematics, which is settled.</p>
+agent contexts (§22.8). The mathematics is settled.</p>
 </div>
 
 <div class="quiz" data-title="Checkpoint 3 — hybrids">
 <div class="qitem" data-answer="2">
-  <div class="qq">Why do production models interleave linear layers with attention rather than going attention-free?</div>
+  <div class="qq">Why do production models mix linear layers with attention instead of going attention-free?</div>
   <div class="opts">
     <div class="opt">Linear layers are slower to train</div>
     <div class="opt">Attention layers are needed for positional encoding</div>
-    <div class="opt">A fixed-size state can't losslessly retain the past, so pure linear/SSM models are weak at exact recall; a few attention layers restore it</div>
-    <div class="opt">Linear layers don't support GPUs well</div>
+    <div class="opt">A fixed-size state cannot keep the past without loss, so pure linear/SSM models are weak at exact recall; a few attention layers restore it</div>
+    <div class="opt">Linear layers do not run well on GPUs</div>
   </div>
-  <div class="expl"><b>Exact recall.</b> O(1) inference state means <i>lossy</i> compression of history.
-  Attention's KV cache is expensive precisely because it's lossless. Option B is backwards: Kimi Linear's
+  <div class="expl"><b>Exact recall.</b> An O(1) inference state means compressing history <i>with loss</i>.
+  Attention's KV cache is expensive precisely because it loses nothing. Option B is backwards: Kimi Linear's
   attention layers use no positional encoding, because the recurrent layers already carry order.</div>
 </div>
 <div class="qitem" data-answer="1">
   <div class="qq">Qwen3-Next has 48 layers with full_attention_interval = 4. Relative to the same model with 48 attention layers, its KV cache at 256k tokens is about:</div>
   <div class="opts">
     <div class="opt">The same, plus the delta states</div>
-    <div class="opt">One quarter: 6.5 GB vs 25.8 GB, the 75 MB of delta state is negligible</div>
+    <div class="opt">One quarter: 6.5 GB against 25.8 GB, and the 75 MB of delta state is negligible</div>
     <div class="opt">One eighth</div>
     <div class="opt">Zero: linear layers replace the cache entirely</div>
   </div>
   <div class="expl"><b>12 of 48 layers still store tokens.</b> 24,576 bytes/token × 262,144 = 6.44 GB, plus
-  a fixed 75.5 MB of fp32 delta states. The saving is the ratio.</div>
+  a fixed 75.5 MB of fp32 delta states. The saving equals the ratio.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">In Kimi Linear's ratio ablation, 15 : 1 is worse than 3 : 1, and even worse than all-attention. What is the most likely reason?</div>
@@ -677,109 +677,109 @@ agentic contexts (§22.8), not on the mathematics, which is settled.</p>
 <h2>22.7 · Other things that are actually shipping</h2>
 
 <h3>Multi-token prediction (MTP)</h3>
-<p>Train the model to predict the next <code>n</code> tokens, not just one, using extra lightweight heads.
-Gives a denser training signal, and at inference the extra heads act as a built-in draft model for
-speculative decoding — DeepSeek-V3 reports ~1.8× decoding speedup from its MTP module.</p>
+<p>Train the model to predict the next <code>n</code> tokens instead of one, using extra lightweight heads.
+This gives a denser training signal. At inference the extra heads act as a built-in draft model for
+speculative decoding, and DeepSeek-V3 reports a ~1.8× decoding speedup from its MTP module.</p>
 
 <h3>Test-time compute</h3>
-<p>The largest capability shift since instruction tuning. Instead of scaling training, spend more compute at
-<b>inference</b>: generate long chains of reasoning, sample many candidates, verify, and select. o1-style and
-R1-style reasoning models are trained with RL to use this budget well (Chapter 25). The scaling curve here —
-accuracy versus tokens-of-thinking — is a genuinely new axis, and it is currently steeper than the
-pretraining curve on reasoning benchmarks.</p>
+<p>This is the biggest change in capability since instruction tuning. Instead of scaling training, spend more compute at
+<b>inference</b>: generate long chains of reasoning, sample many candidates, check them, and pick one. o1-style and
+R1-style reasoning models are trained with RL to use this budget well (Chapter 25). The scaling curve here,
+accuracy against tokens spent thinking, is a truly new axis. On reasoning benchmarks it is currently steeper than the
+pretraining curve.</p>
 
 <h3>FP8 / FP4 training</h3>
-<p>DeepSeek-V3 was trained largely in FP8 with per-block scaling — a major cost reduction and one of the
+<p>DeepSeek-V3 was trained mostly in FP8 with per-block scaling. That cut cost a lot, and it is one of the
 reasons its reported training cost was so low. Blackwell adds hardware support for even narrower formats.
-The engineering difficulty is entirely in the scaling strategy: which tensors need higher precision, and
+The hard engineering is all in the scaling strategy: which tensors need higher precision, and
 at what granularity.</p>
 
 <h3>Very large vocabularies and better tokenizers</h3>
-<p>The move to 128k–256k vocabularies (Chapter 3) continues, driven by long-context economics and
-multilingual coverage.</p>
+<p>The move to vocabularies of 128k to 256k (Chapter 3) continues, driven by the economics of long context and
+by coverage of more languages.</p>
 
 <h3>A watch item: diffusion language models</h3>
 <p>Every model in this course generates left to right, one token per forward pass (Chapter 13). Masked
-<b>diffusion</b> language models generate the other way. Training: pick a masking level t ∈ (0, 1), replace each
-token of the sequence with a <code>[MASK]</code> token independently with probability t, and train a
-<i>bidirectional</i> transformer (Chapter 9's encoder shape) to predict all the masked tokens at once, with the
-loss weighted by 1/t. Generation: start from an all-masked response, predict every position, keep the most
-confident predictions, re-mask the rest, and repeat for a fixed number of steps. With fewer steps than tokens,
+<b>diffusion</b> language models generate the other way. To train one, pick a masking level t ∈ (0, 1) and replace each
+token of the sequence with a <code>[MASK]</code> token independently with probability t. Then train a
+<i>bidirectional</i> transformer (the encoder shape from Chapter 9) to predict all the masked tokens at once, with the
+loss weighted by 1/t. To generate, start from a fully masked response and predict every position. Keep the most
+confident predictions, mask the rest again, and repeat for a fixed number of steps. With fewer steps than tokens,
 several tokens are committed per forward pass.</p>
 <p>LLaDA (Nie et al. 2025) trained an 8B model this way from scratch and reported results competitive with
-autoregressive models of the same size; Inception Labs' Mercury and Google DeepMind's Gemini Diffusion
-(announced as an experimental model, May 2025) are commercial versions aimed at code, sold on speed. The open
-problems are the ones this course would predict: bidirectional attention defeats the KV cache (Chapter 15) as
-it is normally built, the number of denoising steps trades quality for speed, and variable-length output needs
-extra machinery. Watch it; do not plan around it yet.</p>
+autoregressive models of the same size. Inception Labs' Mercury and Google DeepMind's Gemini Diffusion
+(announced as an experimental model, May 2025) are commercial versions aimed at code and sold on speed. The open
+problems are the ones this course would predict. Bidirectional attention breaks the KV cache (Chapter 15) as
+it is normally built, the number of denoising steps trades quality for speed, and output of varying length needs
+extra machinery. Watch it, but do not plan around it yet.</p>
 
 <h2>22.8 · Agents: where the 2026 effort went</h2>
 
-<p>The largest share of 2025–26 post-training effort went not into new architectures but into making models
-act: call tools, read the results, and keep going for hundreds of steps. None of it needs a new layer. It needs
+<p>Most post-training effort in 2025-26 went into making models
+act, more than into new architectures: call tools, read the results, and keep going for hundreds of steps. None of it needs a new layer. It needs
 the pieces of this course arranged differently.</p>
 
 <h3>Tool use is a text protocol</h3>
 <p>A tool call is ordinary generation. The chat template (Chapter 3) lists the available tools, usually as
-JSON schemas, in the system turn. The model emits a call between special tokens, typically a function name and
-JSON arguments; the runtime stops generation at the closing token, executes the call, and appends the result as
-a new message with a <code>tool</code> role; generation resumes. The Model Context Protocol (Anthropic,
-November 2024) standardised how a runtime discovers and calls tools, so one integration works across models.
-Two consequences an engineer must handle:</p>
+JSON schemas, in the system turn. The model emits a call between special tokens, usually a function name and
+JSON arguments. The runtime stops generation at the closing token, runs the call, and appends the result as
+a new message with a <code>tool</code> role. Then generation resumes. The Model Context Protocol (Anthropic,
+November 2024) standardised how a runtime finds and calls tools, so one integration works across models.
+An engineer must handle two consequences:</p>
 <ul>
 <li><b>Tool output is untrusted input.</b> A web page or file that says "ignore your instructions" arrives in
-the context like any other text. This is the special-token injection problem of Chapter 3 one level up:
-the template must make it unambiguous which tokens came from the user, the model, and the world, and the model
+the context like any other text. This is the special-token injection problem of Chapter 3, one level up.
+The template must make it clear which tokens came from the user, the model and the world, and the model
 must be trained to treat the last as data.</li>
 <li><b>Contexts grow with every step.</b> Each tool result is appended, so a long task reaches 100k+ tokens
-quickly. Every turn re-sends the whole history, which makes prefix caching (Chapter 18) the single most
-important serving optimisation for agents, and is one more reason the long-context architectures of
-§22.1–22.6 matter.</li>
+quickly. Every turn re-sends the whole history. That makes prefix caching (Chapter 18) the most
+important serving optimisation for agents, and it is one more reason the long-context architectures of
+§22.1 to 22.6 matter.</li>
 </ul>
 
 <h3>Long-horizon RL</h3>
 <p>Agents are trained with the RL machinery of Chapter 25, applied to environments instead of single answers.
-A rollout is a multi-turn episode: model tokens interleaved with tool results, ending in an outcome that can be
-checked, such as whether a repository's tests pass after the model's patch (SWE-bench Verified is the standard
+A rollout is a multi-turn episode: model tokens mixed with tool results, ending in an outcome that can be
+checked. One example is whether a repository's tests pass after the model's patch (SWE-bench Verified is the standard
 benchmark of this kind). Three things change from single-turn RLVR:</p>
 <ul>
 <li><b>Only the model's tokens get gradient.</b> Tool results are in the context but are masked out of the
-loss, exactly like the prompt in SFT (Chapter 23): the policy is not trained to predict what the compiler
+loss, exactly like the prompt in SFT (Chapter 23). The policy is not trained to predict what the compiler
 says.</li>
 <li><b>Credit assignment is long.</b> One reward at the end of a 50-turn episode has to be spread over every
-decision that led to it; this is where outcome versus process rewards (Chapter 25) stops being academic.</li>
-<li><b>Rollouts are slow and uneven.</b> An episode that runs a test suite takes minutes; lengths vary by
-orders of magnitude. Training systems therefore generate rollouts asynchronously from the learner, tolerating
-slightly stale policies, rather than in lock-step batches.</li>
+decision that led to it. This is where the choice between outcome and process rewards (Chapter 25) starts to matter in practice.</li>
+<li><b>Rollouts are slow and uneven.</b> An episode that runs a test suite takes minutes, and lengths differ by
+orders of magnitude. So training systems generate rollouts separately from the learner, accepting
+slightly out-of-date policies, instead of in lock-step batches.</li>
 </ul>
 <p>Moonshot's Kimi K2 report (subtitled "Open Agentic Intelligence") is a readable account of the full
-pipeline: large-scale synthesis of tool-use trajectories for SFT, then joint RL over verifiable environments.</p>
+pipeline: large-scale synthesis of tool-use examples for SFT, then joint RL over verifiable environments.</p>
 
 <h2>22.9 · What has <i>not</i> changed since 2017</h2>
 
-<p>Worth stating plainly, because the pace of announcements obscures it:</p>
+<p>It is worth saying plainly, because the pace of announcements hides it:</p>
 
 <ul>
-<li><b>Residual stream + attention + MLP, stacked.</b> The skeleton is identical. Even hybrids only swap the
+<li><b>Residual stream + attention + MLP, stacked.</b> The skeleton is the same. Even hybrids only swap the
 sequence-mixing sublayer in three of every four blocks.</li>
-<li><b>Softmax attention over query–key dot products.</b> Every proposed replacement — linear attention,
-kernel methods, SSMs, the delta rule — has so far ended up <i>supplementing</i> it rather than replacing
-it, and §22.6 explains why that is not an accident.</li>
-<li><b>Next-token prediction as the pretraining objective.</b> Unchanged, with diffusion as the first
+<li><b>Softmax attention over query-key dot products.</b> Every proposed replacement (linear attention,
+kernel methods, SSMs, the delta rule) has so far ended up <i>added alongside</i> it instead of replacing
+it, and §22.6 explains why that is no accident.</li>
+<li><b>Next-token prediction as the pretraining objective.</b> It is unchanged, with diffusion as the first
 serious alternative to watch.</li>
-<li><b>Adam-family optimisation with warmup and decay.</b> Muon is the first credible challenger in nine
+<li><b>Adam-family optimisation with warmup and decay.</b> Muon is the first believable challenger in nine
 years.</li>
-<li><b>Scaling works.</b> Bigger, longer, more data still helps, with no clean ceiling yet observed.</li>
+<li><b>Scaling works.</b> Bigger models, longer training and more data still help, and no clear ceiling has been seen yet.</li>
 </ul>
 
 <div class="box intuition">
 <span class="t">How to read a new architecture paper</span>
-<p style="margin-bottom:0">Ask four questions, in order: <b>(1)</b> Which cost does it reduce — parameters,
-FLOPs, memory, or bandwidth? <b>(2)</b> What does it give up to get that? <b>(3)</b> Was it validated at
-scale, or only at 100M parameters? <b>(4)</b> Is there a working kernel? An enormous number of published
-efficiency wins evaporate at scale or die because nobody wrote the CUDA. Chapters 13–18 give you everything
-you need to answer (1) and (2) from the abstract alone. Applied to the delta rule: (1) KV memory and
-long-context FLOPs; (2) exact recall, bought back with 1 attention layer in 4; (3) yes, two labs at 48–80B;
+<p style="margin-bottom:0">Ask four questions, in order. <b>(1)</b> Which cost does it reduce: parameters,
+FLOPs, memory or bandwidth? <b>(2)</b> What does it give up to get that? <b>(3)</b> Was it tested at
+scale, or only at 100M parameters? <b>(4)</b> Is there a working kernel? A huge number of published
+efficiency wins vanish at scale, or die because nobody wrote the CUDA. Chapters 13 to 18 give you everything
+you need to answer (1) and (2) from the abstract alone. For the delta rule: (1) KV memory and
+long-context FLOPs; (2) exact recall, bought back with 1 attention layer in 4; (3) yes, two labs at 48 to 80B;
 (4) yes, the chunked kernels of §22.5.</p>
 </div>
 
@@ -787,14 +787,14 @@ long-context FLOPs; (2) exact recall, bought back with 1 attention layer in 4; (
 <div class="qitem" data-answer="0">
   <div class="qq">Why is a masked diffusion language model hard to serve with a KV cache?</div>
   <div class="opts">
-    <div class="opt">Its attention is bidirectional, so committing a token changes the keys and values of earlier positions; there is no append-only past to cache</div>
+    <div class="opt">Its attention is bidirectional, so committing a token changes the keys and values of earlier positions; there is no add-only past to cache</div>
     <div class="opt">It has no attention layers</div>
     <div class="opt">It uses a different tokenizer</div>
     <div class="opt">Its vocabulary is too large</div>
   </div>
-  <div class="expl"><b>The cache relies on causality.</b> A decoder's position-t keys never change once
+  <div class="expl"><b>The cache relies on causality.</b> A decoder's keys at position t never change once
   computed, because nothing after t can affect them. With bidirectional attention every position sees every
-  other, so each denoising step recomputes them. Approximate caching schemes exist; none is free.</div>
+  other, so each denoising step recomputes them. Approximate caching schemes exist, but none is free.</div>
 </div>
 <div class="qitem" data-answer="2">
   <div class="qq">During agentic RL, a rollout contains the model's tokens and 20k tokens of tool output. Which tokens contribute to the policy-gradient loss?</div>
@@ -804,8 +804,8 @@ long-context FLOPs; (2) exact recall, bought back with 1 attention layer in 4; (
     <div class="opt">Only the tokens the model generated; tool outputs are context, masked out of the loss</div>
     <div class="opt">Only the final answer token</div>
   </div>
-  <div class="expl"><b>Train the policy, not the environment.</b> Tool outputs condition the model's later
-  tokens, but the model did not choose them, so there is no action to reinforce. Same rule as masking the
+  <div class="expl"><b>Train the policy, not the environment.</b> Tool outputs shape the model's later
+  tokens, but the model did not choose them, so there is no action to reinforce. It is the same rule as masking the
   prompt in SFT.</div>
 </div>
 <div class="qitem" data-answer="1">
@@ -817,7 +817,7 @@ long-context FLOPs; (2) exact recall, bought back with 1 attention layer in 4; (
     <div class="opt">Removing the system prompt</div>
   </div>
   <div class="expl"><b>Most of every request is a prefix the server has already seen.</b> Without prefix
-  caching each turn re-prefills 100k tokens to add a few hundred; Chapter 18 covers how the cache is shared.</div>
+  caching, each turn re-prefills 100k tokens to add a few hundred. Chapter 18 covers how the cache is shared.</div>
 </div>
 </div>
 
@@ -826,21 +826,21 @@ long-context FLOPs; (2) exact recall, bought back with 1 attention layer in 4; (
 <div class="exercise">
 <div class="eh"><span class="n">22.1</span><span class="ti">Implement top-k sparse attention</span><span class="lvl">code</span></div>
 <div class="eb">
-<p>Add a DSA-style path to your attention: compute full scores, keep only the top-k per query, mask the rest
-to −∞, and softmax. Then, on your Chapter 11 model, measure perplexity as a function of
+<p>Add a DSA-style path to your attention. Compute the full scores, keep only the top-k per query, mask the rest
+to −∞, and take the softmax. Then, on your Chapter 11 model, measure perplexity as a function of
 <code>k ∈ {8, 16, 32, 64, all}</code> at T=128.</p>
 <ol>
 <li>At what <code>k</code> does perplexity become indistinguishable from dense?</li>
 <li>What fraction of the sequence is that?</li>
-<li>Why is this a <i>simulation</i> rather than a real speedup?</li>
+<li>Why is this a <i>simulation</i> and not a real speedup?</li>
 </ol>
 <details class="reveal"><summary>Discussion</summary><div>
-<p>You'll typically find quality saturates well before k = T — attention distributions are genuinely sparse,
-with most mass on a small number of positions. That empirical fact is the entire premise of sparse
+<p>You will usually find that quality stops improving well before k = T. Attention distributions really are sparse,
+with most weight on a small number of positions. That measured fact is the whole basis of sparse
 attention.</p>
-<p style="margin-bottom:0">It's a simulation because you still computed <b>all</b> the scores before
-discarding them. A real implementation needs a cheap way to <i>predict</i> the top-k without computing the
-full score matrix — which is exactly what the lightning indexer is, and why it must be much cheaper than
+<p style="margin-bottom:0">It is a simulation because you still computed <b>all</b> the scores before
+throwing them away. A real implementation needs a cheap way to <i>predict</i> the top-k without computing the
+full score matrix. That is exactly what the lightning indexer is, and why it must be much cheaper than
 the attention it replaces.</p>
 </div></details>
 </div></div>
@@ -848,14 +848,14 @@ the attention it replaces.</p>
 <div class="exercise">
 <div class="eh"><span class="n">22.2</span><span class="ti">Attention vs a fixed state on a recall task</span><span class="lvl">thinking</span></div>
 <div class="eb">
-<p>Design a synthetic task that isolates the difference: a sequence of random key–value pairs followed by a
+<p>Design a synthetic task that isolates the difference: a sequence of random key-value pairs followed by a
 query for one of the keys (the MQAR task of §22.6). Train a 2-layer transformer and a 2-layer delta-rule model
-(use <code>chunked_delta_rule</code> as the sequence mixer) at sequence lengths 64, 256, 1024.</p>
+(use <code>chunked_delta_rule</code> as the sequence mixer) at sequence lengths 64, 256 and 1024.</p>
 <details class="reveal"><summary>What the literature shows</summary><div>
-<p style="margin-bottom:0">The transformer solves it at all lengths — it can attend directly to the matching
-key. Fixed-state models degrade once the number of pairs exceeds what the state can hold, and the delta rule
-degrades more slowly than plain linear attention or Mamba-style gating. Adding even <b>one</b> attention layer
-largely restores performance. This experiment is the cleanest justification for hybrid architectures, and it
+<p style="margin-bottom:0">The transformer solves it at all lengths, because it can attend directly to the matching
+key. Fixed-state models get worse once the number of pairs exceeds what the state can hold, and the delta rule
+gets worse more slowly than plain linear attention or Mamba-style gating. Adding even <b>one</b> attention layer
+mostly restores performance. This experiment is the clearest case for hybrid architectures, and it
 is small enough to actually run.</p>
 </div></details>
 </div></div>
@@ -866,11 +866,11 @@ is small enough to actually run.</p>
 <p>Pick one: the <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 technical report</a>, the
 <a href="https://arxiv.org/abs/2510.26692">Kimi Linear paper</a>, the
 <a href="https://arxiv.org/abs/2405.21060">Mamba-2 paper</a>, or a current model's technical report.
-Write a one-page summary answering the four questions from §22.9's box, plus: what would you need to
-believe for this to <i>not</i> be adopted widely?</p>
-<p class="tiny" style="margin-bottom:0">If you've worked through Chapters 1–21, the DeepSeek-V3 report should
-now be substantially readable — you know MLA, MoE, load balancing, FP8, MTP, and the KV-cache economics that
-motivate all of them. After this chapter, so should Kimi Linear's. That's a good measure of how far you've come.</p>
+Write a one-page summary that answers the four questions from the box in §22.9. Also answer: what would you need to
+believe for this to <i>not</i> be widely adopted?</p>
+<p class="tiny" style="margin-bottom:0">If you have worked through Chapters 1 to 21, the DeepSeek-V3 report should
+now be mostly readable. You know MLA, MoE, load balancing, FP8, MTP, and the KV-cache economics behind
+all of them. After this chapter, Kimi Linear's paper should be readable too. That is a good measure of how far you have come.</p>
 </div></div>
 
 <div class="exercise">
@@ -885,11 +885,11 @@ solve for N, compute O and the next state.</li>
 <li>Time both on CPU for T = 4096, d = 64, C = 64. Then explain why the gap is much larger on a GPU.</li>
 </ol>
 <details class="reveal"><summary>Answer to 3 and 4</summary><div>
-<p style="margin-bottom:0">With C = 1 the system is 1 × 1 and the chunked loop <i>is</i> the recurrence. With
-C = T there is one chunk: a T × T triangular system, O(T²) memory, the delta rule's analogue of the parallel
+<p style="margin-bottom:0">With C = 1 the system is 1 × 1, and the chunked loop <i>is</i> the recurrence. With
+C = T there is one chunk: a T × T triangular system with O(T²) memory, the delta rule's version of the parallel
 form of linear attention. Chunk sizes in between trade sequential steps (T/C) against the C² cost of the solve
 and the masked matmuls. On a GPU the recurrence is T bandwidth-bound matrix-vector products that cannot use
-tensor cores, while the chunked form is a few large matmuls per chunk, so the speedup is far larger than any
+tensor cores, while the chunked form is a few large matmuls per chunk. So the speedup is far larger than any
 CPU measurement suggests.</p>
 </div></details>
 </div></div>
@@ -914,8 +914,8 @@ width 128 (bf16 cache). Delta-rule layers have 32 heads with 128 × 128 states (
    → neither fits a single sequence in 80 GB for the all-attention model (0);
      the hybrid fits 1 (with 11 GB to spare)</code></pre>
 <p style="margin-bottom:0">Use <code>kv_cache_bytes_per_token</code> and <code>linear_state_bytes</code> to check.
-The fixed state is paid back almost immediately; the KV cache of the remaining attention layers is what limits
-concurrency, which is why Kimi Linear also uses MLA for its attention layers.</p>
+The fixed state pays for itself almost immediately. The KV cache of the remaining attention layers is what limits
+how many sequences fit, which is why Kimi Linear also uses MLA for its attention layers.</p>
 </div></details>
 </div></div>
 
@@ -923,7 +923,7 @@ concurrency, which is why Kimi Linear also uses MLA for its attention layers.</p
 <div class="eh"><span class="n">22.6</span><span class="ti">Predict, then measure: how much can one head remember?</span><span class="lvl">essential</span></div>
 <div class="eb">
 <p>Before running anything, predict the mean relative recall error of plain linear attention with
-d<sub>k</sub> = 32 and n = 32, 128 and 512 random key–value pairs, using only the √((n−1)/d<sub>k</sub>) argument.
+d<sub>k</sub> = 32 and n = 32, 128 and 512 random key-value pairs, using only the √((n−1)/d<sub>k</sub>) argument.
 Then run <code>tfs.linear_attention.recall_error(n, 32, "linear")</code> and the same with <code>"delta"</code>.</p>
 <ol>
 <li>How close is your prediction for linear attention?</li>
@@ -932,37 +932,37 @@ Then run <code>tfs.linear_attention.recall_error(n, 32, "linear")</code> and the
 you expect for each rule?</li>
 </ol>
 <details class="reveal"><summary>What you should find</summary><div>
-<p style="margin-bottom:0">Predicted √(31/32) ≈ 0.98, √(127/32) ≈ 1.99, √(511/32) ≈ 4.00; the measurements
-are 0.95, 2.13 and 3.99, so the law is within 10% and gets better as n grows (it is an average over many
-interfering pairs). The delta rule's error is 0.77, 1.17 and 1.38: it grows much more slowly, because each write
+<p style="margin-bottom:0">The predictions are √(31/32) ≈ 0.98, √(127/32) ≈ 1.99 and √(511/32) ≈ 4.00. The measurements
+are 0.95, 2.13 and 3.99, so the law is within 10%, and it gets better as n grows (it is an average over many
+interfering pairs). The delta rule's error is 0.77, 1.17 and 1.38. It grows much more slowly, because each write
 first erases what the state held along the new key. Split by age at n = 512 (<code>recall_error_by_age</code>),
-linear attention is equally bad for the oldest and newest tenth (3.92 vs 4.01: a sum has no notion of time),
-while the delta rule recalls the newest pairs better than the oldest (0.97 vs 1.46). It is a memory weighted
-toward the recent past, which is the property the hybrid design relies on.</p>
+linear attention is equally bad for the oldest and newest tenth (3.92 against 4.01: a sum has no sense of time).
+The delta rule recalls the newest pairs better than the oldest (0.97 against 1.46). It is a memory weighted
+toward the recent past, and the hybrid design relies on that.</p>
 </div></details>
 </div></div>
 
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://arxiv.org/abs/2512.02556">DeepSeek-V3.2 technical report</a> · <a href="https://github.com/deepseek-ai/DeepSeek-V3.2-Exp">DeepSeek-V3.2-Exp</a> (DSA)</li>
-<li><a href="https://arxiv.org/abs/2502.11089">Yuan et al. 2025 — Native Sparse Attention</a></li>
-<li><a href="https://cdn.openai.com/pdf/419b6906-9da6-406c-a19d-1bb078ac7637/oai_gpt-oss_model_card.pdf">OpenAI 2025 — gpt-oss-120b &amp; gpt-oss-20b model card</a> (alternating 128-token banded / dense attention, learned per-head sinks)</li>
-<li><a href="https://arxiv.org/abs/2309.17453">Xiao et al. 2023 — Efficient Streaming Language Models with Attention Sinks</a></li>
-<li><a href="https://arxiv.org/abs/2006.16236">Katharopoulos et al. 2020 — Transformers are RNNs</a> (linear attention)</li>
-<li><a href="https://arxiv.org/abs/2102.11174">Schlag, Irie &amp; Schmidhuber 2021 — Linear Transformers Are Secretly Fast Weight Programmers</a> (DeltaNet)</li>
-<li><a href="https://arxiv.org/abs/2406.06484">Yang et al. 2024 — Parallelizing Linear Transformers with the Delta Rule over Sequence Length</a> (the chunked algorithm)</li>
-<li><a href="https://arxiv.org/abs/2412.06464">Yang, Kautz &amp; Hatamizadeh 2025 — Gated Delta Networks</a></li>
-<li><a href="https://arxiv.org/abs/2510.26692">Kimi Team 2025 — Kimi Linear: An Expressive, Efficient Attention Architecture</a> (KDA, the 3 : 1 ablation)</li>
-<li><a href="https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct">Qwen3-Next-80B-A3B</a> (model card and <code>config.json</code>) · <a href="https://arxiv.org/abs/2505.06708">Qiu et al. 2025 — Gated Attention for LLMs</a></li>
-<li><a href="https://arxiv.org/abs/2405.21060">Dao &amp; Gu 2024 — Transformers are SSMs (Mamba-2)</a></li>
-<li><a href="https://arxiv.org/abs/2312.04927">Arora et al. 2023 — Zoology: Measuring and Improving Recall in Efficient Language Models</a> (MQAR)</li>
-<li><a href="https://arxiv.org/abs/2402.01032">Jelassi et al. 2024 — Repeat After Me: Transformers are Better than State Space Models at Copying</a></li>
-<li><a href="https://arxiv.org/abs/2512.20848">NVIDIA 2025 — Nemotron 3 Nano technical report</a></li>
-<li><a href="https://arxiv.org/abs/2502.09992">Nie et al. 2025 — Large Language Diffusion Models (LLaDA)</a></li>
-<li><a href="https://arxiv.org/abs/2507.20534">Kimi Team 2025 — Kimi K2: Open Agentic Intelligence</a></li>
-<li><a href="https://github.com/fla-org/flash-linear-attention">flash-linear-attention</a> — Triton kernels for every row of the §22.4 table</li>
-<li><a href="https://sebastianraschka.com/llm-architecture-gallery/">Raschka — LLM Architecture Gallery</a> — 40+ open models, visually compared.</li>
-<li><a href="https://www.ai21.com/blog/rise-of-hybrid-llms/">AI21 — the rise of hybrid LLMs</a></li>
+<li><a href="https://arxiv.org/abs/2502.11089">Yuan et al. 2025, Native Sparse Attention</a></li>
+<li><a href="https://cdn.openai.com/pdf/419b6906-9da6-406c-a19d-1bb078ac7637/oai_gpt-oss_model_card.pdf">OpenAI 2025, gpt-oss-120b &amp; gpt-oss-20b model card</a> (alternating 128-token banded / dense attention, learned per-head sinks)</li>
+<li><a href="https://arxiv.org/abs/2309.17453">Xiao et al. 2023, Efficient Streaming Language Models with Attention Sinks</a></li>
+<li><a href="https://arxiv.org/abs/2006.16236">Katharopoulos et al. 2020, Transformers are RNNs</a> (linear attention)</li>
+<li><a href="https://arxiv.org/abs/2102.11174">Schlag, Irie &amp; Schmidhuber 2021, Linear Transformers Are Secretly Fast Weight Programmers</a> (DeltaNet)</li>
+<li><a href="https://arxiv.org/abs/2406.06484">Yang et al. 2024, Parallelizing Linear Transformers with the Delta Rule over Sequence Length</a> (the chunked algorithm)</li>
+<li><a href="https://arxiv.org/abs/2412.06464">Yang, Kautz &amp; Hatamizadeh 2025, Gated Delta Networks</a></li>
+<li><a href="https://arxiv.org/abs/2510.26692">Kimi Team 2025, Kimi Linear: An Expressive, Efficient Attention Architecture</a> (KDA, the 3 : 1 ablation)</li>
+<li><a href="https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct">Qwen3-Next-80B-A3B</a> (model card and <code>config.json</code>) · <a href="https://arxiv.org/abs/2505.06708">Qiu et al. 2025, Gated Attention for LLMs</a></li>
+<li><a href="https://arxiv.org/abs/2405.21060">Dao &amp; Gu 2024, Transformers are SSMs (Mamba-2)</a></li>
+<li><a href="https://arxiv.org/abs/2312.04927">Arora et al. 2023, Zoology: Measuring and Improving Recall in Efficient Language Models</a> (MQAR)</li>
+<li><a href="https://arxiv.org/abs/2402.01032">Jelassi et al. 2024, Repeat After Me: Transformers are Better than State Space Models at Copying</a></li>
+<li><a href="https://arxiv.org/abs/2512.20848">NVIDIA 2025, Nemotron 3 Nano technical report</a></li>
+<li><a href="https://arxiv.org/abs/2502.09992">Nie et al. 2025, Large Language Diffusion Models (LLaDA)</a></li>
+<li><a href="https://arxiv.org/abs/2507.20534">Kimi Team 2025, Kimi K2: Open Agentic Intelligence</a></li>
+<li><a href="https://github.com/fla-org/flash-linear-attention">flash-linear-attention</a>: Triton kernels for every row of the §22.4 table</li>
+<li><a href="https://sebastianraschka.com/llm-architecture-gallery/">Raschka, LLM Architecture Gallery</a>: 40+ open models, compared visually.</li>
+<li><a href="https://www.ai21.com/blog/rise-of-hybrid-llms/">AI21, the rise of hybrid LLMs</a></li>
 <li>Reference code: <code>tfs/linear_attention.py</code> · tests: <code>tests/test_foundations.py</code> (Ch 22 section) · notebook: <code>notebooks/22_frontier.ipynb</code> (every number in this chapter recomputed, plus a toy top-k sparse attention layer)</li>
 </ul>
 
