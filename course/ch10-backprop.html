@@ -6,7 +6,7 @@
 <title>Ch 10 — The Backward Pass, Derived</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=27">
+<link rel="stylesheet" href="assets/style.css?v=28">
 </head>
 <body>
 <main>
@@ -736,7 +736,9 @@ hide a genuinely wrong formula behind a loose tolerance.</p>
 <details class="reveal"><summary>Why central and not forward differences</summary><div>
 <p style="margin-bottom:0">Forward differences <code>(L(x+ε) − L(x))/ε</code> have error
 <span class="math">O(ε)</span>; central differences have <span class="math">O(ε²)</span>. With
-<code>ε=1e-6</code> that is the difference between ~1e-6 and ~1e-12 error — enough to distinguish a
+<code>ε=1e-6</code> the truncation errors are ~1e-6 and ~1e-12, but float64 rounding adds about
+machine-ε/ε ≈ 1e-10, so in practice the central difference lands near 1e-10 to 1e-11 — still four orders of
+magnitude better than the forward difference — enough to distinguish a
 correct formula from a subtly wrong one. Also: do this in <code>float64</code>. In float32 the
 subtraction of two nearly-equal numbers loses most of your significant digits, and everything looks
 wrong.</p>
@@ -750,7 +752,9 @@ wrong.</p>
 backward pass and plot <code>grad.norm()</code> per layer on a log axis.</p>
 <details class="reveal"><summary>What you should see</summary><div>
 <p style="margin-bottom:0">Without residuals the gradient norm decays roughly geometrically with depth —
-a straight line on a log axis, often 4–6 orders of magnitude between layer 40 and layer 1. With
+a straight line on a log axis. How many orders of magnitude depends on the weight scale, which the
+exercise leaves open: with PyTorch's default <code>nn.Linear</code> init (std ≈ 1/√(3d)) it is about ten
+orders between layer 40 and layer 1; with std = 1/√d it is barely one. Fix the init and report it. With
 residuals it is nearly flat. That plot <i>is</i> the vanishing-gradient problem, and it is far more
 convincing than any prose about it.</p>
 </div></details>
@@ -871,10 +875,10 @@ the whole argument for fp32 accumulation.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=27"></script>
-<script src="assets/course.js?v=27"></script>
-<script src="assets/viz.js?v=27"></script>
-<script src="assets/axes.js?v=27"></script>
+<script src="assets/chapters.js?v=28"></script>
+<script src="assets/course.js?v=28"></script>
+<script src="assets/viz.js?v=28"></script>
+<script src="assets/axes.js?v=28"></script>
 <script>initChapter("10");</script>
 </body>
 </html>

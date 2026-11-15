@@ -23,7 +23,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 # 3. Confirm everything works
-python tests/test_tfs.py        # 31 tests, ~1 minute
+python tests/test_tfs.py        # 40 tests, ~1 minute (four more suites below)
 ```
 
 Work through the chapters **in order**. Parts 0 and I look elementary — do not skip them.
@@ -48,23 +48,43 @@ or removed.
 course/            28 interactive chapters. Open with serve.py. This is the course.
   index.html         roadmap, progress tracking, the dimension cheat sheet
   ch00..ch27         the chapters (ch00: number formats, from first principles)
-  assets/            style.css, course.js (quiz engine), viz.js (13 widgets),
+  assets/            style.css, course.js (quiz engine), viz.js (15 widgets),
                      numfmt.js (every number format, verified against PyTorch)
                      chapters.js — the outline; chapter order lives here and nowhere else
 
-notebooks/         Runnable Jupyter notebooks, one per key chapter
-tfs/               Reference implementation — working, tested code
+notebooks/         26 runnable notebooks, one per chapter (Ch 22 is covered by its tests,
+                     the capstone is the project). Every cell asserts the claim it recomputes.
+tfs/               Reference implementation — working, tested code, shapes on every line
   tokenizer.py       byte-level BPE (pure Python, no deps)
   model.py           RMSNorm + RoPE + GQA + SwiGLU + KV cache
   train.py           full training loop; `python -m tfs.train` trains a real model
+  foundations.py     Part 0-III numbers: tensors, matmul FLOPs, tokenizer and block arithmetic
+  linear_attention.py  linear attention, the delta rule, gated DeltaNet, chunked training
+  memory.py          what backward saves, activation memory, checkpointing, chunked cross-entropy
+  data.py            exact and MinHash dedup, quality filters, mixtures, annealing
+  trainkit.py        batch-size and μP arithmetic, MFU, loss-spike and resume logic
+  fp8.py             scaled low-precision arithmetic: per-tensor and per-block, delayed scaling
+  parallel.py        DP/ZeRO/TP/PP and context-parallel (ring, Ulysses) communication
+  scaling.py         Chinchilla fits, data-constrained scaling, test-time compute
+  decoding.py        samplers, best-of-n, self-consistency, constrained decoding
+  gpu.py             roofline, MFU, tensor-core rates, overheads
+  kvcache.py         cache sizing, eviction, chunked prefill
+  mla.py             MLA, absorption, cross-layer KV sharing
+  flash.py           online softmax, tiled and split-K attention
+  serving.py         SLOs, goodput, $/M tokens, expert-parallel and multi-LoRA serving
+  moe.py             routers, sorted dispatch, load balancing, all-to-all and serving arithmetic
   dpo.py             DPO, SimPO, sequence log-probs, online vs offline DPO
   lora.py            LoRA / rsLoRA / DoRA, merge, multi-LoRA, fine-tuning memory arithmetic
   rl.py              GAE, per-token KL rewards, Dr. GRPO, GSPO, process rewards, agent masks
   evals.py           pass@k, bootstrap and power, contamination, judge debiasing, kappa
 tests/
-  test_tfs.py        31 tests — every one checks a claim the course makes
-  test_posttraining.py  37 tests for Chapters 23-27 (LoRA, RL, evaluation)
-  run_notebooks.py   executes all notebook code cells as a smoke test
+  test_tfs.py          40 tests — the model, the tokenizer and the core claims
+  test_foundations.py  50 tests — Chapters 1-9 and 22
+  test_training.py     38 tests — Chapters 10-12, 19, 21
+  test_inference.py    34 tests — Chapters 13-18
+  test_posttraining.py 37 tests — Chapters 23-27 (LoRA, RL, evaluation)
+  run_notebooks.py     executes every notebook; a failed assert fails the notebook
+  build_notebooks.py   regenerates the companion notebooks
 data/              downloaded corpus + trained tokenizers (created on first run)
 ```
 
@@ -86,7 +106,8 @@ data/              downloaded corpus + trained tokenizers (created on first run)
 | **VI · Making it useful** | 23–26 | SFT, **LoRA**, RLHF/PPO with GAE, **DPO derived line by line**, GRPO & RLVR, **evaluating LLMs** |
 | **VII · Capstone** | 27 | Build the whole thing: RMSNorm+RoPE+GQA+SwiGLU+cache, trained, DPO-aligned, LoRA-tuned, evaluated |
 
-~41 hours of work. 137 quiz questions, 123 exercise and practice sets, 13 interactive widgets.
+~83 hours of work, 159k words. 244 quiz questions, 182 exercises, 15 interactive widgets, 26 companion
+notebooks and 199 tests. Every chapter is graded **A** in [`docs/CONTENT-AUDIT.md`](docs/CONTENT-AUDIT.md).
 
 ### Four chapters that are usually missing
 
@@ -126,6 +147,8 @@ diagrams. Colour means *which axis* everywhere; widgets that draw no transformer
 | **gqa** | 16 | Which query heads share which KV head |
 | **online** | 17 | Streaming vs one-shot softmax agreeing exactly — FlashAttention's theorem |
 | **chinchilla** | 21 | Compute-optimal model/data split |
+| **series** | 15 | Measured cached vs uncached decode time, per position, from this repo's model |
+| **moe** | 20 | A router at work: tokens × experts, top-k picks, live load bars, bias balancing evening the load, and how many experts a decode batch reads |
 
 ---
 
@@ -146,8 +169,12 @@ Everything the course claims is checked by a test. Notable ones:
 | `test_param_count_matches_formula` | The analytic parameter formula matches the real model |
 
 ```powershell
-python tests/test_tfs.py         # 31 tests
-python tests/run_notebooks.py    # executes every notebook's code
+python tests/test_tfs.py           # 40 tests
+python tests/test_foundations.py   # 50
+python tests/test_training.py      # 38
+python tests/test_inference.py     # 34
+python tests/test_posttraining.py  # 37
+python tests/run_notebooks.py      # executes every notebook's code
 
 cd tests && npm install jsdom && npm run check:all
 ```
@@ -156,10 +183,11 @@ Three suites, each answering a different question:
 
 | suite | question | how |
 |---|---|---:|
-| `check_ui.js` | is it **built** and legible? | jsdom: 753 checks — WCAG contrast for every colour pair in both themes, axis hues >=30 degrees apart, manifest integrity, every internal link, and the full interface on all 27 chapters |
+| `check_ui.js` | is it **built** and legible? | jsdom: WCAG contrast for every colour pair in both themes; the five axis hues kept distinguishable to colour-blind readers (OKLab distance under protan and deutan simulation); manifest integrity; every internal link; content integrity (every referenced file exists, "Builds on" points backwards, no raw LaTeX); and the full interface on all 28 chapters |
 | `check_numfmt.js` | are the **number formats** right? | every range, and 643 casts, against PyTorch's real fp16, bf16, fp8 e4m3 and e5m2; a brute-force oracle for fp6 and fp4 |
 | `check_responsive.js` | does anything **overflow**? | real Chrome at 320/375/390/430/768/1024/1440/1920, each rendered in a fixed-width iframe so the narrow widths are genuine |
-| `check_interaction.js` | does it **work** when pressed? | real Chrome with a fake clock: drives clicks through every bite of every chapter and advances a 15-minute sprint in milliseconds |
+| `check_interaction.js` | does it **work** when pressed? | real Chrome with a fake clock: drives clicks through every bite of every chapter, advances a 15-minute sprint in milliseconds, and exercises the sidebar, the shape inspector and the widgets |
+| `shoot.js` | does it **look** right? | real Chrome, every page at 8 viewports (phone to 2560px) in both themes: screenshots plus a layout audit for overflow, centring, heading hierarchy, boxes wider than their content, misaligned blocks, clipped text and SVG labels, tiny type, small touch targets, failed fonts and script errors |
 
 The third exists because the first two never press a button. A duration select
 that saved its value but never restarted the running sprint passed both of them

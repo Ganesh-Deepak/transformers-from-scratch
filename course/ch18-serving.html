@@ -6,7 +6,7 @@
 <title>Ch 18 — Serving at Scale</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=27">
+<link rel="stylesheet" href="assets/style.css?v=28">
 </head>
 <body>
 <main>
@@ -762,7 +762,7 @@ distributional guarantee, verified rather than assumed.</p>
 <code>fork(parent, child)</code> (copy-on-write). Simulate 1000 requests with lengths drawn from a
 lognormal distribution and compare memory utilisation against contiguous <code>max_len</code> allocation.</p>
 <details class="reveal"><summary>Expected result</summary><div>
-<p style="margin-bottom:0">With lognormal lengths (mean 300, max 4096) the contiguous scheme wastes 70–90%
+<p style="margin-bottom:0">With lognormal lengths (mean 300, max 4096) the contiguous scheme wastes about 93% (1 − 300/4096)
 of its allocation. Paged wastes under 3%. That ratio is why vLLM's throughput numbers looked implausible
 when it launched — the gain was almost entirely from <i>not wasting memory</i>, not from faster kernels.</p>
 </div></details>
@@ -868,10 +868,10 @@ blocks went to SSD instead of CPU memory.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=27"></script>
-<script src="assets/course.js?v=27"></script>
-<script src="assets/viz.js?v=27"></script>
-<script src="assets/axes.js?v=27"></script>
+<script src="assets/chapters.js?v=28"></script>
+<script src="assets/course.js?v=28"></script>
+<script src="assets/viz.js?v=28"></script>
+<script src="assets/axes.js?v=28"></script>
 <script>initChapter("18");</script>
 </body>
 </html>

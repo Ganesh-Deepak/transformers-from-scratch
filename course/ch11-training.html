@@ -6,7 +6,7 @@
 <title>Ch 11 — Training a Transformer</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=27">
+<link rel="stylesheet" href="assets/style.css?v=28">
 </head>
 <body>
 <main>
@@ -94,7 +94,7 @@ good modern LLM           2.00    4.00   0.721</code></pre>
 <b>Check your step 0 against ln(V).</b> An untrained model is uniform, so its loss is exactly
 <span class="math">ln V</span>:
 <pre style="margin:.4rem 0"><code class="nohl">ln(65)     =  4.174      character-level
-ln(32000)  = 10.374
+ln(32000)  = 10.373
 ln(50257)  = 10.825      GPT-2</code></pre>
 Start much <b>below</b> this and you have a label bug (Ch 9). Start <b>above</b> it and your
 initialisation is broken.
@@ -109,8 +109,9 @@ model with nearly <b>triple</b> the loss is the better one.</p>
 <span class="t">Loss is NOT comparable across tokenizers</span>
 <p>The table above assumes a ~32k BPE vocabulary. Change the tokenizer and every number moves, because
 loss is measured <b>per token</b> and tokens carry different amounts of text. A character-level model on
-Shakespeare reaching loss 1.5 and a BPE-2048 model reaching 5.8 can be <i>the same quality</i> — the BPE
-token is worth ~3.3 characters.</p>
+Shakespeare reaching loss 1.5 and a BPE-2048 model reaching about 4.95 are <i>the same quality</i>: the BPE
+token is worth ~3.3 characters, so 1.5 nats per character is 1.5 × 3.3 ≈ 4.95 nats per token. (At 5.8 the BPE
+model would be 17% worse in bits per byte.)</p>
 <p style="margin-bottom:0">The comparable metric is <b>bits per byte</b>:</p>
 <div class="mathblock" style="margin:.8em 0 .6em">
 bpb = <span class="frac"><span class="n">loss<sub>nats/token</sub></span><span class="d">ln(2) · bytes_per_token</span></span>
@@ -303,8 +304,13 @@ for step in range(total_steps):
 <div class="box gotcha">
 <span class="t">Two accumulation bugs</span>
 <ol style="margin-bottom:0">
-<li><b>Forgetting to divide by <code>ACC_STEPS</code>.</b> Your effective learning rate becomes 8× larger than
-you think, and it diverges.</li>
+<li><b>Forgetting to divide by <code>ACC_STEPS</code>.</b> The gradient becomes 8× larger than you think.
+Under SGD that is an 8× learning rate and it diverges. Under AdamW it is quieter than that: Adam's step
+m̂/(√v̂ + ε) does not change when the gradient is scaled by a constant, so the trajectory is almost the same,
+and <code>clip_grad_norm_</code> clips the inflated norm anyway. What it does break: your clipping threshold now
+means something different, every logged loss and gradient norm is 8× off, and switching optimizers (or
+changing the accumulation count) silently changes the run. Divide anyway; the companion notebook shows both
+cases.</li>
 <li><b>Calling <code>opt.zero_grad()</code> inside the micro-batch loop.</b> Then you're not accumulating at
 all — you just did 8× the work for one micro-batch's gradient.</li>
 </ol>
@@ -368,8 +374,10 @@ FlashAttention's varlen API and PyTorch FlexAttention).</p>
     <div class="opt">Accumulate over 64 micro-batches; divide each loss by 64 and step once</div>
   </div>
   <div class="expl"><b>Divide by the accumulation count, step once.</b> <code>loss.backward()</code>
-  <i>adds</i> into <code>.grad</code>, so without the division you get the sum of 64 losses — a 64× larger
-  effective learning rate. Option C defeats the purpose entirely (that's just 64 small steps).</div>
+  <i>adds</i> into <code>.grad</code>, so without the division you get the sum of 64 losses: a gradient 64× too large. With SGD that is a
+  64× learning rate; with AdamW the step barely changes (it is scale-invariant), but clipping thresholds,
+  logged losses and gradient norms are all 64× off. Option C defeats the purpose entirely (that's just 64
+  small steps).</div>
 </div>
 </div>
 
@@ -1171,9 +1179,14 @@ yourself a lookup table so you can diagnose these by sight later.</p>
 data's entropy is impossible.</b></li>
 <li>Loss drops much faster than normal and reaches an implausibly low value; generation is incoherent.
 Same tell as (1) — the model is cheating.</li>
-<li>Gradients accumulate forever, so effective LR grows without bound. Loss falls then explodes to NaN.</li>
-<li>NaN within ~10 steps.</li>
-<li>Behaves like an 8× LR: either divergence or a noisy plateau well above where it should be.</li>
+<li>Gradients accumulate forever. Under SGD the effective LR grows without bound and the loss explodes. Under
+AdamW, which normalises the ever-growing sum, the run stays finite but degrades: every step uses a stale
+average of all past gradients, so the loss stalls well above the honest run.</li>
+<li>Under SGD, NaN within ~10 steps. Under AdamW the loss spikes far above ln V and the run is ruined, but it
+may not produce NaN at once: watch for the spike, not only for NaN.</li>
+<li>Under SGD it behaves like an 8× LR (divergence or a high, noisy plateau). Under AdamW the loss curve looks
+almost normal, because Adam's step ignores the gradient's scale; the tell is that the logged gradient norm is
+8× what the same run reports with the division.</li>
 </ol>
 <p style="margin-bottom:0"><b>The meta-lesson:</b> (1) and (2) both produce a <i>beautiful</i> loss curve.
 Never trust a loss curve alone — always generate samples and always check loss against
@@ -1269,10 +1282,10 @@ under-estimates the run by three days.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=27"></script>
-<script src="assets/course.js?v=27"></script>
-<script src="assets/viz.js?v=27"></script>
-<script src="assets/axes.js?v=27"></script>
+<script src="assets/chapters.js?v=28"></script>
+<script src="assets/course.js?v=28"></script>
+<script src="assets/viz.js?v=28"></script>
+<script src="assets/axes.js?v=28"></script>
 <script>initChapter("11");</script>
 </body>
 </html>

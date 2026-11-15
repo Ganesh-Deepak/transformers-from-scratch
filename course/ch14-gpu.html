@@ -6,7 +6,7 @@
 <title>Ch 14 — The GPU: Memory, Tensor Cores, and the Roofline</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=27">
+<link rel="stylesheet" href="assets/style.css?v=28">
 </head>
 <body>
 <main>
@@ -297,7 +297,7 @@ materialises the
 <span class="shape"><b>T</b><span class="x">, </span><b>T</b></span> score matrix in HBM — for
 <span class="math">T = 8192</span> that is 128 MB per head, written and read back, when the L2 cache is
 only 50 MB. FlashAttention never writes it: it tiles Q, K and V into <b>shared memory</b> (the 228 KB
-level, ~7× the bandwidth of HBM), computes each tile's contribution, and keeps only a running softmax.
+level, ~6× the bandwidth of HBM: ~20 TB/s against 3.35 TB/s), computes each tile's contribution, and keeps only a running softmax.
 <b>The FLOPs are identical. The bytes moved drop by orders of magnitude.</b> On this chapter's roofline
 that is the whole speedup — see <a href="ch17-flashattention.html">Ch&nbsp;17</a> for the algorithm and
 the online-softmax proof that makes it exact.</p>
@@ -685,10 +685,10 @@ line, check that rows are contiguous (coalescing, §14.5) and that BLOCK is not 
 
 </main>
 
-<script src="assets/chapters.js?v=27"></script>
-<script src="assets/course.js?v=27"></script>
-<script src="assets/viz.js?v=27"></script>
-<script src="assets/axes.js?v=27"></script>
+<script src="assets/chapters.js?v=28"></script>
+<script src="assets/course.js?v=28"></script>
+<script src="assets/viz.js?v=28"></script>
+<script src="assets/axes.js?v=28"></script>
 <script>initChapter("14");</script>
 </body>
 </html>

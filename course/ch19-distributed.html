@@ -6,7 +6,7 @@
 <title>Ch 19 — Distributed Training: DP, TP, PP, ZeRO</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=27">
+<link rel="stylesheet" href="assets/style.css?v=28">
 </head>
 <body>
 <main>
@@ -240,9 +240,11 @@ bubble fraction = <span class="frac"><span class="n">p &minus; 1</span><span cla
 <span class="math">m ≳ 9(p − 1)</span> — roughly <b>ten microbatches per stage</b>. That is the entire
 design pressure behind <b>1F1B</b> scheduling (same bubble, far less activation memory, because a
 microbatch's activations are freed as soon as its backward runs) and <b>interleaved 1F1B</b>, which gives
-each GPU <span class="math">v</span> non-contiguous chunks of layers and cuts the bubble to
-<span class="math">(p-1)/(vm)</span> at the cost of <span class="math">v×</span> more boundary
-messages.</p>
+each GPU <span class="math">v</span> non-contiguous chunks of layers and cuts the idle fraction to
+<span class="math">(p-1)/(vm+p-1)</span> at the cost of <span class="math">v×</span> more boundary
+messages (pv − 1 hand-offs per microbatch instead of p − 1). Narayanan et al. write the same result as
+<span class="math">(p-1)/(vm)</span>: that is bubble time divided by <i>ideal compute time</i>, not by total
+time, so check which convention a paper uses before comparing numbers.</p>
 </div>
 
 <div class="quiz" data-title="Checkpoint 1 — DP, ZeRO, TP, PP">
@@ -269,8 +271,8 @@ messages.</p>
     <div class="opt">~25%</div>
   </div>
   <div class="expl"><b>7/15 = 0.4667</b>, confirmed by simulation. Filling and draining the pipeline
-  costs p−1 slots at each end regardless of m. You need roughly <b>10 microbatches per stage</b> —
-  here about 72 — to push the bubble under 10%.</div>
+  costs p−1 slots at each end regardless of m. The rule m ≥ 9(p − 1) gives <b>m = 64</b> here, for a bubble of 9.9%
+  (roughly ten microbatches per stage).</div>
 </div>
 
 <div class="qitem" data-answer="2">
@@ -695,7 +697,9 @@ constraint they weighted differently — there is usually one.</p>
 <p>Confirm it matches <span class="math">(p-1)/(m+p-1)</span> for
 <span class="math">p ∈ {2, 4, 8, 16}</span>, <span class="math">m ∈ {1, …, 128}</span>. Then
 extend it to <b>interleaved</b> 1F1B with <span class="math">v</span> chunks per GPU and verify the
-bubble becomes <span class="math">(p-1)/(vm)</span>. What does <span class="math">v</span> cost you?</p>
+idle fraction becomes <span class="math">(p-1)/(vm+p-1)</span> (Narayanan et al.'s
+<span class="math">(p-1)/(vm)</span> is the same bubble measured against ideal compute time). What does
+<span class="math">v</span> cost you?</p>
 </div></div>
 
 <div class="exercise">
@@ -811,10 +815,10 @@ target is R, not δ.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=27"></script>
-<script src="assets/course.js?v=27"></script>
-<script src="assets/viz.js?v=27"></script>
-<script src="assets/axes.js?v=27"></script>
+<script src="assets/chapters.js?v=28"></script>
+<script src="assets/course.js?v=28"></script>
+<script src="assets/viz.js?v=28"></script>
+<script src="assets/axes.js?v=28"></script>
 <script>initChapter("19");</script>
 </body>
 </html>

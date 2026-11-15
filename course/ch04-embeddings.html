@@ -6,7 +6,7 @@
 <title>Ch 4 — Embeddings and the Residual Stream</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=27">
+<link rel="stylesheet" href="assets/style.css?v=28">
 </head>
 <body>
 <main>
@@ -114,9 +114,11 @@ lookup:                            768 memory reads
 linear layer — which is why weight tying with the output projection is even coherent. (2) The
 gradient reaches <b>exactly one row</b> per token occurrence, because every other row was
 multiplied by zero. That sparsity is precisely the mechanism behind the under-trained "glitch
-tokens" of Chapter 3: a token seen once gets one gradient, ever. (With AdamW its row keeps drifting for a few
-hundred steps on momentum, and weight decay shrinks it every step, so a rare token's row ends up somewhere
-between its random initialisation and zero: never trained, but not untouched either.)</p>
+tokens" of Chapter 3: a token seen once gets one gradient, ever. (With AdamW its row keeps moving after that gradient, but briefly on momentum: Adam's step decays like
+(β<sub>1</sub>/√β<sub>2</sub>)<sup>t</sup>, under 1% of its first size within about 45 steps. What keeps
+acting for hundreds of steps is weight decay, which shrinks the row every step, so a rare token's row
+ends up somewhere between a single update and zero: never trained, but not untouched either. The
+companion notebook measures both.)</p>
 </div>
 
 <p>The one-hot view is conceptually useful (it explains why an embedding layer <i>is</i> a linear layer, and
@@ -608,11 +610,14 @@ layers — the embedding only needs to be a useful <i>starting point</i>, not a 
 <code>x = attn(ln(x))</code> in every block. Train both on the same tiny dataset for the same number of
 steps. Plot both loss curves.</p>
 <details class="reveal"><summary>What you'll see, and why</summary><div>
-<p style="margin-bottom:0">The residual-free model trains dramatically worse, and the gap widens with depth —
-at 2 layers it's marginal, at 8 layers it's severe, at 24 layers the non-residual version often fails to
-learn at all. Inspect <code>block[0].attn.weight.grad.norm()</code> in both: the non-residual version's
-first-layer gradients are orders of magnitude smaller. That measurement <i>is</i> the vanishing gradient
-problem, and it's much more convincing than reading about it.</p>
+<p style="margin-bottom:0">The residual-free model trains dramatically worse, and in a pre-norm model the gap is
+already large at 2 layers (the companion notebook measures it). The gradient check is the surprising part:
+inspect <code>block[0].attn.weight.grad.norm()</code> in both, and the non-residual model's first-layer gradient
+is <i>not</i> orders of magnitude smaller; it is about as large or larger. With a norm in front of every
+sublayer, each block rescales its input, so the gradient does not vanish. What the residual-free model loses
+is the identity path itself: every layer must re-encode everything the layers before it knew, instead of
+adding a small correction to a stream that already carries it. (In a post-norm or norm-free stack, the
+textbook vanishing gradient does appear; Ch 8's exercise 8.2 measures that.)</p>
 </div></details>
 </div></div>
 
@@ -680,10 +685,10 @@ decides how many can share.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=27"></script>
-<script src="assets/course.js?v=27"></script>
-<script src="assets/viz.js?v=27"></script>
-<script src="assets/axes.js?v=27"></script>
+<script src="assets/chapters.js?v=28"></script>
+<script src="assets/course.js?v=28"></script>
+<script src="assets/viz.js?v=28"></script>
+<script src="assets/axes.js?v=28"></script>
 <script>initChapter("04");</script>
 </body>
 </html>

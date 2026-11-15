@@ -6,7 +6,7 @@
 <title>Ch 8 — The Transformer Block</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=27">
+<link rel="stylesheet" href="assets/style.css?v=28">
 </head>
 <body>
 <main>
@@ -201,7 +201,7 @@ ln = (x - mu) / torch.sqrt(var + 1e-5)
 rms = x * torch.rsqrt(x.pow(2).mean() + 1e-5)
 
 print(ln.round(decimals=3))    # [-0.392, -1.177,  0.000,  1.569]
-print(rms.round(decimals=3))   # [ 0.633,  0.211,  0.843,  1.687]
+print(rms.round(decimals=3))   # [ 0.632,  0.211,  0.843,  1.687]
 print("LN   mean/std:", ln.mean().item(), ln.std(unbiased=False).item())
 print("RMS  mean/rms:", rms.mean().item(), rms.pow(2).mean().sqrt().item())
 print("cosine:", torch.nn.functional.cosine_similarity(ln, rms, dim=0).item())</code></pre>
@@ -611,8 +611,10 @@ for random input — they are doing nearly the same thing, which is the empirica
 and plot <code>block[i].attn.qkv.weight.grad.norm()</code> against layer index <code>i</code> for both,
 on a log scale.</p>
 <details class="reveal"><summary>What you'll see</summary><div>
-<p style="margin-bottom:0">Post-LN gradients decay roughly geometrically with depth — often 2–4 orders of
-magnitude smaller at layer 0 than at layer 23. Pre-LN gradients are approximately flat across depth. Then
+<p style="margin-bottom:0">Post-LN gradients are largest at the top and shrink toward layer 0; in the companion
+notebook's 24-layer model the ratio is about 5–10×. (Much larger ratios, 10<sup>3</sup> and up, usually come from
+initialisation rather than depth: a tiny raw embedding feeding layer 0 alone.) Pre-LN gradients are
+approximately flat across depth. Then
 try actually training both with the same LR: post-LN will spike or diverge, pre-LN won't. This single plot
 explains a design decision that took the field about two years to settle.</p>
 </div></details>
@@ -727,10 +729,10 @@ same number of norms' worth of parameters, or the comparison is not fair.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=27"></script>
-<script src="assets/course.js?v=27"></script>
-<script src="assets/viz.js?v=27"></script>
-<script src="assets/axes.js?v=27"></script>
+<script src="assets/chapters.js?v=28"></script>
+<script src="assets/course.js?v=28"></script>
+<script src="assets/viz.js?v=28"></script>
+<script src="assets/axes.js?v=28"></script>
 <script>initChapter("08");</script>
 </body>
 </html>

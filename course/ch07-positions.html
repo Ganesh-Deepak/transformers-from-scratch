@@ -6,7 +6,7 @@
 <title>Ch 7 — Position: Sinusoidal → Learned → RoPE → ALiBi</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
-<link rel="stylesheet" href="assets/style.css?v=27">
+<link rel="stylesheet" href="assets/style.css?v=28">
 </head>
 <body>
 <main>
@@ -190,8 +190,8 @@ m= 1  n= 4   offset 3   dot = -0.481099   <- different offset, different value</
 </div></div>
 
 <p style="margin-bottom:0"><b>That is the theorem, measured.</b> The absolute positions were 0, 1,
-5 and 10 — wildly different — yet the attention score is <i>bit-identical</i> because the gap was
-always 2. Absolute position went in; only relative position came out. No parameters, no lookup
+5 and 10 — wildly different — yet the attention score is <i>identical</i> (to float32 rounding, about 10<sup>−8</sup>) because the
+gap was always 2. Absolute position went in; only relative position came out. No parameters, no lookup
 table, no maximum length.</p>
 </div>
 
@@ -618,10 +618,10 @@ most of the compression the latent achieves.</p>
 
 </main>
 
-<script src="assets/chapters.js?v=27"></script>
-<script src="assets/course.js?v=27"></script>
-<script src="assets/viz.js?v=27"></script>
-<script src="assets/axes.js?v=27"></script>
+<script src="assets/chapters.js?v=28"></script>
+<script src="assets/course.js?v=28"></script>
+<script src="assets/viz.js?v=28"></script>
+<script src="assets/axes.js?v=28"></script>
 <script>initChapter("07");</script>
 </body>
 </html>
