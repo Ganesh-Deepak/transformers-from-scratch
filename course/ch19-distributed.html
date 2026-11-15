@@ -15,19 +15,24 @@
 <p class="lead">
 A 7B model needs <b>112 GB</b> just for weights, gradients and optimizer state — before a single
 activation. An 80 GB GPU cannot hold it. Every frontier model is therefore split across hundreds or
-thousands of chips, and there are exactly four ways to cut it up. This chapter derives what each cut
+thousands of chips, along the batch, the layers, the stack and the sequence. This chapter derives what each cut
 costs <b>in bytes on the wire</b>, which is the only thing that decides whether a strategy works.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; the optimizer state we are about to shard<br><a href="ch12-precision.html">Ch&nbsp;12</a> &mdash; where 16 bytes/param comes from<br><a href="ch14-gpu.html">Ch&nbsp;14</a> &mdash; the bandwidth reasoning, now applied between chips<div class="sep"></div><span class="k">Leads to</span><a href="ch20-moe.html">Ch&nbsp;20</a> &mdash; expert parallelism is a fifth axis<br><a href="ch21-scaling.html">Ch&nbsp;21</a> &mdash; how big to make the thing you are now able to train<div class="sep"></div><span class="k">Why this chapter</span>The memory arithmetic here is the reason MoE, ZeRO and 3-D meshes all exist.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; the optimizer state we are about to shard<br><a href="ch12-precision.html">Ch&nbsp;12</a> &mdash; where 16 bytes/param comes from<br><a href="ch14-gpu.html">Ch&nbsp;14</a> &mdash; the bandwidth reasoning, now applied between chips<br><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; the online softmax ring attention reuses<div class="sep"></div><span class="k">Leads to</span><a href="ch20-moe.html">Ch&nbsp;20</a> &mdash; expert parallelism is a fifth axis<br><a href="ch21-scaling.html">Ch&nbsp;21</a> &mdash; how big to make the thing you are now able to train<div class="sep"></div><span class="k">Why this chapter</span>The memory arithmetic here is the reason MoE, ZeRO and 5-D meshes all exist. Every number is computed in <code>tfs/parallel.py</code> or <code>tfs/memory.py</code> and asserted in <code>tests/test_training.py</code>.</div>
 
 <div class="box intuition">
-<span class="t">The one idea in this chapter</span>
-<p style="margin-bottom:0">There are only three things you can split: <b>the batch</b> (data parallel),
-<b>each layer</b> (tensor parallel), or <b>the stack of layers</b> (pipeline parallel). Each splits a
-different axis of the same computation, and each pays for it with a different communication pattern.
-Real systems combine all three, and the shape of the combination is dictated entirely by
-<b>which links are fast</b>.</p>
+<span class="t">The whole chapter in five sentences</span>
+<p style="margin-bottom:0">Mixed-precision Adam needs <b>16 bytes per parameter</b> before a single activation,
+so anything past a few billion parameters must be split across GPUs. There are four things to split:
+<b>the batch</b> (data parallel, with ZeRO/FSDP sharding the redundant state), <b>each layer</b> (tensor
+parallel), <b>the stack</b> (pipeline parallel) and, for long context, <b>the sequence</b> (context
+parallel). Each pays in a different communication pattern, and what decides a design is <b>bytes on the
+wire against the speed of the link they cross</b>: the frequent, non-overlappable traffic goes on NVLink inside
+a node, the rest on the network. Activations are the other half of memory, and sequence parallelism,
+selective recomputation and FlashAttention each delete a specific term of a published formula. At thousands of
+GPUs <b>failures arrive every few hours</b>, so checkpoint cadence and restart time are part of the design,
+not an afterthought.</p>
 </div>
 
 <h2>19.1 · The memory problem, stated exactly</h2>
@@ -153,7 +158,7 @@ built to minimise synchronisation, and the reason it works is worth seeing:</p>
 
 <div class="step"><div class="i">1</div><div>
 <b>Split the first matrix by columns.</b> With
-<span class="math">W_1 = [W_1^{(a)}, W_1^{(b)}]</span>, each GPU computes its own column block:
+<span class="math">W<sub>1</sub> = [W<sub>1</sub><sup>(a)</sup>, W<sub>1</sub><sup>(b)</sup>]</span>, each GPU computes its own column block:
 <pre style="margin:.4rem 0"><code class="nohl">GPU a:  h_a = act(x @ W1_a)     x is REPLICATED, h_a is a column slice
 GPU b:  h_b = act(x @ W1_b)</code></pre>
 No communication — and because the activation is elementwise, it applies independently per column.
@@ -176,7 +181,7 @@ never leaves its GPU.
 <div class="step"><div class="i">4</div><div>
 <b>Attention splits the same way, along heads.</b> Each GPU owns whole heads, computes their attention
 independently (heads never interact until the output projection), and the output projection is
-row-split like <span class="math">W_2</span>. <b>One all-reduce per attention block.</b>
+row-split like <span class="math">W<sub>2</sub></span>. <b>One all-reduce per attention block.</b>
 </div></div>
 </div>
 
@@ -232,7 +237,7 @@ bubble fraction = <span class="frac"><span class="n">p &minus; 1</span><span cla
 <div class="box intuition">
 <span class="t">The rule of thumb, and where it comes from</span>
 <p style="margin-bottom:0">To keep the bubble under ~10% you need
-<span class="math">m \gtrsim 9(p-1)</span> — roughly <b>ten microbatches per stage</b>. That is the entire
+<span class="math">m ≳ 9(p − 1)</span> — roughly <b>ten microbatches per stage</b>. That is the entire
 design pressure behind <b>1F1B</b> scheduling (same bubble, far less activation memory, because a
 microbatch's activations are freed as soon as its backward runs) and <b>interleaved 1F1B</b>, which gives
 each GPU <span class="math">v</span> non-contiguous chunks of layers and cuts the bubble to
@@ -240,48 +245,7 @@ each GPU <span class="math">v</span> non-contiguous chunks of layers and cuts th
 messages.</p>
 </div>
 
-<h2>19.6 · Putting it together: the 4-D mesh</h2>
-
-<p>Real runs use every axis at once, and the assignment follows one principle: <b>match each
-parallelism's communication pattern to the link that can carry it.</b></p>
-
-<div class="tw">
-<table>
-<thead><tr><th>Axis</th><th>Splits</th><th>Communication</th><th>Overlappable?</th><th>Placed on</th></tr></thead>
-<tbody>
-<tr><td><b>Tensor</b></td><td>each matrix</td><td>2 all-reduce / layer, large</td><td>no — mid-layer</td><td>NVLink, within a node (≤8)</td></tr>
-<tr><td><b>Pipeline</b></td><td>the layer stack</td><td>boundary activations only, small</td><td>partly</td><td>across nodes</td></tr>
-<tr><td><b>Data / ZeRO</b></td><td>the batch</td><td>1 all-reduce / step</td><td>yes — with backward</td><td>everything else</td></tr>
-<tr><td><b>Expert</b></td><td>MoE experts</td><td>2 all-to-all / MoE layer</td><td>partly</td><td>see <a href="ch20-moe.html">Ch&nbsp;20</a></td></tr>
-</tbody>
-</table>
-</div>
-
-<pre><code class="nohl">a typical 1024-GPU layout
-  TP = 8      within each node        (NVLink, 900 GB/s)
-  PP = 16     across nodes            (InfiniBand, small messages)
-  DP = 8      the remaining axis      (8 x 16 x 8 = 1024)</code></pre>
-
-<div class="box math-note">
-<span class="t">How to read any published training setup</span>
-<p style="margin-bottom:0">Work outward from the constraints. <b>TP is capped at the node size</b> (8).
-<b>PP is set by how many layers you have and how deep a bubble you tolerate</b> — you need
-<span class="math">m \gtrsim 9(p-1)</span> microbatches, and microbatches come out of the batch you
-already fixed for optimization reasons. <b>DP absorbs whatever GPUs remain.</b> Almost every setup you
-will read is that calculation, and the surprising part is how little freedom there is.</p>
-</div>
-
-<h3>Activation checkpointing, the fifth lever</h3>
-
-<p>None of the above touches activations, which grow with
-<span class="math">B × T × d × layers</span> and often dominate. <b>Gradient
-checkpointing</b> stores only layer boundaries and recomputes the interior during backward: memory drops
-from <span class="math">O(L)</span> to <span class="math">O(√L)</span> with an optimal schedule,
-for roughly <b>30% more compute</b>. Since <a href="ch14-gpu.html">Ch&nbsp;14</a> established that most
-of training is memory-bound anyway, trading FLOPs for bytes is usually a win — the recompute frequently
-costs less wall-clock time than it saves.</p>
-
-<div class="quiz" data-title="Checkpoint — distributed training">
+<div class="quiz" data-title="Checkpoint 1 — DP, ZeRO, TP, PP">
 <div class="qitem" data-answer="3">
   <div class="qq">Why is tensor parallelism almost never used across more than 8 GPUs?</div>
   <div class="opts">
@@ -324,7 +288,386 @@ costs less wall-clock time than it saves.</p>
 </div>
 </div>
 
-<h2>19.7 · Exercises</h2>
+<h2>19.6 · Context parallelism: split the sequence</h2>
+
+<p>Every axis so far leaves one thing whole: <b>each sequence</b>. DP splits the batch into sequences, TP
+splits each layer's matrices, PP splits the stack, and every GPU still processes all T tokens of the
+sequences it holds. At T = 8192 that is fine. At T = 131,072 it is not: Chapter 10 §10.7 counted 98,338 saved
+elements per token per layer for an 8B model, which at 128k tokens is <b>25.8 GB per layer</b> in bf16, and
+attention's FLOPs per sequence grow as T². Long-context training needs a fourth cut, along the <b>sequence
+axis</b>. That is context parallelism (CP), and it is how every model with a 128k-plus window is trained.</p>
+
+<p>Most of a transformer does not care. The norms, the MLP, the projections and the residual adds are all
+<b>per token</b>: give each of cp ranks a contiguous slice of T/cp tokens and they run with no communication
+at all, exactly like data parallelism over tokens. Only attention mixes positions: each query needs the keys
+and values of every earlier token, and some of those live on other ranks. So context parallelism is entirely
+a question of <b>how attention gets the K and V it is missing</b>. There are three answers in use.</p>
+
+<h3>Ring attention: pass K and V around</h3>
+
+<p>Arrange the cp ranks in a ring. Each starts with its own Q, K and V blocks. In each of cp − 1 steps,
+every rank computes attention of its local queries against the K, V block it currently holds, accumulating
+with the online softmax of <a href="ch17-flashattention.html">Chapter 17</a> (the same running max and sum
+that let FlashAttention process K in tiles), and simultaneously <b>sends that block to the next rank and
+receives one from the previous</b>. After cp − 1 steps each rank has seen every block, and its output is
+exact. Per rank per layer, forward:</p>
+
+<div class="mathblock">
+ring bytes = (cp − 1) · 2 · <span class="frac"><span class="n">T</span><span class="d">cp</span></span> · n<sub>kv</sub> · d<sub>head</sub> · bytes
+<span class="lbl">K and V blocks, cp − 1 hops. Tends to 2·T·n_kv·d_head·bytes: it does NOT shrink as cp grows</span>
+</div>
+
+<p>The point of the ring is <b>overlap</b>: the transfer of the next block runs while the current block is
+being computed, so if the compute takes longer, the communication is free. A ring step with block size
+c = T/cp computes 4·c²·H·d<sub>head</sub> FLOPs (scores and weighted sum) and moves
+2·c·n<sub>kv</sub>·d<sub>head</sub>·2 bytes. Setting compute time ≥ transfer time gives the condition
+(<code>tfs.parallel.ring_overlap_min_block</code>):</p>
+
+<div class="mathblock">
+c ≥ <span class="frac"><span class="n">F</span><span class="d">BW</span></span> · <span class="frac"><span class="n">n<sub>kv</sub></span><span class="d">H</span></span>
+<span class="lbl">F = peak FLOP/s, BW = link bytes/s · with n_kv = H this is Liu et al.'s c ≥ F/B</span>
+</div>
+
+<pre><code class="nohl">H100 (989 TFLOP/s bf16), GQA with H/n_kv = 4
+                         full mask    causal, unbalanced
+  InfiniBand  50 GB/s      4,945          9,890     tokens per rank
+  NVLink     450 GB/s        549          1,099     (one direction)
+  MHA (n_kv = H), IB      19,780                    = F/B, the Ring Attention paper's bound</code></pre>
+
+<p>So on InfiniBand a rank needs about 5,000 tokens of its own before the ring hides its traffic, and with
+GQA it needs four times fewer than MHA, because only K and V travel. The causal mask complicates it: in a
+contiguous split, rank 0 owns the first T/cp tokens, whose queries see almost nothing, and the last rank owns
+queries that see everything. Counted in blocks of the lower triangle with cp = 4 and 8 chunks, contiguous
+ownership gives the four ranks <b>3, 7, 11 and 15</b> blocks of work: the slowest does 5× the fastest. The
+fix (Llama 3's, also called "zigzag"): cut the sequence into <b>2·cp chunks</b> and give rank i chunks
+<b>i and 2·cp − 1 − i</b>, one early and one late. Each rank then owns <b>9, 9, 9, 9</b> blocks
+(<code>test_zigzag_balances_causal_work</code>).</p>
+
+<h3>All-gather CP: what Llama 3 actually did</h3>
+
+<p>Llama 3's 405B long-context stage used a simpler variant: <b>all-gather</b> the full K and V across the CP
+group, then compute local-query attention against all of it, with the 2·cp chunk balancing above. The bytes
+per rank are the same as the ring (an all-gather delivers (cp − 1)/cp of the result to each rank); what it
+gives up is overlap, and what it gains is simplicity and support for arbitrary attention masks (document
+masks, for instance). It works because with GQA the K, V being gathered are small: for 405B (8 KV heads of
+128), a 131,072-token sequence at CP = 16 gathers about <b>0.5 GB per layer per rank</b>, while each rank's
+local block is 8,192 tokens.</p>
+
+<h3>DeepSpeed-Ulysses: swap the sharded axis</h3>
+
+<p>Ulysses takes the opposite approach. Before attention, one <b>all-to-all</b> turns sequence-sharded q, k, v
+(each rank: T/cp tokens, all heads) into <b>head-sharded</b> q, k, v (each rank: all T tokens, H/cp heads).
+Attention is then completely local, since heads never interact. A second all-to-all turns the output back to
+sequence-sharded for the MLP. An all-to-all sends (cp − 1)/cp of each rank's local tensor, and that tensor is
+only T/cp tokens long:</p>
+
+<div class="mathblock">
+Ulysses bytes = <span class="frac"><span class="n">cp − 1</span><span class="d">cp</span></span> · <span class="frac"><span class="n">T</span><span class="d">cp</span></span> · (2H + 2n<sub>kv</sub>) · d<sub>head</sub> · bytes
+<span class="lbl">q and the output at H heads, k and v at n_kv heads · FALLS as 1/cp</span>
+</div>
+
+<div class="example">
+<span class="t">Worked example — ring or Ulysses for an 8B model at 128k?</span>
+<p>Llama-3-8B attention shape: H = 32, n<sub>kv</sub> = 8, d<sub>head</sub> = 128, T = 131,072, bf16.
+Bytes sent per rank per layer, forward (<code>tfs.parallel</code>):</p>
+<pre style="margin:.4rem 0"><code class="nohl">  cp        ring       Ulysses     Ulysses / ring
+   2      268 MB       671 MB         2.50
+   4      403 MB       503 MB         1.25
+   8      470 MB       294 MB         0.63
+  16      503 MB       157 MB         0.31</code></pre>
+<p>The ratio is exactly (2H + 2n<sub>kv</sub>) / (2·n<sub>kv</sub>·cp) = 80 / (16·cp) = 5/cp. Ulysses moves
+fewer bytes once <b>cp &gt; 5</b> here. With MHA (n<sub>kv</sub> = H) the ratio is 2/cp and Ulysses wins from
+cp = 3. GQA tilts the balance toward the ring, because the ring only ever moves the small K and V.</p>
+<p style="margin-bottom:0"><b>But bytes are not the whole decision.</b> Ulysses' all-to-alls sit on the
+critical path (nothing to overlap them with), and cp cannot exceed the number of KV heads without replicating
+them: here cp ≤ 8. The ring overlaps with compute but needs blocks of thousands of tokens on slow links.
+</p>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th></th><th>Ring attention</th><th>All-gather CP</th><th>Ulysses</th></tr></thead>
+<tbody>
+<tr><td>Bytes per rank per layer</td><td>≈ 2·T·n_kv·dh·bytes, flat in cp</td><td>same as ring</td><td>∝ T·(2H + 2n_kv)·dh / cp</td></tr>
+<tr><td>Overlap with compute</td><td>yes, if T/cp ≥ F/BW · n_kv/H</td><td>no</td><td>no (two blocking all-to-alls)</td></tr>
+<tr><td>Limit on degree</td><td>block must stay large</td><td>gathered K, V must fit</td><td>cp ≤ n_kv (heads must divide)</td></tr>
+<tr><td>Arbitrary masks</td><td>awkward</td><td>easy</td><td>easy (attention is local)</td></tr>
+<tr><td>Best placed on</td><td>across nodes</td><td>within / across nodes, small K, V</td><td>within a node (fast all-to-all)</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The two compose: run Ulysses inside a node (fast all-to-all, degree up to the KV-head count) and a ring
+across nodes, which is what "unified" sequence parallelism implementations do. And CP composes with the
+other axes simply. For every per-token layer, a CP group behaves like a data-parallel group over tokens: its
+ranks hold identical weights and their gradients must be summed, so frameworks fold the CP group into the
+gradient reduction alongside DP. Activations per rank fall by cp (each rank holds T/cp tokens), which is the
+whole reason to do it.</p>
+
+<h2>19.7 · Activation memory, exactly</h2>
+
+<p>Section 19.1 counted the 16 bytes per parameter that every parallelism axis shards. Activations are the
+other half of the bill, and Korthikanti et al. (2022) give the per-layer formula that every Megatron-style
+system plans with. For a GPT layer (LayerNorm, GeLU MLP of width 4h, dropout, attention scores materialised),
+2-byte activations and 1-byte dropout masks, with s = sequence length, b = micro-batch, h = hidden size,
+a = heads:</p>
+
+<div class="mathblock">
+activation bytes per layer = s·b·h · (34 + 5·a·s / h)
+<span class="lbl">34 = 11 (attention block) + 19 (MLP) + 4 (two norms), per s·b·h · the 5as/h term is the a·s² attention scores, softmax and dropout mask</span>
+</div>
+
+<p>Then each technique removes a specific piece (<code>tfs.memory.korthikanti_bytes_per_layer</code>):</p>
+
+<div class="example">
+<span class="t">Worked example — GPT-3 175B: s = 2048, b = 1, h = 12288, a = 96, 96 layers</span>
+<pre style="margin:.4rem 0"><code class="nohl">                                        per layer      all 96 layers
+no parallelism       sbh(34 + 5as/h)     2.87 GB         275 GB
+TP = 8               sbh(10 + 24/t + 5as/(ht))           55.6 GB     <- 10 sbh is NOT split by TP
+TP = 8 + seq. par.   sbh(34 + 5as/h)/t                   34.4 GB
+  + selective recomp.  sbh·34/t                          10.3 GB     <- re-run only the attention core
+full recomputation   2sbh (just the layer input)          4.83 GB</code></pre>
+<p style="margin-bottom:0">Two lessons. <b>The 10·sbh term</b> is the norms and dropouts, which tensor
+parallelism leaves replicated on every rank. <b>Sequence parallelism</b> (a different thing from §19.6's
+context parallelism) shards those regions along the sequence axis and replaces each all-reduce with a
+reduce-scatter plus an all-gather, which moves the same bytes. And <b>the 5as/h term</b> is 80 of the 114
+units here: the attention scores. Selective recomputation drops exactly that term and re-runs the attention
+core in backward; FlashAttention (Chapter 17) never stores it in the first place, which is why Chapter 10's
+count for a modern block has no s² term at all. Korthikanti et al. report a 5× activation reduction with
+selective recompute, for a few percent of extra FLOPs instead of the 30–40% of full recomputation.</p>
+</div>
+
+<p>Two more facts for planning. With 1F1B pipelining the first stage holds p micro-batches in flight, so
+total activation memory on it is s·b·h·L/t · (34 + 5as/h) <i>regardless of p</i>: the first stage needs as
+much as if it held the whole model's activations for one micro-batch. And for a Llama-style block the
+per-token count is Chapter 10's 24·C elements (48 bytes per C in bf16) rather than 34, because SwiGLU has three
+d_ff-wide tensors and there is no dropout.</p>
+
+<div class="quiz" data-title="Checkpoint 2 — sequences and activations">
+<div class="qitem" data-answer="1">
+  <div class="qq">In context parallelism, which layers need communication?</div>
+  <div class="opts">
+    <div class="opt">All of them, since every layer sees the whole sequence</div>
+    <div class="opt">Only attention: norms, MLP and projections are per-token, so they run on each rank's slice untouched</div>
+    <div class="opt">Only the MLP, which is the widest layer</div>
+    <div class="opt">Only the embedding and the LM head</div>
+  </div>
+  <div class="expl"><b>Only attention mixes positions.</b> Everything else is a function of one token at a time,
+  so a sequence slice behaves like a data-parallel shard over tokens. The CP methods differ only in how
+  attention gets the K and V that live on other ranks.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">For an 8B GQA model (H = 32, n_kv = 8) at T = 128k, ring attention and Ulysses send equal bytes per rank at what CP degree?</div>
+  <div class="opts">
+    <div class="opt">2</div>
+    <div class="opt">8, the number of KV heads</div>
+    <div class="opt">They never cross; Ulysses always sends less</div>
+    <div class="opt">5: the ratio is (2H + 2n_kv)/(2·n_kv·cp) = 5/cp</div>
+  </div>
+  <div class="expl"><b>Ring bytes are flat in cp; Ulysses bytes fall as 1/cp.</b> At cp = 4 Ulysses sends 1.25×
+  the ring's 403 MB; at cp = 8 it sends 0.63× the ring's 470 MB. GQA moves the crossover up because the ring only
+  moves K and V.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Why does Llama 3 give each CP rank chunks i and 2·cp − 1 − i instead of one contiguous slice?</div>
+  <div class="opts">
+    <div class="opt">Under a causal mask, early queries see few keys and late queries see many; pairing an early chunk with a late one gives every rank equal work</div>
+    <div class="opt">It halves the communication volume</div>
+    <div class="opt">It lets each rank skip the attention softmax</div>
+    <div class="opt">RoPE requires non-contiguous positions</div>
+  </div>
+  <div class="expl"><b>Load balance.</b> With cp = 4 and 8 chunks, contiguous slices give 3, 7, 11 and 15 blocks of
+  lower-triangle work; the zigzag assignment gives 9, 9, 9, 9. The slowest rank sets the step time.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">In Korthikanti's formula for GPT-3, what does tensor parallelism alone fail to shard, and what fixes it?</div>
+  <div class="opts">
+    <div class="opt">The attention scores; FlashAttention</div>
+    <div class="opt">The MLP activations; selective recomputation</div>
+    <div class="opt">The 10·sbh of norms and dropout, replicated on every TP rank; sequence parallelism shards them along the sequence</div>
+    <div class="opt">The weights; ZeRO-3</div>
+  </div>
+  <div class="expl"><b>TP splits matrices, not the elementwise regions between them.</b> TP = 8 leaves 55.6 GB
+  for GPT-3's 96 layers; adding sequence parallelism brings it to 34.4 GB at the same communication volume, and
+  selective recomputation to 10.3 GB.</div>
+</div>
+</div>
+
+<h2>19.8 · FP8 training at scale</h2>
+
+<p>Chapter 12 §12.6 explains the formats and the scaling recipes. At cluster scale three further things
+matter.</p>
+
+<p><b>The speedup is less than 2×.</b> An H100 peaks at 989 dense TFLOP/s in bf16 and 1,979 in fp8. Only the
+large matmuls run in fp8, though. DeepSeek-V3, the most detailed public account, runs the forward,
+activation-gradient and weight-gradient GEMMs in fp8 but keeps the embedding, the output head, the MoE gating,
+the norms and attention in bf16 or fp32, keeps master weights and optimizer state in higher precision, and
+adds work of its own: computing a scale for every 1×128 activation tile and 128×128 weight block, and promoting
+the tensor cores' partial sums to fp32 every 128 elements. Whatever is not a big GEMM, and whatever is
+communication, does not get faster.</p>
+
+<p><b>Ask which peak an MFU is quoted against.</b> Meta reports pretraining Llama 4 Behemoth in FP8 on 32K
+GPUs at <b>390 TFLOP/s per GPU</b>. Against the fp8 peak that is <b>19.7% MFU</b>; against the bf16 peak it
+is <b>39.4%</b>, about where Llama 3 405B's bf16 run sat (380–430 TFLOP/s, 38–43%). Different models (Behemoth
+is an MoE), so not a controlled comparison, but it shows how an FP8 run can do more useful work per GPU while
+quoting a lower MFU.</p>
+
+<p><b>Communication can use the narrow format too.</b> The bytes of §19.2–19.4 are proportional to element
+size, so sending fp8 halves them. DeepSeek-V3 dispatches MoE tokens in fp8 (Chapter 20 §20.6), and FSDP
+implementations can all-gather fp8 weights. Gradient reductions generally stay in bf16 or fp32, for Chapter 10
+§10.10's reason: sums need precision.</p>
+
+<p><b>Validate on loss, not on op accuracy.</b> DeepSeek's check was to train smaller models in both precisions
+for about a trillion tokens and compare: the fp8 run's loss stayed within <b>0.25%</b> of bf16 (relative). An
+fp8 recipe that is fine at 1B parameters and 100B tokens can still fail at 100B parameters and 10T tokens,
+because outliers grow with scale and training length.</p>
+
+<h2>19.9 · Fault tolerance at thousands of GPUs</h2>
+
+<p>Big clusters fail constantly, and the arithmetic of what to do about it is short. Llama 3 reported
+<b>466 job interruptions in a 54-day window</b> of 405B pretraining on 16,384 GPUs: 47 planned and 419
+unexpected, of which about 78% were attributed to confirmed or suspected hardware issues, with GPU problems the
+largest single category (58.7%). Despite that the team reported more than 90% effective training time, with
+significant manual intervention needed only three times.</p>
+
+<div class="example">
+<span class="t">Worked example — how often should a 16,384-GPU run checkpoint?</span>
+<div class="step"><div class="i">1</div><div>
+<b>Mean time between failures of the job:</b> 54 days × 24 h ÷ 419 = <b>3.09 hours</b>. Failures add up across
+devices: if every one of them were a single GPU failing independently, each GPU would fail once in about
+5.8 years. Multiply a rare event by 16,384 and it happens every three hours.
+</div></div>
+<div class="step"><div class="i">2</div><div>
+<b>The trade.</b> Checkpointing every τ seconds costs δ seconds per checkpoint (the time training is blocked),
+so δ/τ of the run. A failure loses on average τ/2 of work since the last checkpoint, plus the restart time R.
+To first order:
+<div class="mathblock" style="margin:.5rem 0">
+waste(τ) = δ/τ + (τ/2 + R)/MTBF &nbsp;&nbsp;&nbsp;&nbsp; best at &nbsp; τ* = √(2 · δ · MTBF)
+<span class="lbl">Young (1974) and Daly (2006)</span>
+</div>
+</div></div>
+<div class="step"><div class="i">3</div><div>
+<b>Numbers</b> (<code>tfs.parallel.young_daly_interval</code>, <code>expected_waste</code>), MTBF = 3.09 h:
+<pre style="margin:.4rem 0"><code class="nohl">blocking time δ    best interval τ*    waste (R = 0)    waste (R = 10 min)
+     30 s              13.6 min            7.3%              12.7%
+     60 s              19.3 min           10.4%              15.8%
+    300 s              43.1 min           23.2%              28.6%</code></pre>
+</div></div>
+<div class="step"><div class="i">=</div><div>
+<b>The lesson is in the shape of the formula.</b> Waste at the optimum is about √(2δ/MTBF): to halve it you
+must cut δ by 4. That is why large runs make checkpoints <b>asynchronous</b> (copy the state to host memory in
+seconds, write it to storage in the background while training continues) and why restart time R gets as much
+engineering as δ. A 405B checkpoint is 405 B × 16 bytes = <b>6.48 TB</b> of weights and optimizer state, so
+"just write it faster" only goes so far.
+</div></div>
+</div>
+
+<p>Beyond checkpoints, the operational toolkit is: health checks and burn-in to keep bad GPUs out of the job;
+fast detection (collective timeouts, watchdogs that notice a rank has stopped making progress); <b>straggler
+detection</b>, because in a synchronous job one slow GPU slows all of them; spare nodes so a failed node can be
+swapped without re-planning the mesh; and a restart path that reloads the sharded checkpoint in parallel. Every
+one of those is aimed at the R term or at the MTBF itself.</p>
+
+<h2>19.10 · Putting it together: the 5-D mesh</h2>
+
+<p>Real runs use every axis at once, and the assignment follows one principle: <b>match each parallelism's
+communication pattern to the link that can carry it.</b></p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Axis</th><th>Splits</th><th>Communication</th><th>Overlappable?</th><th>Placed on</th></tr></thead>
+<tbody>
+<tr><td><b>Tensor</b></td><td>each matrix</td><td>2 all-reduce / layer, large</td><td>no — mid-layer</td><td>NVLink, within a node (≤8)</td></tr>
+<tr><td><b>Context</b></td><td>the sequence</td><td>K, V per attention layer (ring / all-gather) or 2 all-to-all (Ulysses)</td><td>ring: yes, if blocks are large</td><td>next to TP; across nodes for rings</td></tr>
+<tr><td><b>Pipeline</b></td><td>the layer stack</td><td>boundary activations only, small</td><td>partly</td><td>across nodes</td></tr>
+<tr><td><b>Data / ZeRO</b></td><td>the batch</td><td>1 all-reduce / step (FSDP: gathers per layer)</td><td>yes — with backward</td><td>everything else</td></tr>
+<tr><td><b>Expert</b></td><td>MoE experts</td><td>2 all-to-all / MoE layer</td><td>partly</td><td>see <a href="ch20-moe.html">Ch&nbsp;20</a></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="example">
+<span class="t">Read a real one — Llama 3 405B (the paper's Table 4)</span>
+<pre style="margin:.4rem 0"><code class="nohl">GPUs     TP   CP   PP    DP    seq len   tokens/batch   TFLOP/s/GPU   BF16 MFU
+ 8,192    8    1   16    64     8,192        16M            430          43%
+16,384    8    1   16   128     8,192        16M            400          41%
+16,384    8   16   16     8   131,072        16M            380          38%</code></pre>
+<p>Check each row: 8 × 1 × 16 × 64 = 8,192, 8 × 1 × 16 × 128 = 16,384 and 8 × 16 × 16 × 8 = 16,384. Read them
+outward from the constraints. <b>TP = 8</b> is one node. <b>PP = 16</b> is set by 126 layers and the bubble.
+The batch is fixed at 16M tokens for optimization reasons, so going from 8K to 16K GPUs <b>halves the batch per
+DP group</b>, and MFU drops from 43% to 41%, which the paper attributes to that lower batch size per DP group. For the 128k stage the same 16M tokens is only 128 sequences, so <b>CP = 16</b> takes
+16 of DP's 128 ways and DP falls to 8.</p>
+<p style="margin-bottom:0">The paper orders the axes [TP, CP, PP, DP] from innermost (fastest link) to
+outermost. That is this section's principle written as a list: the most frequent, least overlappable traffic
+gets the fastest wires.</p>
+</div>
+
+<h3>HSDP: shard inside the node, replicate across nodes</h3>
+
+<p>ZeRO-3 / FSDP over all N GPUs makes every rank all-gather every parameter twice and reduce-scatter every
+gradient once per step, <b>over the slowest link in the job</b>. Hybrid sharding (HSDP, FSDP's
+<code>HYBRID_SHARD</code>) shards only within a group of s GPUs (a node, on NVLink) and runs a plain
+data-parallel all-reduce of each rank's gradient <i>shard</i> across the N/s groups. For a 7B model, bf16
+parameters (14 GB), N = 64 as 8 nodes of 8 (<code>tfs.parallel</code>):</p>
+
+<pre><code class="nohl">per GPU per step              intra-node (NVLink)   inter-node (InfiniBand)   state per GPU
+DDP                                 —                    27.6 GB                 16 B/param
+FSDP over 64                        —                    41.3 GB                 0.25 B/param
+HSDP: shard 8, replicate 8       36.75 GB                 3.06 GB                 2 B/param</code></pre>
+
+<p>HSDP moves <b>13× less over the slow network</b> than FSDP, in exchange for keeping 2 bytes per parameter
+(16 / 8) instead of 0.25. If the model's state fits at 16/s bytes per parameter, it is nearly always the
+better choice, and it is the default way FSDP is run across many nodes.</p>
+
+<div class="box math-note">
+<span class="t">How to read any published training setup</span>
+<p style="margin-bottom:0">Work outward from the constraints. <b>TP is capped at the node size</b> (8).
+<b>CP is set by the sequence length</b>: enough ranks that T/cp tokens of activations fit, and for a ring,
+blocks large enough to hide the transfer. <b>PP is set by how many layers you have and how deep a bubble you
+tolerate</b>: you need <span class="math">m ≳ 9(p − 1)</span> microbatches, and microbatches come out of the
+batch you already fixed for optimization reasons. <b>DP absorbs whatever GPUs remain.</b> Almost every setup
+you will read is that calculation, and the surprising part is how little freedom there is.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 3 — running it for real">
+<div class="qitem" data-answer="2">
+  <div class="qq">An FP8 run reports 20% MFU and an otherwise similar bf16 run reports 40%. What should you check first?</div>
+  <div class="opts">
+    <div class="opt">Whether the FP8 run is diverging</div>
+    <div class="opt">Whether the FP8 run uses tensor parallelism</div>
+    <div class="opt">Which peak each MFU is quoted against: 390 TFLOP/s is 19.7% of the fp8 peak and 39.4% of the bf16 peak</div>
+    <div class="opt">Whether the FP8 run's batch is smaller</div>
+  </div>
+  <div class="expl"><b>MFU is achieved FLOP/s over a peak, and FP8 doubles the peak.</b> Compare achieved TFLOP/s
+  (and tokens per second) first; the fp8 run may be doing more work per GPU.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">A job fails every 3.1 hours on average and a checkpoint blocks training for 60 s. Roughly how often should it checkpoint?</div>
+  <div class="opts">
+    <div class="opt">About every 19 minutes: √(2 × 60 s × 3.09 h)</div>
+    <div class="opt">Every step</div>
+    <div class="opt">Every 3 hours, once per expected failure</div>
+    <div class="opt">Every 90 minutes, half the MTBF</div>
+  </div>
+  <div class="expl"><b>Young–Daly: τ* = √(2δ·MTBF).</b> That gives 19.3 minutes and about 10% waste before restart
+  time. To halve the waste you must cut δ fourfold, which is why checkpoints are made asynchronous.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">Why does HSDP usually beat FSDP across many nodes?</div>
+  <div class="opts">
+    <div class="opt">It uses less memory per GPU</div>
+    <div class="opt">Its per-layer parameter gathers stay on NVLink inside a node; only the gradient-shard all-reduce crosses the network, about 13× fewer inter-node bytes in the 7B example</div>
+    <div class="opt">It needs no gradient reduction at all</div>
+    <div class="opt">It avoids pipeline bubbles</div>
+  </div>
+  <div class="expl"><b>Put the frequent traffic on the fast link.</b> HSDP costs 2 bytes/param of state instead of
+  0.25 in that example, which is usually affordable; the 41.3 GB vs 3.06 GB of inter-node traffic per step is
+  not.</div>
+</div>
+</div>
+
+<h2>19.11 · Exercises</h2>
+
 
 <div class="exercise">
 <div class="eh"><span class="n">19.1</span><span class="ti">Plan a 70B run on 256 GPUs</span><span class="lvl">essential</span></div>
@@ -350,7 +693,7 @@ constraint they weighted differently — there is usually one.</p>
     busy, span = p * m, m + p - 1
     return 1 - busy / (span * p)</code></pre>
 <p>Confirm it matches <span class="math">(p-1)/(m+p-1)</span> for
-<span class="math">p \in \{2,4,8,16\}</span>, <span class="math">m \in \{1,\ldots,128\}</span>. Then
+<span class="math">p ∈ {2, 4, 8, 16}</span>, <span class="math">m ∈ {1, …, 128}</span>. Then
 extend it to <b>interleaved</b> 1F1B with <span class="math">v</span> chunks per GPU and verify the
 bubble becomes <span class="math">(p-1)/(vm)</span>. What does <span class="math">v</span> cost you?</p>
 </div></div>
@@ -380,8 +723,71 @@ in §19.4, and verify the result is <b>bit-identical</b> to the unsplit version:
 W2_a, W2_b = W2.chunk(2, dim=0)     # row split
 y = act(x @ W1_a) @ W2_a + act(x @ W1_b) @ W2_b     # the "all-reduce"
 assert torch.allclose(y, act(x @ W1) @ W2, atol=1e-5)</code></pre>
-<p>Then try it the wrong way round — row-split <span class="math">W_1</span> — and explain precisely why
+<p>Then try it the wrong way round — row-split <span class="math">W<sub>1</sub></span> — and explain precisely why
 it fails. Your explanation should name the nonlinearity.</p>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">19.5</span><span class="ti">Plan the 128k stage</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p>Take the 8B shape of §19.6's worked example (32 layers, C = 4096, H = 32, n_kv = 8, d_ff = 14336) at
+T = 131,072 on H100 nodes of 8 GPUs, bf16, one checkpoint per layer.</p>
+<ol>
+<li>Activation memory per GPU for one sequence at cp = 1, 8 and 16 (use Chapter 10 §10.7: per-layer
+checkpointing stores one C-wide boundary per token per layer, plus one layer's internals during backward).</li>
+<li>Ring bytes per layer per rank at cp = 8 and cp = 16, and whether the ring hides its traffic on
+InfiniBand at each (the causal-unbalanced bound is 9,890 tokens per rank).</li>
+<li>Choose ring, Ulysses or a combination, and say where each piece runs.</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">boundaries: 32 × 131,072 × 4096 × 2 B = 34.4 GB      per layer internals: 98,338 × 131,072 × 2 B = 25.8 GB
+cp = 1:  34.4 + 25.8 + 1.1 (one boundary) ≈ 61 GB      before weights, optimizer, logits
+cp = 8:  ÷ 8  ≈ 7.7 GB
+cp = 16: ÷ 16 ≈ 3.8 GB
+ring per layer: cp = 8 -> 470 MB, cp = 16 -> 503 MB
+tokens per rank: cp = 8 -> 16,384 (>= 9,890: hidden), cp = 16 -> 8,192 (< 9,890: NOT hidden unless zigzag-balanced, bound 4,945)</code></pre>
+<p style="margin-bottom:0">A reasonable plan: Ulysses with degree 8 inside the node (8 KV heads allow it, and
+NVLink all-to-alls are cheap), or a zigzag-balanced ring of 8 within the node plus a ring of 2 across nodes if
+you need cp = 16. Either way, at cp = 8 the activations fit comfortably; the remaining memory pressure is the
+logits (Chapter 10 §10.8), which at 131k positions and V = 128k need a chunked loss.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">19.6</span><span class="ti">Simulate ring attention on one machine</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Split a sequence of 1024 tokens into cp = 4 blocks. For each "rank", compute attention of its queries
+against the K, V blocks one at a time in ring order, merging partial results with the online-softmax update of
+Chapter 17 (keep a running max m and running sum l per query row). Check the result equals full causal
+attention to 1e-6, with both the contiguous and the zigzag assignment. Then count, for each rank, how many
+query-key blocks are fully masked and could be skipped.</p>
+<details class="reveal"><summary>What to look for</summary><div>
+<p style="margin-bottom:0">The merge is the same rescale-and-add FlashAttention does across key tiles: when a
+new block's max exceeds the running max, rescale the old sum and accumulator by exp(m_old − m_new). Fully masked
+blocks are the upper triangle; with contiguous ownership rank 0 skips almost everything and the last rank
+skips nothing, which is the imbalance zigzag removes (3, 7, 11, 15 blocks vs 9, 9, 9, 9 at 8 chunks).</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">19.7</span><span class="ti">Price a checkpoint policy</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>A 70B model trains on 4,096 GPUs. Assume failures scale with GPU count from Llama 3's rate (419 unexpected in
+54 days on 16,384 GPUs). State is 16 bytes per parameter; a synchronous checkpoint blocks for δ = 120 s, an
+asynchronous one for δ = 5 s. Restart takes 10 minutes.</p>
+<ol>
+<li>The job's MTBF.</li>
+<li>τ* and the expected waste for each δ.</li>
+<li>How much GPU time per day the asynchronous checkpoint saves.</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">MTBF = 3.09 h × 16,384 / 4,096 = 12.4 h = 44,540 s
+δ = 120 s:  τ* = √(2·120·44,540) = 3,270 s (54 min)   waste = 120/3270 + (1635 + 600)/44540 = 8.7%
+δ =   5 s:  τ* = √(2·5·44,540)   =   667 s (11 min)   waste =   5/667  + ( 334 + 600)/44540 = 2.8%
+saving ≈ 5.8% of 4,096 GPUs × 24 h ≈ 5,700 GPU-hours per day</code></pre>
+<p style="margin-bottom:0">Note that with δ = 5 s the restart time is now the larger term: the next engineering
+target is R, not δ.</p>
+</div></details>
 </div></div>
 
 <h2>Sources &amp; further reading</h2>
@@ -391,7 +797,15 @@ it fails. Your explanation should name the nonlinearity.</p>
 <li><a href="https://arxiv.org/abs/1811.06965">Huang et al. 2018 — GPipe</a> — microbatching and the bubble formula.</li>
 <li><a href="https://arxiv.org/abs/2104.04473">Narayanan et al. 2021 — Efficient Large-Scale Training on GPU Clusters</a> — where the 3-D mesh reasoning is laid out properly.</li>
 <li><a href="https://arxiv.org/abs/1604.06174">Chen et al. 2016 — Training Deep Nets with Sublinear Memory Cost</a> — the √L checkpointing result.</li>
-<li><a href="https://docs.pytorch.org/docs/stable/fsdp.html">PyTorch FSDP</a> — ZeRO-3 as actually shipped.</li>
+<li><a href="https://docs.pytorch.org/docs/stable/fsdp.html">PyTorch FSDP</a> — ZeRO-3 as actually shipped, including <code>HYBRID_SHARD</code> (HSDP).</li>
+<li><a href="https://arxiv.org/abs/2205.05198">Korthikanti et al. 2022 — Reducing Activation Recomputation in Large Transformer Models</a> — the activation formula, sequence parallelism and selective recomputation of §19.7.</li>
+<li><a href="https://arxiv.org/abs/2310.01889">Liu et al. 2023 — Ring Attention with Blockwise Transformers</a> — the ring and its overlap condition.</li>
+<li><a href="https://arxiv.org/abs/2309.14509">Jacobs et al. 2023 — DeepSpeed-Ulysses</a> — head-sharded sequence parallelism with all-to-alls.</li>
+<li><a href="https://arxiv.org/abs/2407.21783">Llama Team 2024 — The Llama 3 Herd of Models</a> — §3.3: the 4-D layout (Table 4), all-gather context parallelism, interruption statistics.</li>
+<li><a href="https://arxiv.org/abs/2412.19437">DeepSeek-AI 2024 — DeepSeek-V3 Technical Report</a> — §3.3: FP8 training with fine-grained scaling.</li>
+<li><a href="https://ai.meta.com/blog/llama-4-multimodal-intelligence/">Meta 2025 — The Llama 4 herd</a> — FP8 pretraining at 390 TFLOP/s per GPU on 32K GPUs.</li>
+<li>Daly 2006 — A higher order estimate of the optimum checkpoint interval for restart dumps (Future Generation Computer Systems 22) — the τ* = √(2δ·MTBF) rule, after Young 1974.</li>
+<li>Reference code: <code>tfs/parallel.py</code>, <code>tfs/memory.py</code> · tests: <code>tests/test_training.py</code> (Ch 19 section)</li>
 <li>Companion notebook: not written yet (planned as <code class="planned">notebooks/19_distributed.ipynb</code>)</li>
 </ul>
 

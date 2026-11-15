@@ -18,7 +18,20 @@ be?</em> and <em>how do you make a model trained at 4k tokens work at 128k?</em>
 clean quantitative answers.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; the 6ND rule<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE frequencies<div class="sep"></div><span class="k">Leads to</span><a href="ch22-frontier.html">Ch&nbsp;22</a> &mdash; long context is why sparse attention exists<div class="sep"></div><span class="k">Why this chapter</span>How big, trained on how much — and why 'supports 1M tokens' is a claim about a config file.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch02-matmul.html">Ch&nbsp;02</a> &mdash; the 6ND rule<br><a href="ch07-positions.html">Ch&nbsp;07</a> &mdash; RoPE frequencies<br><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; data mixtures and annealing<br><a href="ch12-precision.html">Ch&nbsp;12</a> &mdash; the formats a precision law is about<br><a href="ch19-distributed.html">Ch&nbsp;19</a> &mdash; context parallelism<br><a href="ch20-moe.html">Ch&nbsp;20</a> &mdash; active vs total parameters<div class="sep"></div><span class="k">Leads to</span><a href="ch22-frontier.html">Ch&nbsp;22</a> &mdash; long context is why sparse attention exists<br><a href="ch25-grpo.html">Ch&nbsp;25</a> &mdash; verifiable rewards, test-time compute's training twin<div class="sep"></div><span class="k">Why this chapter</span>How big, trained on how much, and why 'supports 1M tokens' is a claim about a config file. Every number is computed in <code>tfs/scaling.py</code> and asserted in <code>tests/test_training.py</code>.</div>
+<div class="box intuition">
+<span class="t">The whole chapter in five sentences</span>
+<p style="margin-bottom:0"><b>Loss falls as a smooth power law in parameters and data</b>, and for a fixed training
+budget the useful rule is about 20 tokens per parameter, with parameters and data each growing roughly as √C
+(the published parametric fit says C<sup>0.45</sup> and C<sup>0.55</sup>, and a 2024 replication says it was
+mis-fitted). <b>Shipped models are trained far past that point</b> because serving cost, not training cost,
+dominates, and the loss surface is flat. <b>When fresh data runs out, repeating it is nearly free up to about
+4 epochs</b> and nearly worthless past a few dozen. <b>Compute can also be spent at inference</b>: with a
+verifier, sampling a small model many times can beat a much larger one. <b>Long context is trained last, in
+stages</b>, because at 128k attention is most of the compute, and an advertised window says nothing about how
+well it is used.</p>
+</div>
+
 <h2>21.1 · Scaling laws</h2>
 
 <p>Kaplan et al. (2020) found something remarkable: test loss follows a smooth <b>power law</b> in model
@@ -49,11 +62,25 @@ across the board at <i>the same training compute</i> — a 4× smaller model, de
 <div data-viz="chinchilla"></div>
 
 <div class="box math-note">
-<span class="t">The three-line derivation</span>
-<p style="margin-bottom:0">With <code>C ≈ 6ND</code> fixed, substitute <code>D = C/(6N)</code> into the loss
-and minimise over <code>N</code>. Because α ≈ β, the optimum has <code>N* ∝ C^0.5</code> and
-<code>D* ∝ C^0.5</code> — both scale as the square root of compute, which is why the ratio D/N stays
-roughly constant at ~20. <b>Every 4× of compute should buy you 2× the parameters and 2× the data.</b></p>
+<span class="t">Two different "optima", and why they disagree</span>
+<p>With <code>C ≈ 6ND</code> fixed, substitute <code>D = C/(6N)</code> into the loss and set the derivative
+in N to zero. The condition is that the two penalty terms are traded at equal marginal rates,
+α·A/N<sup>α</sup> = β·B/D<sup>β</sup>, and it solves exactly (<code>tfs.scaling.fitted_optimum</code>):</p>
+<div class="mathblock" style="margin:.6rem 0">
+N* = G · (C/6)<sup>a</sup>, &nbsp; D* = (C/6) / N*, &nbsp; a = β/(α+β), &nbsp; b = α/(α+β), &nbsp; G = (αA / (βB))<sup>1/(α+β)</sup>
+<span class="lbl">with the published α = 0.34, β = 0.28: N* ∝ C<sup>0.45</sup>, D* ∝ C<sup>0.55</sup></span>
+</div>
+<p>So the fitted law does <b>not</b> say "both scale as √C". Because α ≠ β, data should grow a little faster
+than parameters, and the tokens-per-parameter ratio drifts upward with compute: about 50 at 10<sup>21</sup>
+FLOPs, 78 at 10<sup>23</sup>, 122 at 10<sup>25</sup>, 191 at 10<sup>27</sup>. The famous <b>20 tokens per
+parameter</b> comes from Hoffmann et al.'s other two methods (fitting the minimum of each IsoFLOP curve), which
+gave exponents close to 0.5 and 0.5. The two disagree, and Besiroglu et al. (2024) found why: re-fitting the
+paper's own data, the published parametric constants do not fit it well. Their refit (E = 1.82, A = 482,
+B = 2085, α = 0.348, β = 0.366) gives N* ∝ C<sup>0.51</sup> and about <b>19 tokens per parameter</b> at
+GPT-3's budget, consistent with the rule.</p>
+<p style="margin-bottom:0"><b>What to use:</b> the 20-tokens-per-parameter rule (N* = √(C/120)) for sizing,
+and the fitted formula for the <i>shape</i> of the loss surface, remembering that its exponents are the least
+certain part of it. <b>Every 4× of compute buys about 2× the parameters and 2× the data.</b></p>
 </div>
 
 <div class="example">
@@ -62,7 +89,7 @@ roughly constant at ~20. <b>Every 4× of compute should buy you 2× the paramete
 tokens. Plug its budget into the Hoffmann fit and ask what it <i>should</i> have been.</p>
 
 <div class="step"><div class="i">1</div><div>
-<b>The compute-optimal split at that budget.</b> With <code>C = 6ND</code> and
+<b>The 20-tokens-per-parameter split at that budget.</b> With <code>C = 6ND</code> and
 <code>D = 20N</code>: <span class="math">N* = √(C / 120)</span>.
 <pre style="margin:.4rem 0"><code class="nohl">N* = sqrt(3.14e23 / 120) = 51.2 B parameters
 D* = 3.14e23 / (6 × 51.2e9) = 1,023 B tokens</code></pre>
@@ -71,14 +98,16 @@ D* = 3.14e23 / (6 × 51.2e9) = 1,023 B tokens</code></pre>
 <div class="step"><div class="i">2</div><div>
 <b>Predicted loss, both ways.</b>
 <pre style="margin:.4rem 0"><code class="nohl">GPT-3 as built   N=175B  D=300B   ratio 1.7 tok/param   loss 2.0023
-compute-optimal  N=51B   D=1023B  ratio 20  tok/param   loss 1.9610</code></pre>
+20-token rule    N=51B   D=1023B  ratio 20  tok/param   loss 1.9610
+fitted optimum   N=24.5B D=2138B  ratio 87  tok/param   loss 1.9543   (the formula's own minimum)</code></pre>
 A model <b>3.4× smaller</b>, trained on <b>3.4× more data</b> for the <b>same compute</b>, was
-predicted to be <b>better</b>. That is the Chinchilla result in one line — and it is why the
-field pivoted so hard in 2022.
+predicted to be <b>better</b>. That is the Chinchilla result in one line, and it is why the
+field pivoted so hard in 2022. The fitted formula's exact minimum is lower still, at an even smaller model:
+the surface is so flat that the 51B and 24.5B answers differ by 0.007 in loss.
 </div></div>
 
 <div class="step"><div class="i">3</div><div>
-<b>The optimum is a ridge, not a peak.</b> Same formula across budgets:
+<b>The optimum is a ridge, not a peak.</b> The 20-token rule across budgets:
 <pre style="margin:.4rem 0"><code class="nohl">C=1e21   N*=  2.9B   D*=   58B   loss 2.335
 C=1e22   N*=  9.1B   D*=  183B   loss 2.146
 C=1e23   N*= 28.9B   D*=  577B   loss 2.012
@@ -107,7 +136,11 @@ def loss(N, D): return E + A / N**a + B_ / D**b
 C = 3.14e23                                              # GPT-3's budget
 N_opt = math.sqrt(C / 120); D_opt = C / (6 * N_opt)
 print(round(loss(175e9, 300e9), 4))    # 2.0023  as built
-print(round(loss(N_opt, D_opt), 4))    # 1.9610  compute-optimal
+print(round(loss(N_opt, D_opt), 4))    # 1.9610  20 tokens per parameter
+
+from tfs.scaling import fitted_optimum
+N_f, D_f, ea, eb = fitted_optimum(C)                     # 24.5e9, 2.14e12, 0.452, 0.548
+print(round(loss(N_f, D_f), 4))        # 1.9543  the fitted law's own minimum
 print(round(loss(8e9, 15e12), 4))      # 1.9485  Llama-3-8B
 assert loss(N_opt, D_opt) < loss(175e9, 300e9)</code></pre>
 
@@ -177,9 +210,196 @@ almost never jumps.</p>
   the optimum, moving far down the over-training direction costs little loss and saves enormously at
   inference. Chinchilla isn't wrong — it answers a different question.</div>
 </div>
+<div class="qitem" data-answer="0">
+  <div class="qq">GPT-3 used 3.14×10²³ FLOPs on 175B parameters. What does the 20-tokens-per-parameter rule say it should have been?</div>
+  <div class="opts">
+    <div class="opt">About 51B parameters on about 1T tokens</div>
+    <div class="opt">About 175B parameters on 3.5T tokens</div>
+    <div class="opt">About 10B parameters on 5T tokens</div>
+    <div class="opt">About 350B parameters on 150B tokens</div>
+  </div>
+  <div class="expl"><b>N = √(C/120) = 51.2B, D = 20N = 1,023B.</b> The second option would need 12× GPT-3's compute.
+  The fitted law's own minimum is smaller still (24.5B on 2.1T), and Llama-3-8B shows the other direction: far
+  past "optimal", cheap to serve.</div>
+</div>
 </div>
 
-<h2>21.2 · Long context</h2>
+<h2>21.2 · When the data runs out: repeated epochs</h2>
+
+<p>Chinchilla assumes every token is fresh. At 20 tokens per parameter a 1T-parameter model wants 20T unique
+tokens, and over-trained small models want far more: Llama-3-8B's 15T, Qwen3-4B's 36T. The supply of good
+public text is finite (filtered web is a few tens of trillions of tokens, Chapter 11 §11.7), so the practical
+question becomes: <b>what is a repeated token worth?</b></p>
+
+<p>Muennighoff et al. (2023) trained hundreds of models with varying amounts of repetition and fitted a simple
+answer. With U unique tokens seen for R repetitions beyond the first (R = epochs − 1), the data is worth</p>
+
+<div class="mathblock">
+D′ = U + U · R* · (1 − e<sup>−R/R*</sup>), &nbsp;&nbsp; R* ≈ 15.4
+<span class="lbl">each repetition is worth e^(−1/R*) of the previous one · D′ can never exceed U·(1 + R*) ≈ 16.4 U</span>
+</div>
+
+<div class="example">
+<span class="t">Worked example — what epochs buy (tfs.scaling.effective_data, U = 1)</span>
+<pre style="margin:.4rem 0"><code class="nohl">epochs    effective data    worth per epoch
+    1         1.00              1.00
+    2         1.97              0.98
+    4         3.73              0.93      <- "nearly as good as unique data"
+    8         6.62              0.83
+   16        10.58              0.66
+   40        15.17              0.38
+  100        16.36              0.16      <- the ceiling is 16.39: more passes add almost nothing</code></pre>
+<p style="margin-bottom:0">This is the paper's headline in numbers: up to about <b>4 epochs</b> repetition is
+almost free (their 8.7B model at four epochs had only 0.5% higher validation loss than with unique data), around
+<b>16 epochs</b> each pass is worth two-thirds of fresh data, and beyond that the returns collapse. Their
+models trained for 44 epochs started to diverge. Repetition also makes memorisation of the repeated text more
+likely, which matters separately from loss.</p>
+</div>
+
+<p>Two consequences for planning. <b>Small high-value sources can be repeated a few times without
+regret</b>, which is what makes Chapter 11's mixture upsampling viable: 4 epochs of maths is fine, 11 epochs of
+papers is already costing a third of its value. And <b>in a data-constrained regime the compute-optimal model
+gets larger</b>: when more data is not available, spending compute on more parameters (and fewer epochs) is the
+better trade. The paper also tried the obvious substitutes for scarce text, mixing in code and relaxing quality
+filters, and found that filling a substantial share of the data with code did not hurt the natural-language
+benchmarks they measured.</p>
+
+<h2>21.3 · Scaling laws for sparse and low-precision models</h2>
+
+<p>The Chinchilla law has two knobs, N and D. Two other choices change the curve, and each has its own
+scaling literature.</p>
+
+<h3>Mixture of Experts</h3>
+
+<p>An MoE separates total parameters from active ones (<a href="ch20-moe.html">Chapter 20</a>). Training cost
+follows active parameters (6·N<sub>active</sub> per token); what the model can store follows the total. Clark
+et al. (2022) fitted laws for routed models with the number of experts as a third variable and found that, at
+fixed compute per token, adding experts keeps lowering the loss with diminishing returns. Krajewski et al.
+(2024) added <b>granularity</b> (more, smaller experts) and found that the compute-optimal design uses
+finer-grained experts than the 8-expert designs of the time, which is the direction DeepSeek-V3's 256 experts
+took. The practical summary:</p>
+
+<ul>
+<li><b>Compare MoE and dense at equal training FLOPs</b>, i.e. equal active parameters × tokens. At equal
+compute an MoE reaches a lower loss; at equal <i>total</i> parameters it is worse than dense.</li>
+<li><b>The Chinchilla ratio does not transfer directly.</b> "20 tokens per parameter" was fitted for dense
+models; per <i>active</i> parameter, MoE runs are trained far longer (DeepSeek-V3: 14.8T tokens for 37B active,
+400 per active parameter).</li>
+<li><b>Memory and serving costs follow total parameters</b>, which is the term scaling laws of training loss
+leave out (Chapter 20 §20.7).</li>
+</ul>
+
+<h3>Precision</h3>
+
+<p>Chapter 12 treats precision as an engineering choice that must not hurt the loss. Kumar et al. (2024)
+measured how it interacts with scale, over 465 training runs up to 1.7B parameters and 26B tokens. Two findings
+change how to think about it. <b>Training in lower precision reduces the model's "effective parameter
+count"</b>: a model trained with low-precision weights behaves like a smaller model trained in high precision,
+which can be written into the law as an N<sub>eff</sub> &lt; N. And <b>post-training quantization hurts more
+the more data the model was trained on</b>: heavily over-trained models (Llama-3-8B's 1,875 tokens per
+parameter) pack more into each weight and lose more when the weights are rounded, to the point where, for a
+model that will be quantized after training, extra pretraining data can make the deployed model worse. The
+paper's fits also suggest that training larger models in lower precision may be compute-optimal. These are
+recent results at small scale; treat the constants as provisional and the directions as the lesson.</p>
+
+<h2>21.4 · Test-time compute: scaling the answer, not the model</h2>
+
+<p>Everything so far spends compute on training. A second axis spends it at inference: sample several answers,
+or let the model reason longer, and pick the best result. For tasks with a <b>checkable</b> answer (unit tests,
+a numerical result, a proof checker) this scales remarkably well.</p>
+
+<h3>Repeated sampling: coverage</h3>
+
+<p>If one sample solves a problem with probability p and samples are independent, k samples solve it at least
+once with probability</p>
+
+<div class="mathblock">
+coverage(k) = 1 − (1 − p)<sup>k</sup>
+<span class="lbl">p = 0.159: k = 1 → 0.159, k = 5 → 0.579, k = 10 → 0.823 (tfs.scaling.coverage)</span>
+</div>
+
+<p>Measured over a benchmark, coverage is estimated with the unbiased pass@k estimator of Chen et al. (2021):
+draw n ≥ k samples per problem, count the c correct ones, and compute
+1 − C(n − c, k)/C(n, k) (<code>tfs.scaling.pass_at_k</code>; with n = 250 and c = 40 it gives exactly 0.16 at
+k = 1 and 0.831 at k = 10). Brown et al. (2024, "Large Language Monkeys") measured it at scale: on SWE-bench
+Lite, DeepSeek-Coder-V2-Instruct solved <b>15.9% of issues with one sample and 56% with 250</b>, beating the
+single-sample state of the art of 43%. Note that 56% is far below 1 − (1 − 0.159)<sup>250</sup> ≈ 1: a benchmark
+mixes problems with very different p, and the ones with p ≈ 0 never get solved. That is why coverage grows
+roughly <b>log-linearly</b> in k over several orders of magnitude rather than saturating quickly.</p>
+
+<div class="box warn">
+<span class="t">Coverage is not accuracy</span>
+<p style="margin-bottom:0">Coverage counts a problem as solved if <i>any</i> sample is right. That only becomes
+an answer if something can pick the right sample: a test suite, a checker, a verifier model. Without one, Brown
+et al. found that majority voting and reward-model selection <b>plateau after a few hundred samples</b>, far
+below coverage. Test-time scaling is strongest exactly where reinforcement learning with verifiable rewards
+(<a href="ch25-grpo.html">Chapter 25</a>) is strongest, and for the same reason.</p>
+</div>
+
+<h3>Spending it well, and what it trades against</h3>
+
+<p>Snell et al. (2024) asked how to allocate a test-time budget: many independent samples, sequential revisions,
+or search guided by a process reward model. Choosing the strategy per prompt by estimated difficulty improved
+efficiency by <b>more than 4×</b> over best-of-N. In a FLOPs-matched comparison, a smaller model with extra
+test-time compute <b>outperformed a 14× larger model</b> on problems where the small model already had
+non-trivial success; on the hardest problems, pretraining compute was still the better buy. The cost model is
+simple: inference costs about 2·N FLOPs per generated token, so k samples of length L from a model of size N
+cost about 2·N·L·k, the same as one sample from a model k times larger. The reasoning models of 2025–26 (o1-style
+long chains of thought, Chapter 22) are this trade made inside a single sample: train the model to spend more
+tokens thinking, and let accuracy scale with the length it is allowed.</p>
+
+<div class="quiz" data-title="Checkpoint 2 — beyond Chinchilla">
+<div class="qitem" data-answer="1">
+  <div class="qq">You have 2T tokens of good data and compute for a model that would want 8T. Using Muennighoff et al.'s fit, what are 4 epochs of the 2T worth?</div>
+  <div class="opts">
+    <div class="opt">8T tokens, exactly</div>
+    <div class="opt">About 7.5T unique-token equivalents (3.73 × 2T): nearly as good as fresh data</div>
+    <div class="opt">2T: repeated data teaches nothing</div>
+    <div class="opt">About 4T: each epoch is worth half the previous one</div>
+  </div>
+  <div class="expl"><b>D′ = U(1 + R*(1 − e^(−R/R*))) with R = 3 gives 3.73 U.</b> Up to about 4 epochs, repetition is
+  nearly free. At 16 epochs the same data would be worth 10.6 U, and the ceiling is 16.4 U however long you
+  train.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">With the published Hoffmann constants (α = 0.34, β = 0.28), how do the fitted law's compute-optimal N and D scale?</div>
+  <div class="opts">
+    <div class="opt">Both as C^0.5, so tokens per parameter stays at 20</div>
+    <div class="opt">N ∝ C^0.55, D ∝ C^0.45</div>
+    <div class="opt">N ∝ C^0.34, D ∝ C^0.28</div>
+    <div class="opt">N ∝ C^0.45, D ∝ C^0.55: data grows faster and the tokens-per-parameter ratio drifts upward with compute</div>
+  </div>
+  <div class="expl"><b>a = β/(α+β) = 0.45, b = α/(α+β) = 0.55.</b> At GPT-3's budget the formula's minimum is 24.5B
+  parameters on 2.14T tokens (87 per parameter). The 20-token rule comes from the paper's IsoFLOP methods, and a
+  2024 replication found the published parametric constants were the odd one out.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">A model solves 15.9% of a benchmark with one sample. Why does 250 samples give 56% rather than nearly 100%?</div>
+  <div class="opts">
+    <div class="opt">Problems differ in difficulty; for many of them the per-sample success probability is near zero, so no number of samples helps</div>
+    <div class="opt">The samples are not independent because of the temperature</div>
+    <div class="opt">The benchmark caps the number of attempts</div>
+    <div class="opt">Coverage decreases after 100 samples</div>
+  </div>
+  <div class="expl"><b>Coverage averages 1 − (1 − pᵢ)ᵏ over problems.</b> 15.9% is a mean over very different pᵢ.
+  The easy problems saturate fast and the impossible ones never move, which is why coverage grows roughly
+  log-linearly with k.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">According to Kumar et al., why can more pretraining data make a model that will be quantized after training worse?</div>
+  <div class="opts">
+    <div class="opt">More data always causes overfitting</div>
+    <div class="opt">Quantization removes the data's effect on the embeddings</div>
+    <div class="opt">Post-training quantization degradation grows with the number of training tokens: an over-trained model loses more when its weights are rounded</div>
+    <div class="opt">Larger datasets require larger vocabularies</div>
+  </div>
+  <div class="expl"><b>Over-trained weights are more sensitive to rounding.</b> Past some point the extra data's gain is
+  smaller than the extra quantization loss. It is a small-scale result (up to 1.7B parameters) whose direction is
+  the useful part.</div>
+</div>
+</div>
+
+<h2>21.5 · Long context</h2>
 
 <p>A model trained at 4k tokens degrades badly at 32k (Chapter 7). RoPE's rotation angles go far outside the
 range it saw. Three families of fix:</p>
@@ -231,7 +451,45 @@ collapses.</b> StreamingLLM's fix (Xiao et al. 2023) is trivial and effective: a
 tokens plus the sliding window. That one change enables stable generation over millions of tokens.</p>
 </div>
 
-<h2>21.3 · Measuring long context honestly</h2>
+<h3>The staged recipe: how long context is actually trained</h3>
+
+<p>The techniques above say how to change RoPE. They do not say when, on what data, or for how long. No
+frontier model is pretrained at 128k from the start; every published recipe trains short and extends at the
+end, in stages. The reason is arithmetic. Training FLOPs per token are 6N plus an attention term that grows with
+the context length T, 12·L·d<sub>attn</sub>·T (Chapter 2):</p>
+
+<div class="example">
+<span class="t">Worked example — what fraction of training compute is attention? (tfs.scaling.attention_share)</span>
+<pre style="margin:.4rem 0"><code class="nohl">                          T = 8,192     T = 32,768    T = 131,072
+Llama 3 405B (L=126, d=16384)   7.7%          25.0%         57.2%
+Llama 3 8B   (L=32,  d=4096)   21.2%          51.8%         81.1%</code></pre>
+<p style="margin-bottom:0">At 128k, attention is <b>more than half</b> of every token's cost for the 405B model
+and four-fifths for the 8B, and "6N per token" underestimates the bill by 2.3× and 5.3×. Spending the whole
+pretraining run at 128k would multiply its cost for no benefit on the overwhelming majority of documents, which
+are short. Long documents are also scarce, activations per sequence grow with T (which is what context
+parallelism, Chapter 19 §19.6, exists for), and the model first needs to learn language before it can use
+long-range structure. So: pretrain at 4k–8k, and extend at the end.</p>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th>Model</th><th>Stages</th><th>Budget</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><b>Llama 3 405B</b></td><td>8K pretraining, then <b>six stages</b> up to 128K</td><td>≈ 800 B tokens of long-context pretraining</td><td>RoPE base 500,000 from the start. Each step up in length was taken once the model had adapted: short-context evaluations recovered and needle-in-a-haystack solved at the new length. The final 40 M tokens annealed at 128K (Chapter 11 §11.7). Trained with CP = 16 (Chapter 19).</td></tr>
+<tr><td><b>DeepSeek-V3</b></td><td>4K pretraining, then 32K, then 128K</td><td>1,000 steps each: 1,920 × 32K and 480 × 128K sequences per step</td><td>Both phases see exactly 62.9 B tokens (1000 × 1920 × 32,768 = 1000 × 480 × 131,072). YaRN with scale s = 40, α = 1, β = 32, at a constant LR of 7.3e-6. Context extension cost 119K of 2,788K H800 GPU-hours, 4.3% of the total.</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Three things recur in every recipe. <b>The data changes</b>: the extension stages upsample genuinely long
+documents (books, code repositories, long papers) rather than concatenating short ones, since packed short
+documents teach nothing about using distant context. <b>Short-context ability is protected</b>: the mix keeps
+plenty of short data and the stage is judged by whether short benchmarks recover, not only by long ones. <b>The
+batch is held in tokens</b>, so the number of sequences per step falls as their length rises (DeepSeek's 1,920
+→ 480). The whole extension is a few percent of pretraining compute, which is why "we extended the context" is
+cheap to announce and the measurement of §21.6 is what tells you whether it worked.</p>
+
+<h2>21.6 · Measuring long context honestly</h2>
 
 <div class="box warn">
 <span class="t">"Supports 1M tokens" is a claim about the config file</span>
@@ -255,7 +513,7 @@ erroring — not what it can <i>use</i>. Effective context is routinely a fracti
 context is used far more reliably than information in the middle. If you're building a RAG system, put the
 most important retrieved chunks at the edges — it measurably improves answers.</p>
 
-<div class="quiz" data-title="Checkpoint 2 — long context">
+<div class="quiz" data-title="Checkpoint 3 — long context">
 <div class="qitem" data-answer="0">
   <div class="qq">Why does YaRN outperform uniform position interpolation?</div>
   <div class="opts">
@@ -283,9 +541,21 @@ most important retrieved chunks at the edges — it measurably improves answers.
   redistribute that mass onto tokens it didn't want, wrecking the output. Keep the first ~4 tokens
   permanently and the problem disappears.</div>
 </div>
+<div class="qitem" data-answer="1">
+  <div class="qq">Why does every published recipe pretrain at 4k–8k and extend to 128k only at the end?</div>
+  <div class="opts">
+    <div class="opt">RoPE cannot be trained at 128k from scratch</div>
+    <div class="opt">At 128k attention is most of the per-token compute (57% for a 405B model, 81% for an 8B), long documents are scarce, and short documents gain nothing from it</div>
+    <div class="opt">GPUs cannot hold 128k sequences</div>
+    <div class="opt">Long sequences make the loss unstable</div>
+  </div>
+  <div class="expl"><b>Cost without benefit for most of the data.</b> 6N per token underestimates a 128k step by 2.3× for
+  405B. Extension stages cost a few percent of pretraining (DeepSeek-V3: 4.3% of GPU-hours) and use upsampled
+  long documents.</div>
+</div>
 </div>
 
-<h2>21.4 · Exercises</h2>
+<h2>21.7 · Exercises</h2>
 
 <div class="exercise">
 <div class="eh"><span class="n">21.1</span><span class="ti">Fit your own scaling law</span><span class="lvl">code</span></div>
@@ -334,6 +604,57 @@ basis for choosing a model.</p>
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">21.4</span><span class="ti">Plan a data-constrained run</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>You have 10<sup>24</sup> FLOPs and 3T tokens of data you trust.</p>
+<ol>
+<li>The 20-token rule's N and D. How many epochs of your data would that need?</li>
+<li>The effective data of those epochs (<code>tfs.scaling.effective_data</code>). Is the plan still sensible?</li>
+<li>Alternatively, train for 4 epochs (12T tokens seen). What model size does the compute budget then allow?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">rule of 20:   N = √(1e24 / 120) = 91.3B,   D = 1.83T tokens   -> 0.6 epochs: no repetition needed
+4 epochs:     D = 12T seen, effective 3.73 × 3T = 11.2T;  N = 1e24 / (6 × 12e12) = 13.9B</code></pre>
+<p style="margin-bottom:0">At this budget the data is not the constraint for a compute-optimal model; it becomes
+one only if you over-train a small model for cheap serving. Then 4 epochs of 3T costs you about 7% of its value
+(11.2T effective of 12T seen), which is usually acceptable; 16 epochs would cost a third.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">21.5</span><span class="ti">Sampling versus a bigger model</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>A 7B model solves a problem class with p = 0.30 per sample and a unit-test verifier is available. A 70B model
+solves it with p = 0.60. Inference costs about 2N FLOPs per token, and answers are the same length.</p>
+<ol>
+<li>Coverage of the 7B model with 10 samples, and its cost relative to one 70B sample.</li>
+<li>When would you still prefer the 70B model?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<p>Coverage(10) = 1 − 0.7<sup>10</sup> = <b>0.972</b>, at 10 × 7B = the same FLOPs as one 70B sample (which succeeds
+60% of the time). With a verifier, the small model wins clearly.</p>
+<p style="margin-bottom:0">Prefer the 70B when there is no reliable verifier (selection then plateaus well below
+coverage), when latency matters more than throughput (ten samples in parallel need ten times the memory
+bandwidth budget), or when p for the small model is near zero, where no number of samples helps.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">21.6</span><span class="ti">Cost a context extension</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Using <code>tfs.scaling.attention_share</code> and the 6N + 12·L·d·T accounting, compute the FLOPs of
+DeepSeek-V3-style extension stages (62.9B tokens at 32K, then 62.9B at 128K) for an 8B dense model
+(L = 32, d = 4096). Compare with pretraining it on 15T tokens at 8K. Then plot attention share against T from 1K
+to 1M for both 8B and 405B.</p>
+<details class="reveal"><summary>What you should find</summary><div>
+<p style="margin-bottom:0">Per token, a 128K step costs about 4× an 8K step for the 8B model, so the two
+extension stages together cost about the FLOPs of 0.37T tokens at 8K: 2.4% of the 15T-token pretraining. The plot
+crosses 50% attention near 30K tokens for the 8B and near 100K for the 405B: the larger the model, the longer the
+context before attention dominates, because 6N grows with d² and the attention term only with d.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://arxiv.org/abs/2001.08361">Kaplan et al. 2020 — Scaling Laws for Neural Language Models</a></li>
@@ -342,6 +663,13 @@ basis for choosing a model.</p>
 <li><a href="https://arxiv.org/abs/2309.17453">Xiao et al. 2023 — StreamingLLM / attention sinks</a></li>
 <li><a href="https://arxiv.org/abs/2404.06654">Hsieh et al. 2024 — RULER</a> · <a href="https://arxiv.org/abs/2307.03172">Liu et al. 2023 — Lost in the Middle</a></li>
 <li><a href="https://arxiv.org/abs/2304.15004">Schaeffer et al. 2023 — Are Emergent Abilities a Mirage?</a></li>
+<li><a href="https://arxiv.org/abs/2404.10102">Besiroglu et al. 2024 — Chinchilla Scaling: A replication attempt</a> (the refit, ~20 tokens per parameter)</li>
+<li><a href="https://arxiv.org/abs/2305.16264">Muennighoff et al. 2023 — Scaling Data-Constrained Language Models</a> (R* ≈ 15.4, the 4-epoch result)</li>
+<li><a href="https://arxiv.org/abs/2202.01169">Clark et al. 2022 — Unified Scaling Laws for Routed Language Models</a> · <a href="https://arxiv.org/abs/2402.07871">Krajewski et al. 2024 — Scaling Laws for Fine-Grained MoE</a></li>
+<li><a href="https://arxiv.org/abs/2411.04330">Kumar et al. 2024 — Scaling Laws for Precision</a></li>
+<li><a href="https://arxiv.org/abs/2407.21787">Brown et al. 2024 — Large Language Monkeys</a> · <a href="https://arxiv.org/abs/2408.03314">Snell et al. 2024 — Scaling LLM Test-Time Compute Optimally</a> · <a href="https://arxiv.org/abs/2107.03374">Chen et al. 2021 — Evaluating Large Language Models Trained on Code</a> (Codex; the pass@k estimator)</li>
+<li><a href="https://arxiv.org/abs/2407.21783">Llama Team 2024 — The Llama 3 Herd of Models</a> (§3.4.2, the six-stage context extension) · <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 Technical Report</a> (§4.3, 4K → 32K → 128K with YaRN)</li>
+<li>Reference code: <code>tfs/scaling.py</code> · tests: <code>tests/test_training.py</code> (Ch 21 section)</li>
 <li>Companion notebook: not written yet (planned as <code class="planned">notebooks/21_scaling.ipynb</code>)</li>
 </ul>
 

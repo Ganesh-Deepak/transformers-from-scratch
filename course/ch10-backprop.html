@@ -18,14 +18,20 @@ a transformer by hand — softmax, cross-entropy, RMSNorm, attention — and che
 autograd. After this you can implement a backward pass, debug a wrong one, and read a CUDA kernel.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the forward attention you are about to differentiate<br><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; RMSNorm and the residual<div class="sep"></div><span class="k">Leads to</span><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; where these gradients get used<br><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; why the backward pass can recompute tiles<div class="sep"></div><span class="k">Why this chapter</span>The layer under "autograd handles it". Nothing here is optional if you want to work below the framework.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; the forward attention you are about to differentiate<br><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; RMSNorm and the residual<div class="sep"></div><span class="k">Leads to</span><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; where these gradients get used<br><a href="ch17-flashattention.html">Ch&nbsp;17</a> &mdash; why the backward pass can recompute tiles<br><a href="ch19-distributed.html">Ch&nbsp;19</a> &mdash; activation memory, sharded<div class="sep"></div><span class="k">Why this chapter</span>The layer under "autograd handles it", and the memory bill it sends. Every number is computed in <code>tfs/memory.py</code> and asserted in <code>tests/test_training.py</code>.</div>
 
 <div class="box intuition">
-<span class="t">The one idea in this chapter</span>
+<span class="t">The whole chapter in five sentences</span>
 <p style="margin-bottom:0">Backprop is <b>one rule applied repeatedly</b>: given
 <span class="math">∂L/∂output</span>, produce <span class="math">∂L/∂input</span> and
-<span class="math">∂L/∂weights</span>. Every layer is a small, local function that answers that
-question. The chain rule stitches them together. There is no global magic.</p>
+<span class="math">∂L/∂weights</span>, and the chain rule stitches the layers together. <b>The shapes nearly
+force each formula</b>, and the interesting ones (softmax, cross-entropy's <code>p − y</code>, RMSNorm's
+correction term, attention) reduce to elementwise work plus a few reductions. <b>Every backward formula needs
+values from the forward pass</b>, so autograd saves them, and those saved activations (24 × d_model numbers
+per token per layer here) are what decide whether a long sequence fits. <b>Checkpointing every layer and
+never materialising the vocabulary-sized logits</b> cut that bill by more than ten times. <b>Gradients may be
+stored in bf16 but must be summed in fp32</b>, because a low-precision running total quietly drops what you
+add to it.</p>
 </div>
 
 <h2>10.1 · The only rule</h2>
@@ -355,8 +361,341 @@ Verified: <code>f(x)=0.3x²</code> at <code>x=2</code> gives <code>f′=1.2</cod
 </div>
 </div>
 
-<h2>10.7 · Exercises</h2>
+<h2>10.7 · What backward keeps: the memory bill</h2>
 
+<p>Every formula above needs something from the forward pass. The matmul rule needs the input
+<span class="math">A</span> to form <span class="math">∂L/∂B = A<sup>T</sup> ∂L/∂C</span>. The softmax
+VJP needs the output <span class="math">s</span>. RMSNorm needs <span class="math">x</span> and
+<span class="math">r</span>. Autograd's answer is simple: during the forward pass, every operation
+<b>saves the tensors its backward will need</b> and holds them until backward has used them. Those saved
+tensors are the <b>activations</b>, and in any real training run they are the largest thing in memory that is
+not a weight.</p>
+
+<p>You can count them exactly. PyTorch lets you intercept every tensor autograd saves
+(<code>torch.autograd.graph.saved_tensors_hooks</code>). <code>tfs.memory.measure_saved</code> uses that hook,
+counts each storage once, and skips the weights (they exist anyway). Run it over one <code>Block</code> of the
+course's own model and read off what is kept, per token:</p>
+
+<pre><code class="nohl">one tfs Block, per token, weights excluded          elements
+  RMSNorm 1   x, 1/rms, x·(1/rms), output                3C + 1
+  attention   q, k, v (as SDPA receives them)            3·H·dh     <- k, v ALREADY expanded to H heads
+              SDPA output (= the o_proj input)            H·dh
+              one logsumexp per head                      H
+  RMSNorm 2   same as above                              3C + 1
+  SwiGLU      gate(x), silu(gate), up(x), their product   4·d_ff
+  ---------------------------------------------------------------
+  total       6C + 2 + 4·H·dh + H + 4·d_ff</code></pre>
+
+<p>For the test configuration (<code>C = 96, H = 4, dh = 24, d_ff = 256</code>) that is <b>1,990 elements
+per token</b>. With <code>B = 2, T = 64</code> in fp32 the formula predicts 1990 × 128 × 4 =
+<b>1,018,880 bytes</b>, and the hooks measure exactly <b>1,018,880</b>
+(<code>test_saved_tensor_count_matches_autograd</code> in <code>tests/test_training.py</code>). Four details in
+that table are worth a second look:</p>
+
+<ul>
+<li><b>The norm saves its input and its output.</b> They are different tensors (the output is what the next
+matmul needs), so a norm costs about 3C, not C.</li>
+<li><b>The attention output and the <code>o_proj</code> input share storage.</b> The kernel writes its output
+in a <code>(B, T, H, dh)</code> layout, so the transpose-and-reshape in <code>tfs/model.py</code> is a free
+view. Had it been a copy, you would pay another H·dh per token.</li>
+<li><b>GQA saves nothing here.</b> <code>tfs/model.py</code> calls <code>repeat_interleave</code> before
+<code>scaled_dot_product_attention</code>, so autograd saves K and V at <b>all H heads</b>, not the
+n_kv_head the model actually has. A GQA-aware kernel (SDPA's <code>enable_gqa</code>, FlashAttention) saves
+them at n_kv_head width. Chapter 16's saving is a KV-cache saving; whether it is also an activation saving
+depends on the kernel.</li>
+<li><b>No (T, T) matrix.</b> The attention probabilities are not saved. The kernel keeps one logsumexp per row
+and rebuilds P in backward, which is §10.5's structure turned into memory. Without it the table would have an
+H·T term per token, which at T = 8192 is larger than everything else combined.</li>
+</ul>
+
+<div class="example">
+<span class="t">Worked example — the activations of Llama-3-8B at 8k context</span>
+<p><code>C = 4096, H = 32, dh = 128, KV heads = 8, d_ff = 14336</code>, 32 layers, one sequence of
+<code>T = 8192</code>, bf16 (2 bytes per element).</p>
+
+<div class="step"><div class="i">1</div><div>
+<b>Per token per layer:</b>
+<pre style="margin:.4rem 0"><code class="nohl">6·4096 + 2 + 4·32·128 + 32 + 4·14336
+= 24,578 + 16,384 + 32 + 57,344 = 98,338 elements   = 24.0 × C</code></pre>
+The MLP is 58% of it: four tensors of width <code>d_ff = 3.5 C</code>.
+</div></div>
+
+<div class="step"><div class="i">2</div><div>
+<b>Per layer, then the whole model:</b>
+<pre style="margin:.4rem 0"><code class="nohl">98,338 × 8192 tokens × 2 bytes = 1.61 GB per layer
+× 32 layers                     = 51.6 GB of activations       (the bf16 weights: 16 GB)
+GQA-aware kernel (K, V at 8 heads): 92,194 per token  ->  48.3 GB</code></pre>
+</div></div>
+
+<div class="step"><div class="i">=</div><div>
+<b>One 8k-token sequence needs three times the memory of the weights</b>, before the optimizer state
+(Chapter 12's 16 bytes per parameter) and before the logits (§10.8). Activations scale with
+<code>B × T × layers</code> and weights do not, so at long context the activations decide what fits.
+</div></div>
+</div>
+
+<h3>Activation checkpointing, derived</h3>
+
+<p>The fix trades compute for memory. Keep only each layer's <b>input</b> (one C-wide tensor per token, the
+"boundary"), throw the 24 C of internals away, and when backward reaches a layer, <b>re-run its forward</b>
+from the saved input to rebuild them. Generalise to a checkpoint every <i>k</i> layers, with <i>a</i> one
+layer's internals and <i>b</i> one boundary, both per token. You store <i>L/k</i> boundaries, and while
+backward works through one segment you hold that segment's <i>k</i> layers of internals:</p>
+
+<div class="mathblock">
+M(k) = <span class="frac"><span class="n">L</span><span class="d">k</span></span> · b + k · (a + b)
+&nbsp;&nbsp;&nbsp;&nbsp; minimised at &nbsp; k* = √(L · b / (a + b))
+<span class="lbl">the classic √L result is the special case a ≈ b</span>
+</div>
+
+<p>Chen et al. (2016) derived checkpointing for networks whose internals and boundaries are about the same
+size; then k* ≈ √L and memory falls from O(L) to O(√L). <b>A transformer is not that network.</b> Its
+internals are 24× its boundary, so k* = √(32/25) = <b>1.13</b>: checkpoint <b>every layer</b>. With
+<code>tfs.memory.checkpoint_memory</code> on the Llama-3-8B numbers:</p>
+
+<pre><code class="nohl">checkpoint every k layers      activation memory, T = 8192
+  k = 1                        3.83 GB     <- 32 boundaries (2.15 GB) + one layer re-run (1.68 GB)
+  k = 2                        4.43 GB
+  k = 4                        7.25 GB
+  k = 8                       13.69 GB
+  none                        51.6 GB</code></pre>
+
+<p>The price is one extra forward per layer. Backward costs about twice the forward, so a step goes from
+3 forward-equivalents to 4: <b>about 33% more compute</b> for a <b>13×</b> memory cut. That is why per-layer
+checkpointing is a standard switch in every large-scale framework, and why
+<a href="ch19-distributed.html">Chapter 19</a>'s <i>selective</i> recomputation (re-run only the wide, cheap
+parts) is worth the trouble: it recovers most of the memory for a few percent of the compute.</p>
+
+<pre><code>from torch.utils.checkpoint import checkpoint
+
+for blk in model.blocks:                       # keep only each block's input
+    x, _ = checkpoint(blk, x, cos, sin, use_reentrant=False)</code></pre>
+
+<h2>10.8 · The vocabulary-sized logits</h2>
+
+<p>After checkpointing, the biggest activation is usually not in any layer. It is at the very end. The LM
+head produces one logit per vocabulary entry per position, a <code>(B·T, V)</code> tensor, and V is large.
+Llama 3's vocabulary has 128,256 entries:</p>
+
+<pre><code class="nohl">N = B·T = 8192 positions, V = 128,256
+  logits, bf16                     2.10 GB
+  log-softmax, fp32 (saved)        4.20 GB     <- what F.cross_entropy keeps for backward
+  dL/dlogits, fp32 (in backward)   4.20 GB
+  ----------------------------------------
+                                  10.5 GB      vs 3.83 GB for ALL 32 checkpointed layers</code></pre>
+
+<p>Measured: <code>F.cross_entropy</code> on a <code>(4096, 8000)</code> fp32 logit matrix saves one
+<code>(4096, 8000)</code> fp32 tensor, 131 MB: the log-probabilities it needs to form <code>p − y</code>
+(<code>test_cross_entropy_saves_a_vocab_sized_tensor</code>). Checkpointing the layers does not touch it.</p>
+
+<h3>The fix: never build the whole matrix</h3>
+
+<p>§10.3 already contains the escape. The gradient of the loss with respect to the logits is
+<code>(p − y)/N</code>, and each row depends only on its own position. So split the N positions into chunks.
+For each chunk, compute its logits, its share of the loss, its <code>p − y</code>, and immediately push that
+gradient through the head matmul to get the chunk's share of ∂L/∂h and ∂L/∂W. Then discard the chunk's
+logits. That is the idea behind Liger Kernel's fused linear cross-entropy and Cut Cross-Entropy, and
+<code>tfs.memory.chunked_cross_entropy</code> does it in about 25 lines:</p>
+
+<pre><code>for s in range(0, N, chunk):
+    z   = h[s:s+chunk] @ W.T                       # (n, V)   only this chunk exists
+    lse = torch.logsumexp(z, -1)                   # (n,)
+    loss += (lse - z.gather(1, t[s:s+chunk, None]).squeeze(1)).sum()
+    g = (z - lse[:, None]).exp()                   # softmax
+    g[range(n), t[s:s+chunk]] -= 1                 # p - y   (section 10.3)
+    g /= N
+    grad_h[s:s+chunk] = g @ W                      # (n, C)
+    grad_W += g.T @ h[s:s+chunk]                   # (V, C)
+# backward() just returns grad_h and grad_W, scaled by the incoming gradient</code></pre>
+
+<p>It matches <code>F.cross_entropy</code> to 1e-12 in float64, the loss and both gradients
+(<code>test_chunked_cross_entropy_is_exact</code>). What it saves for backward is ∂L/∂h and ∂L/∂W,
+(N + V)·C elements and nothing of size N·V (measured, same test as above). The largest temporary is one chunk:
+1024 × 128,256 × 4 bytes = <b>0.53 GB instead of 10.5 GB</b>. The FLOPs are unchanged; it is the same
+matmuls in a different order.</p>
+
+<div class="box gotcha">
+<span class="t">Two ways the logits bite that are not about memory</span>
+<p style="margin-bottom:0"><b>Do the softmax in fp32.</b> The logits may be bf16, but the logsumexp over
+128k entries is a reduction and needs fp32 (§10.10 and Chapter 12). <b>Mind the tied embedding.</b> With
+<code>tie_embed=True</code>, W is also the embedding table, so its gradient is the head gradient
+<i>plus</i> the embedding's scatter-add (§10.9). Autograd adds them; a hand-fused kernel must too.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 2 — the memory of backward">
+<div class="qitem" data-answer="2">
+  <div class="qq">Why does training need memory proportional to B × T × layers beyond the weights?</div>
+  <div class="opts">
+    <div class="opt">Autograd stores a copy of the weights for each token</div>
+    <div class="opt">Autograd stores the full Jacobian of every layer</div>
+    <div class="opt">Each op's backward needs some of its forward inputs or outputs, so they are saved until backward uses them</div>
+    <div class="opt">Gradients for every intermediate tensor are computed during the forward pass</div>
+  </div>
+  <div class="expl"><b>Backward formulas consume forward values.</b> <code>∂L/∂B = Aᵀ ∂L/∂C</code> needs A,
+  so A must survive until backward reaches that matmul. Every per-token tensor some backward needs is kept,
+  which is why the bill scales with tokens and layers. No Jacobian is ever stored.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">For a transformer the best checkpoint interval comes out near 1 layer, not √L. Why?</div>
+  <div class="opts">
+    <div class="opt">Each layer's internals (~24 C per token) dwarf its boundary (C), so boundaries are cheap to store and several layers of internals are expensive to hold</div>
+    <div class="opt">Transformers have too few layers for √L to matter</div>
+    <div class="opt">Recomputation is free on GPUs</div>
+    <div class="opt">The residual stream cannot be checkpointed</div>
+  </div>
+  <div class="expl"><b>k* = √(L·b/(a+b)).</b> With a = 24b and L = 32, k* = 1.13. The √L rule assumes a ≈ b.
+  Computed: one checkpoint per layer needs 3.83 GB, one every 4 layers 7.25 GB.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">You checkpoint every layer of an 8B model at T = 8192 with a 128k vocabulary, and memory is still dominated by one place. Which?</div>
+  <div class="opts">
+    <div class="opt">The attention probability matrices</div>
+    <div class="opt">The embedding lookup</div>
+    <div class="opt">The RoPE cos/sin tables</div>
+    <div class="opt">The (B·T, V) logits and the fp32 log-softmax cross-entropy saves for backward</div>
+  </div>
+  <div class="expl"><b>About 10.5 GB at the very end</b> (bf16 logits, fp32 log-probabilities, fp32
+  gradient) against 3.83 GB for all checkpointed layers. The fix is a chunked or fused cross-entropy.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">How can a chunked cross-entropy avoid saving any vocabulary-sized tensor for backward?</div>
+  <div class="opts">
+    <div class="opt">It stores the logits in fp8</div>
+    <div class="opt">The logit gradient is p − y row by row, so it can be formed during the forward pass and pushed straight through the head matmul into ∂L/∂h and ∂L/∂W</div>
+    <div class="opt">It drops rare tokens from the vocabulary</div>
+    <div class="opt">It approximates the softmax by sampling</div>
+  </div>
+  <div class="expl"><b>The gradient is local and known in closed form</b> (§10.3), so it need not wait for
+  backward. The result is exact to 1e-12, and the saved state is (N + V)·C instead of N·V.</div>
+</div>
+</div>
+
+<h2>10.9 · Three more backward passes: embedding, SwiGLU, RoPE</h2>
+
+<p>The chapter so far covered every op with an interesting Jacobian. Three more appear in every modern model,
+and each has one idea worth knowing.</p>
+
+<h3>The embedding: a gather, so a scatter-add</h3>
+
+<p>The forward pass is a lookup: row <code>ids[i]</code> of the table becomes position i's vector. Nothing is
+multiplied, so the backward is bookkeeping: each position's upstream gradient is <b>added into the row it came
+from</b>. A token that appears three times gets the sum of three gradients; a token that does not appear gets
+exactly zero.</p>
+
+<pre><code>def embedding_backward(ids, grad_out, V):        # ids (N,), grad_out (N, C)
+    g = torch.zeros(V, grad_out.shape[-1])
+    return g.index_add_(0, ids, grad_out)           # (V, C): a scatter-ADD, not a scatter
+
+E = nn.Embedding(10, 4); ids = torch.tensor([3, 7, 3, 3, 1])
+E(ids).backward(g)
+assert torch.allclose(E.weight.grad, embedding_backward(ids, g, 10))   # row 3 = g[0] + g[2] + g[3]</code></pre>
+
+<p>Two consequences. The gradient is <b>sparse in rows</b>: in a batch of 8k tokens drawn from a 128k
+vocabulary most rows get nothing, so the Adam moments of rare tokens update rarely (one reason some recipes
+turn off weight decay on embeddings, Chapter 11). And the scatter-add has <b>collisions</b>: positions with the
+same id write to the same row, which on a GPU means atomic adds or a sort first. Atomic fp32 adds in a
+different order give slightly different sums, one of the sources of run-to-run nondeterminism.</p>
+
+<h3>SwiGLU: the product rule, twice</h3>
+
+<p>y = silu(a) ⊙ b, with a = x W<sub>gate</sub> and b = x W<sub>up</sub>. The product rule splits the
+gradient between the branches, and silu's derivative follows from silu(a) = a·σ(a):</p>
+
+<div class="mathblock">
+∂L/∂b = g ⊙ silu(a) &nbsp;&nbsp;&nbsp;&nbsp; ∂L/∂a = g ⊙ b ⊙ σ(a) (1 + a (1 − σ(a)))
+<span class="lbl">σ is the sigmoid; both then flow back through their matmuls (§10.1)</span>
+</div>
+
+<p>Read what backward needs: a, b and silu(a), all <code>d_ff</code> wide. That is the 4·d_ff in §10.7's
+table (the fourth is the product, which <code>down</code> needs). silu(a) is cheap to recompute from a, which
+makes it a textbook target for <i>selective</i> recomputation: keep a and b, drop silu(a) and the product,
+and the MLP's saved memory halves for two elementwise ops in backward. <code>tfs.memory.swiglu_backward</code>
+is checked against autograd in float64 (<code>test_swiglu_backward</code>).</p>
+
+<h3>RoPE: rotate the gradient back</h3>
+
+<p>RoPE (<a href="ch07-positions.html">Chapter 7</a>) multiplies each pair of dimensions by a 2×2 rotation
+R(θ). A rotation is orthogonal, so its transpose is its inverse: R(θ)<sup>T</sup> = R(−θ). The backward of
+"rotate by θ" is <b>"rotate the gradient by −θ"</b>, which is the forward code with <code>sin</code>
+negated:</p>
+
+<pre><code>def rope_backward(g, cos, sin):                 # forward: x*cos + rotate_half(x)*sin
+    return g * cos - rotate_half(g) * sin       # R(-theta): same cos, opposite sin</code></pre>
+
+<p>Nothing new needs saving (cos and sin are fixed buffers), and the gradient's norm is preserved exactly,
+because rotations preserve length (<code>test_rope_backward_is_inverse_rotation</code> checks both).</p>
+
+<h2>10.10 · Gradients in low precision</h2>
+
+<p>In a mixed-precision run (<a href="ch12-precision.html">Chapter 12</a>) the matmuls run in bf16, so the
+activation gradients they produce are bf16 too. A single bf16 gradient is fine: its rounding error of at most
+0.4% is small next to minibatch noise. The damage happens where gradients are <b>added up</b>, because a
+running total in bf16 rounds every addend against the size of the total. Gradients are summed in three places:
+gradient accumulation across micro-batches, the data-parallel all-reduce, and inside the backward kernels
+themselves (∂L/∂W is a sum over all B·T tokens).</p>
+
+<p>Measured with <code>tfs.memory.accumulate</code>: 64 micro-batch gradients of 100,000 entries each (mean
+2e-3, spread 1e-3), summed with the running total held in each format, against a float64 sum:</p>
+
+<pre><code class="nohl">running total in      relative error of the summed gradient
+  bf16                7.4e-03        <- 0.74%: each add rounds to an 8-bit significand
+  fp16                9.3e-04
+  fp32                1.1e-07        <- about 65,000× better than bf16</code></pre>
+
+<p>0.74% does not sound like much, but it is not zero-mean noise. Once the total is large, every new addend is
+rounded relative to the <i>total</i>, so later micro-batches are systematically mis-counted and the error
+grows with the number of terms. It is Chapter 12's fp16 accumulator stall, one format over
+(<code>test_gradient_accumulation_dtype</code>).</p>
+
+<div class="box math-note">
+<span class="t">The rule, and where each framework applies it</span>
+<p style="margin-bottom:0"><b>A gradient may live in bf16; a running sum of gradients may not.</b> Tensor cores
+accumulate matmul partial sums in fp32, so the sum over tokens inside ∂L/∂W is safe. Under
+<code>autocast</code>, <code>.grad</code> has the parameter's dtype, which is fp32 for fp32 master weights,
+so micro-batch accumulation is safe too. The all-reduce is the one you choose: FSDP's
+<code>MixedPrecision(reduce_dtype=...)</code> and DDP's communication hooks let you reduce in bf16 to halve
+the bytes, and large runs sometimes do, accepting the error for the bandwidth.
+<a href="ch19-distributed.html">Chapter 19</a> prices that trade.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 3 — more backward, in low precision">
+<div class="qitem" data-answer="1">
+  <div class="qq">Token 3 appears three times in a batch. What is the embedding table's gradient for row 3?</div>
+  <div class="opts">
+    <div class="opt">The gradient from its last occurrence (later writes overwrite earlier ones)</div>
+    <div class="opt">The sum of the three positions' upstream gradients</div>
+    <div class="opt">Their mean</div>
+    <div class="opt">Zero, because a lookup has no derivative</div>
+  </div>
+  <div class="expl"><b>Scatter-add.</b> Each occurrence contributed to the loss independently, so their
+  gradients add. A plain scatter (overwrite) is a real bug that only shows up for repeated tokens.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">What is the backward of RoPE?</div>
+  <div class="opts">
+    <div class="opt">There is none; positions are not learned</div>
+    <div class="opt">A rotation by 2θ</div>
+    <div class="opt">The same rotation with the angle negated, because a rotation's transpose is its inverse</div>
+    <div class="opt">Division by cos θ</div>
+  </div>
+  <div class="expl"><b>R(θ)ᵀ = R(−θ).</b> The gradient with respect to q is the upstream gradient rotated back
+  by the same angle, <code>g·cos − rotate_half(g)·sin</code>, and its norm is unchanged.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Where does keeping gradients in bf16 actually lose information?</div>
+  <div class="opts">
+    <div class="opt">In running sums (micro-batch accumulation, reductions), where small addends are rounded against a large total</div>
+    <div class="opt">In every individual gradient, which becomes useless at 8 bits of significand</div>
+    <div class="opt">Only in the embedding gradient</div>
+    <div class="opt">Nowhere; bf16 has the same range as fp32</div>
+  </div>
+  <div class="expl"><b>Sums, not values.</b> One bf16 gradient is off by at most 0.4%. A bf16 running total of
+  64 micro-batches was off by 0.74%, against 1.1e-7 in fp32, and the error grows with the number of terms.
+  Range is not the issue here (that was fp16's problem); the accumulator's precision is.</div>
+</div>
+</div>
+
+<h2>10.11 · Exercises</h2>
 <div class="exercise">
 <div class="eh"><span class="n">10.1</span><span class="ti">Write backward for every layer, check against autograd</span><span class="lvl">essential</span></div>
 <div class="eb">
@@ -446,11 +785,86 @@ the difference between a number and <code>inf</code>.</li>
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">10.5</span><span class="ti">Size the activations of a model you care about</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>Take Llama-3-70B: <code>C = 8192, H = 64, dh = 128, KV heads = 8, d_ff = 28672</code>, 80 layers, bf16.</p>
+<ol>
+<li>Elements saved per token per layer, using §10.7's formula.</li>
+<li>Activation memory for one sequence at T = 8192, without checkpointing and with one checkpoint per layer.</li>
+<li>The best checkpoint interval k*. Is it still about 1?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">6·8192 + 2 + 4·64·128 + 64 + 4·28672 = 49,154 + 32,768 + 64 + 114,688 = 196,674   (24.0 C)
+no checkpointing:   196,674 × 8192 × 2 × 80       = 257.8 GB
+per-layer ckpt:     80 × 8192 × 8192 × 2          = 10.7 GB  (boundaries)
+                    + (196,674 + 8192) × 8192 × 2 =  3.4 GB  (one layer re-run)  -> 14.1 GB
+k* = sqrt(80 · 8192 / 204,866) = 1.79</code></pre>
+<p style="margin-bottom:0">k* is now between 1 and 2: with 80 layers the stored boundaries themselves start to
+matter (10.7 GB), so checkpointing every second layer is roughly as good. Past this point the next lever is
+sharding the boundaries across GPUs (sequence parallelism, Chapter 19).</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">10.6</span><span class="ti">Count saved tensors yourself</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Use <code>tfs.memory.measure_saved</code> on a <code>Block</code> and reproduce 1,990 elements per token.
+Then change one thing at a time and predict the new count <i>before</i> measuring:</p>
+<ol>
+<li>Replace <code>repeat_interleave</code> + SDPA with <code>F.scaled_dot_product_attention(..., enable_gqa=True)</code> on the unexpanded K, V.</li>
+<li>Wrap the block in <code>torch.utils.checkpoint.checkpoint</code>.</li>
+<li>Replace SDPA with the naive <code>softmax(q @ k.T / √d) @ v</code>.</li>
+</ol>
+<details class="reveal"><summary>What to expect</summary><div>
+<p style="margin-bottom:0">(1) If the kernel handles GQA natively, K and V drop to n_kv_head width:
+1,990 − 2·(4 − 2)·24 = 1,894. If you still measure 1,990, your backend expanded them internally: that is
+exactly the kind of fact this tool exists to find. (2) Only the
+block input survives: C = 96 elements per token. (3) A (T, T) probability matrix per head appears: H·T extra
+elements per token (and the scores too, depending on how you write it), which at T = 64 is 256 or more. That
+term is what FlashAttention exists to delete.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">10.7</span><span class="ti">Fuse the loss, then measure the peak</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>On a GPU (or with <code>tracemalloc</code>-style accounting on CPU), compare peak memory of
+<code>F.cross_entropy(h @ W.T, t)</code> against <code>tfs.memory.chunked_cross_entropy(h, W, t, chunk)</code>
+for N = 8192, C = 1024, V = 128,256 and chunk ∈ {256, 1024, 4096}. Predict each peak from §10.8 first.</p>
+<details class="reveal"><summary>What you should find</summary><div>
+<p style="margin-bottom:0">The full version peaks at several N·V·4-byte tensors (4.2 GB each in fp32). The
+chunked version peaks near chunk·V·4 bytes plus the fixed ∂L/∂h and ∂L/∂W buffers, so its peak is linear in
+the chunk size and the step time is nearly flat until the chunk gets so small that the matmuls stop filling
+the GPU. That knee is the chunk size to use.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">10.8</span><span class="ti">Predict, then measure, a bf16 accumulator</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>Using the gap formula from Chapter 0, predict how many micro-batch gradients of size ≈ 2e-3 you can add to a
+bf16 running total before the next one changes it by less than half of its own value. Then measure it with
+<code>tfs.memory.accumulate</code> by sweeping the number of micro-batches from 8 to 512.</p>
+<details class="reveal"><summary>The prediction</summary><div>
+<p style="margin-bottom:0">bf16 has 8 significant bits, so the gap at a total of S is about S·2<sup>−7</sup>
+(one step) and an addend is rounded to a multiple of that gap. An addend of 2e-3 starts losing half of itself
+once the gap reaches 2e-3, i.e. S ≈ 2e-3 · 2<sup>7</sup> ≈ 0.26, about 128 micro-batches. Below that the
+error is rounding noise; above it the total visibly stalls. fp32's gap is 2<sup>16</sup> times finer, which is
+the whole argument for fp32 accumulation.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://cs231n.github.io/optimization-2/">CS231n — Backprop, intuitions</a> — the clearest introduction to the local-gradient view.</li>
 <li><a href="https://www.youtube.com/watch?v=VMj-3S1tku0">Karpathy — building micrograd</a> — autograd from nothing, in 100 lines.</li>
 <li><a href="https://arxiv.org/abs/2205.14135">Dao et al. 2022 — FlashAttention</a>, Appendix B, for the tiled backward pass.</li>
+<li><a href="https://arxiv.org/abs/1604.06174">Chen et al. 2016 — Training Deep Nets with Sublinear Memory Cost</a> — the √L checkpointing result §10.7 generalises.</li>
+<li><a href="https://arxiv.org/abs/2205.05198">Korthikanti et al. 2022 — Reducing Activation Recomputation in Large Transformer Models</a> — activation memory per layer, and selective recomputation.</li>
+<li><a href="https://arxiv.org/abs/2410.10989">Hsu et al. 2024 — Liger Kernel</a> and <a href="https://arxiv.org/abs/2411.09009">Wijmans et al. 2024 — Cut Your Losses in Large-Vocabulary Language Models</a> — fused / chunked cross-entropy (§10.8).</li>
+<li><a href="https://docs.pytorch.org/docs/stable/autograd.html#saved-tensors-hooks">PyTorch — saved tensors hooks</a> — the mechanism <code>tfs.memory.measure_saved</code> uses.</li>
+<li>Reference code: <code>tfs/memory.py</code> · tests: <code>tests/test_training.py</code> (Ch 10 section)</li>
 <li><a href="https://arxiv.org/abs/1502.01852">He et al. 2015</a> — where the variance argument behind initialisation is made.</li>
 <li>Companion notebook: not written yet (planned as <code class="planned">notebooks/10_backprop.ipynb</code>)</li>
 </ul>
