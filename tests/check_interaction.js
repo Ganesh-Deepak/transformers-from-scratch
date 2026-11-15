@@ -30,10 +30,13 @@ const CHROME = [
 ].find(p => fs.existsSync(p));
 if (!CHROME) { console.error("\n  Chrome not found — this test drives headless Chrome.\n"); process.exit(2); }
 
-const COURSE = path.join(__dirname, "..", "course");
+const _ri = process.argv.indexOf("--root");
+// --root <course dir>: run against another course in the library (default: this repo's course/)
+const COURSE = _ri > 0 ? path.resolve(process.argv[_ri + 1]) : path.join(__dirname, "..", "course");
+const OTHER = _ri > 0;   // another course: only the course-independent scenarios (the chapter sweep)
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "tfs-int-"));
 process.on("exit", () => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) {} });   // even when a run is killed
-const ALL = process.argv.includes("--all");
+const ALL = process.argv.includes("--all") || OTHER;
 const PAGE = process.argv.filter(a => a.endsWith(".html"))[0] || "ch06-mha.html";
 
 /* Every chapter, read from the manifest, so a new chapter is covered
@@ -180,6 +183,7 @@ const ok = (cond, label, extra) => {
 
 console.log("Interaction check — " + PAGE + ", real Chrome, deterministic clock\n");
 
+if (!OTHER) {   // the Transformers-specific scenarios
 /* ---------------------------------------------------- 1. duration select -- */
 console.log(" sprint duration");
 const d = run([
@@ -827,6 +831,8 @@ const se = run([
 if (se.error) ok(false, "series scenario ran", se.error);
 else ok(se.lines === 2 && se.pts === 18 && !se.script && /without cache from 13.15 to 155.67/.test(se.label),
         "series: Ch 15's measured timing draws two lines, 18 points, and describes itself", `${se.lines} lines, ${se.pts} points`);
+
+}   // end of the Transformers-specific scenarios
 
 /* ------------------------------- 5. every chapter, condensed -------------- */
 if (ALL) {

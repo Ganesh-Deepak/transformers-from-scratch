@@ -34,12 +34,16 @@ if (!CHROME) {
   process.exit(2);
 }
 
-const COURSE = path.join(__dirname, "..", "course");
+const _ri = process.argv.indexOf("--root");
+// --root <course dir>: run against another course in the library (default: this repo's course/)
+const COURSE = _ri > 0 ? path.resolve(process.argv[_ri + 1]) : path.join(__dirname, "..", "course");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "tfs-resp-"));
 process.on("exit", () => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) {} });   // even when a run is killed
 
 const WIDTHS = [320, 375, 390, 430, 768, 1024, 1440, 1920];
-const PAGES = ["index.html", "ch00-numbers.html", "ch01-tensors.html", "ch05-attention.html", "ch06-mha.html",
+const PAGES = _ri > 0
+  ? fs.readdirSync(COURSE).filter(f => /^(index|ch\d\d-.*)\.html$/.test(f)).sort()   // another course: every page
+  : ["index.html", "ch00-numbers.html", "ch01-tensors.html", "ch05-attention.html", "ch06-mha.html",
                "ch11-training.html", "ch12-precision.html", "ch16-gqa-mla.html", "ch17-flashattention.html",
                "ch19-distributed.html", "ch23-sft-rlhf.html", "ch26-evaluation.html"];
 

@@ -18,7 +18,11 @@ try {
   process.exit(2);
 }
 
-const ROOT = path.join(__dirname, "..", "course");
+const _ri = process.argv.indexOf("--root");
+// --root <course dir>: run against another course in the library (default: this repo's course/)
+const ROOT = _ri > 0 ? path.resolve(process.argv[_ri + 1]) : path.join(__dirname, "..", "course");
+const _pi = process.argv.indexOf("--pkg");
+const PKG = _pi > 0 ? process.argv[_pi + 1] : "tfs";   // the course's reference package
 
 function load(file, theme) {
   const html = fs.readFileSync(path.join(ROOT, file), "utf8");
@@ -327,13 +331,13 @@ for (const file of ["index.html", ...manifestFiles]) {
   for (const f of [...names].sort()) {
     const s = fs.readFileSync(path.join(COURSE, f), "utf8");
     const unplanned = s.replace(/<code class="planned">[^<]*<\/code>/g, "");
-    for (const m of unplanned.matchAll(/(notebooks\/[\w\-.]+\.ipynb|tfs\/[\w\-.]+\.py|tests\/[\w\-.]+\.py)/g))
+    for (const m of unplanned.matchAll(new RegExp("(notebooks/[\\w\\-.]+\\.ipynb|" + PKG + "/[\\w\\-.]+\\.py|tests/[\\w\\-.]+\\.py)", "g")))
       if (!fs.existsSync(path.join(REPO, m[1]))) missing.push(f + " -> " + m[1]);
     for (const m of s.matchAll(/href="(?!\/)([^"#:]+\.html)/g))      // cross-course: check_platform.py
       if (!names.has(m[1])) broken.push(f + " -> " + m[1]);
     const me = /^ch(\d\d)/.exec(f), b = /<span class="k">Builds on<\/span>([\s\S]*?)<div class="sep">/.exec(s);
-    if (me && b) for (const m of b[1].matchAll(/ch(\d\d)-/g))
-      if (+m[1] >= +me[1]) forward.push(f + " builds on ch" + m[1]);
+    if (me && b) for (const m of b[1].matchAll(/href="(ch(\d\d)-)/g))      // same-course only; xrefs are root-relative
+      if (+m[2] >= +me[1]) forward.push(f + " builds on ch" + m[2]);
   }
   ok(!missing.length, "every referenced repo file exists (or is marked planned)", missing.slice(0, 4).join(", "));
   ok(!broken.length, "every link between pages resolves", broken.slice(0, 4).join(", "));
