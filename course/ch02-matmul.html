@@ -14,16 +14,16 @@
 <h1>2 · Matrix Multiplication as a Machine</h1>
 <p class="lead">
 Every learnable operation in a transformer is a matmul. If you can predict the output shape of a matmul
-without thinking, and you know what broadcasting will do before you run it, the rest of this course is
-bookkeeping. This chapter makes that automatic.
+without thinking, and know what broadcasting will do before you run it, the rest of this course is
+bookkeeping. This chapter makes both automatic.
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span><a href="ch01-tensors.html">Ch&nbsp;01</a> &mdash; shapes, strides, reshape vs transpose<div class="sep"></div><span class="k">Leads to</span><a href="ch05-attention.html">Ch&nbsp;05</a> &mdash; attention is two matmuls and a softmax<br><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; the FLOP counting returns as the memory wall<div class="sep"></div><span class="k">Why this chapter</span>A matmul consumes one dimension. Find the vanishing axis and you can read any equation in any paper.</div>
 <div class="box intuition">
 <span class="t">The one idea in this chapter</span>
-<p style="margin-bottom:0">A matmul <b>consumes</b> one dimension. <code>(m, k) @ (k, n) → (m, n)</code>:
-the two <code>k</code>s meet, get multiplied-and-summed, and <b>vanish</b>. Everything else is carried along
-untouched. Finding the vanishing dimension is how you read any matmul in any paper.</p>
+<p style="margin-bottom:0">A matmul <b>consumes</b> one dimension. In <code>(m, k) @ (k, n) → (m, n)</code>,
+the two <code>k</code>s meet, are multiplied and summed, and <b>vanish</b>. Everything else is carried along
+unchanged. To read any matmul in any paper, find the dimension that vanishes.</p>
 </div>
 
 <h2>2.1 · The machine, one cell at a time</h2>
@@ -32,14 +32,13 @@ untouched. Finding the vanishing dimension is how you read any matmul in any pap
 
 <div data-viz="matmul" data-m="4" data-k="3" data-n="5"></div>
 
-<p>Three facts that widget should make permanent:</p>
+<p>That widget should leave you with three facts:</p>
 
 <ol>
-<li><b>Output cell <code>(i, j)</code> depends on row <code>i</code> of A and column <code>j</code> of B.</b>
-Nothing else.</li>
-<li><b>The inner dimension <code>k</code> must match, and then disappears.</b> It is the axis being summed over.</li>
-<li><b>The output shape is "the outer two":</b> <code>(m, n)</code>. You can read it off the outside of the
-expression without any arithmetic.</li>
+<li><b>Output cell <code>(i, j)</code> depends only on row <code>i</code> of A and column <code>j</code> of B.</b></li>
+<li><b>The inner dimension <code>k</code> must match, and then it disappears.</b> It is the axis being summed over.</li>
+<li><b>The output shape is the two outer dimensions,</b> <code>(m, n)</code>. You can read it off the outside of the
+expression without doing any arithmetic.</li>
 </ol>
 
 <div class="mathblock">
@@ -49,7 +48,7 @@ C<sub>ij</sub> = <span class="op">Σ</span><sub>k</sub> A<sub>ik</sub> B<sub>kj<
 
 <div class="example">
 <span class="t">Worked example — (2,3) @ (3,4), every number</span>
-<p>Do this one with a pencil. It is the only way the rule stops being abstract.</p>
+<p>Do this one with a pencil. Working one by hand is what makes the rule concrete.</p>
 
 <div class="step"><div class="i">1</div><div>
 <b>Write the shapes and find the vanishing dimension.</b>
@@ -91,9 +90,9 @@ C[1,2] = 4×2 + 5×1 + 6×0 = 8 + 5 + 0 = 13</code></pre>
      [16, 11, 13, 22]]        shape (2, 4)  ✓</code></pre>
 </div></div>
 
-<p style="margin-bottom:0"><b>Notice the summation you met in Chapter 1:</b>
+<p style="margin-bottom:0"><b>This is the summation from Chapter 1:</b>
 <span class="math">C<sub>ij</sub> = <span class="op">Σ</span><sub>k</sub> A<sub>ik</sub>B<sub>kj</sub></span>
-is literally step 3 — loop <code>k</code> over the shared dimension, multiply the pair, keep a
+is step 3 written as a formula. Loop <code>k</code> over the shared dimension, multiply each pair, and keep a
 running total. The repeated index <code>k</code> is the one that vanishes.</p>
 </div>
 
@@ -109,38 +108,38 @@ assert C[1, 2] == (A[1, :] * B[:, 2]).sum() == 13</code></pre>
 
 <div class="mn">
   <span class="k">Try it</span>
-  Change one number in row 1 of <b>A</b>. Exactly one <i>row</i> of <b>C</b> changes. Change one
-  number in column 2 of <b>B</b> and exactly one <i>column</i> of <b>C</b> changes. That
-  independence is why matmuls parallelise perfectly.
+  Change one number in row 1 of <b>A</b>, and exactly one <i>row</i> of <b>C</b> changes. Change one
+  number in column 2 of <b>B</b>, and exactly one <i>column</i> of <b>C</b> changes. Because the outputs are
+  independent like this, matmuls split across parallel hardware with no extra work.
 </div>
 
 <h3>What a matmul <i>means</i> in a neural network</h3>
 
-<p>There are two readings, and you need both.</p>
+<p>There are two ways to read a matmul, and you need both.</p>
 
 <div class="grid2">
 <div class="box math-note" style="margin:0">
 <span class="t">Reading A — dot products</span>
 <p style="margin-bottom:0">Each output number is a <b>similarity score</b> between a row of A and a column of B.
-This is the right reading for <b>attention</b>, where <code>Q @ K.T</code> literally asks "how well does
-each query match each key?"</p>
+This is the right reading for <b>attention</b>, where <code>Q @ K.T</code> asks how well
+each query matches each key.</p>
 </div>
 <div class="box math-note" style="margin:0">
 <span class="t">Reading B — a learned projection</span>
-<p style="margin-bottom:0">Each row of A (a token's feature vector) gets <b>re-expressed in a new basis</b>
-by the weight matrix. This is the right reading for <code>nn.Linear</code>: "take this 4096-dim description
-and produce an 11008-dim description of the same thing."</p>
+<p style="margin-bottom:0">Each row of A (one token's feature vector) is <b>re-expressed in a new basis</b>
+by the weight matrix. This is the right reading for <code>nn.Linear</code>: take this 4096-dimensional description
+and produce an 11008-dimensional description of the same thing.</p>
 </div>
 </div>
 
 <h2>2.2 · Batched matmul: the leading axes come along for the ride</h2>
 
-<p>Real tensors are rank 3 or 4, not rank 2. PyTorch's rule is beautifully simple:</p>
+<p>Real tensors are rank 3 or 4, not rank 2. PyTorch's rule for them is simple:</p>
 
 <div class="box intuition">
 <span class="t">The batched matmul rule</span>
-<p style="margin-bottom:0"><code>@</code> operates on the <b>last two axes only</b>. Every axis before that is
-treated as a batch index — broadcast if needed, and passed through untouched.</p>
+<p style="margin-bottom:0"><code>@</code> works on the <b>last two axes only</b>. Every axis before those is
+treated as a batch index: broadcast if needed, and passed through unchanged.</p>
 </div>
 
 <pre><code>A = torch.randn(8, 4, 3)        # 8 independent (4,3) matrices
@@ -152,9 +151,9 @@ B = torch.randn(2, 8, 3, 5)
 (A @ B).shape                   # (2, 8, 4, 5)  ← 16 independent matmuls
 </code></pre>
 
-<p>That second example <i>is</i> multi-head attention. <code>(B, n_head, T, d_head) @ (B, n_head, d_head, T)
-→ (B, n_head, T, T)</code>. Batch and head ride along; <code>d_head</code> is consumed; you get a
-<code>T×T</code> score matrix per head. That's the whole thing.</p>
+<p>That second example <i>is</i> multi-head attention: <code>(B, n_head, T, d_head) @ (B, n_head, d_head, T)
+→ (B, n_head, T, T)</code>. Batch and head ride along, <code>d_head</code> is consumed, and you get a
+<code>T×T</code> score matrix for each head.</p>
 
 <h3>The four shapes of <code>@</code></h3>
 
@@ -173,7 +172,7 @@ B = torch.randn(2, 8, 3, 5)
 <div class="box gotcha">
 <span class="t"><code>nn.Linear</code> does <i>not</i> do what its shape suggests</span>
 <p><code>nn.Linear(in_features, out_features)</code> stores its weight with shape
-<code>(out_features, in_features)</code> — <b>transposed</b> from what you'd expect — and computes
+<code>(out_features, in_features)</code>, the transpose of what you might expect, and computes
 <code>x @ W.T + b</code>.</p>
 <pre style="margin:.6em 0 0"><code>lin = nn.Linear(512, 2048)
 lin.weight.shape          # (2048, 512)   ← out first!
@@ -181,8 +180,8 @@ x = torch.randn(8, 128, 512)
 lin(x).shape              # (8, 128, 2048)  ← only the LAST axis changes
 </code></pre>
 <p style="margin-bottom:0">The practical rule: <b><code>nn.Linear</code> rewrites the last axis and leaves every
-other axis alone.</b> That's why you can feed it <code>(B, T, C)</code> without reshaping — it happily treats
-<code>B×T</code> as "a big pile of vectors".</p>
+other axis alone.</b> That is why you can feed it <code>(B, T, C)</code> without reshaping: it treats
+<code>B×T</code> as one big pile of vectors.</p>
 </div>
 
 <div class="quiz" data-title="Checkpoint 1 — matmul shapes">
@@ -196,9 +195,9 @@ other axis alone.</b> That's why you can feed it <code>(B, T, C)</code> without 
     <div class="opt">(4, 12, 64, 128)</div>
   </div>
   <div class="expl"><b>(4, 12, 128, 128).</b> <code>k.transpose(-2,-1)</code> is <code>(4,12,64,128)</code>.
-  Then <code>(…,128,64) @ (…,64,128)</code>: the 64s meet and vanish, leaving <code>(…,128,128)</code>.
-  This is the attention score matrix — <b>T×T</b>, one row per query. Notice it is quadratic in T:
-  that single fact drives all of Part IV.</div>
+  Then in <code>(…,128,64) @ (…,64,128)</code> the 64s meet and vanish, leaving <code>(…,128,128)</code>.
+  This is the attention score matrix: <b>T×T</b>, one row per query. It grows with the square of T,
+  and that one fact drives all of Part IV.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">An MLP layer is <code>nn.Linear(4096, 11008)</code>. Input is <code>(2, 1024, 4096)</code>.
@@ -210,8 +209,8 @@ other axis alone.</b> That's why you can feed it <code>(B, T, C)</code> without 
     <div class="opt">(2, 1024, 11008); 11008 weights</div>
   </div>
   <div class="expl"><b>(2, 1024, 11008)</b>, and 4096 × 11008 = <b>45,088,768</b> ≈ 45M weights (plus 11008
-  biases, though most modern LLMs set <code>bias=False</code>). Note the parameter count does not depend on
-  batch or sequence length at all — only on the feature dimensions.</div>
+  biases, though most modern LLMs set <code>bias=False</code>). The parameter count does not depend on
+  batch size or sequence length at all, only on the feature dimensions.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">Which of these will raise a shape error?</div>
@@ -221,7 +220,7 @@ other axis alone.</b> That's why you can feed it <code>(B, T, C)</code> without 
     <div class="opt"><code>torch.randn(1,4,3) @ torch.randn(8,3,5)</code></div>
     <div class="opt"><code>torch.randn(8,4,3) @ torch.randn(5,3)</code></div>
   </div>
-  <div class="expl"><b>The last one.</b> The inner dimensions must match: <code>3</code> vs <code>5</code> — no.
+  <div class="expl"><b>The last one.</b> The inner dimensions must match, and <code>3</code> and <code>5</code> do not.
   The first works because <code>(3,5)</code> broadcasts across the batch; the third works because a batch
   dimension of 1 broadcasts up to 8.</div>
 </div>
@@ -229,16 +228,16 @@ other axis alone.</b> That's why you can feed it <code>(B, T, C)</code> without 
 
 <h2>2.3 · Broadcasting — the rule that causes silent bugs</h2>
 
-<p>Broadcasting lets you combine tensors of different shapes without writing loops. It's wonderful, and it is
-the number one source of bugs that don't crash.</p>
+<p>Broadcasting lets you combine tensors of different shapes without writing loops. It is very useful, and it is
+also the main source of bugs that do not crash.</p>
 
 <div class="box math-note">
 <span class="t">The complete rule</span>
-<p>Align the two shapes <b>from the right</b>. Pad the shorter one with 1s on the <i>left</i>. Then, for each
-position, the dimensions are compatible if:</p>
+<p>Line the two shapes up <b>from the right</b>, and pad the shorter one with 1s on the <i>left</i>. Then, at each
+position, the two dimensions are compatible if:</p>
 <ul style="margin-bottom:0">
 <li>they are equal, <b>or</b></li>
-<li>one of them is <b>1</b> — in which case it is stretched to match the other</li>
+<li>one of them is <b>1</b>, in which case it is stretched to match the other.</li>
 </ul>
 </div>
 
@@ -253,8 +252,8 @@ scores + mask     # (4, 8, 16, 16)   ← NO ERROR. Broadcast along the last axis
                   #                     If you meant per-QUERY, you are now silently wrong.
 </code></pre>
 
-<p>Both interpretations produce a valid tensor of the right shape. Only one is what you wanted. The fix is to
-be explicit about which axis you mean:</p>
+<p>Both readings produce a valid tensor of the right shape, but only one is what you wanted. The fix is to
+say explicitly which axis you mean:</p>
 
 <pre><code>mask[None, None, :, None]    # (1,1,T,1) → broadcasts across KEYS   (per-query mask)
 mask[None, None, None, :]    # (1,1,1,T) → broadcasts across QUERIES (per-key mask)
@@ -266,20 +265,20 @@ mask[None, None, None, :]    # (1,1,1,T) → broadcasts across QUERIES (per-key 
 target = torch.randn(32)        # (32,)
 loss = ((pred - target) ** 2).mean()</code></pre>
 <p style="margin-bottom:0">You expected 32 squared errors. Broadcasting gave you a <b>(32, 32)</b> matrix of
-all-pairs differences, and the mean over 1024 numbers. The loss is wrong, training is garbage, nothing
-crashes. Always <code>assert pred.shape == target.shape</code> before a loss.</p>
+the differences between every pair, and a mean over 1024 numbers. The loss is wrong and training is useless, but nothing
+crashes. Always <code>assert pred.shape == target.shape</code> before computing a loss.</p>
 </div>
 
 <h2>2.4 · einsum: say what you mean</h2>
 
-<p><code>einsum</code> lets you write the index equation directly instead of choreographing transposes.
-Once it clicks, you'll prefer it for anything non-trivial.</p>
+<p><code>einsum</code> lets you write the index equation directly instead of arranging transposes by hand.
+Once it makes sense to you, you will prefer it for anything complicated.</p>
 
 <div class="box intuition">
 <span class="t">How to read an einsum string</span>
-<p style="margin-bottom:0">Label every axis of every input with a letter. Write the output labels after
-<code>-&gt;</code>. Then: <b>any letter that appears in the inputs but not the output is summed over.</b>
-Any letter repeated across inputs is multiplied elementwise before that sum.</p>
+<p style="margin-bottom:0">Give every axis of every input a letter, and write the output's letters after
+<code>-&gt;</code>. Then <b>any letter that appears in the inputs but not in the output is summed over.</b>
+A letter repeated across inputs is multiplied elementwise before that sum.</p>
 </div>
 
 <pre><code>import torch
@@ -311,15 +310,15 @@ out = torch.einsum('bhqk,bhkd->bhqd', attn, v)               # (2, 8, 100, 64)
 #                        ^^^^ now k is summed away — the weighted average
 </code></pre>
 
-<p>Compare that to the transpose version. Same computation:</p>
+<p>Compare it with the transpose version, which does the same computation:</p>
 
 <pre><code>scores = (q @ k.transpose(-2, -1)) / 64**0.5
 out    = attn @ v
 </code></pre>
 
-<p>The <code>@</code> version is faster to type and typically dispatches to a slightly better-optimised path;
-the <code>einsum</code> version is self-documenting and impossible to get backwards. Real codebases use
-<code>@</code> in the hot path and <code>einsum</code> everywhere else. <b>Learn to read both.</b></p>
+<p>The <code>@</code> version is quicker to type and usually runs on a slightly better-optimised path;
+the <code>einsum</code> version documents itself and cannot be written backwards. Real codebases use
+<code>@</code> in the hot path and <code>einsum</code> everywhere else, so learn to read both.</p>
 
 <h3>einops: the same idea for reshaping</h3>
 
@@ -340,48 +339,48 @@ pooled = reduce(x, 'b t c -> b c', 'mean')            # (2, 512)
 <div class="box intuition">
 <span class="t">Why <code>(h d)</code> and not <code>(d h)</code> matters</span>
 <p style="margin-bottom:0"><code>'b t (h d) -&gt; b h t d'</code> says the 512 features are laid out as
-8 blocks of 64 — head 0 owns features 0–63, head 1 owns 64–127, and so on. Writing <code>(d h)</code>
-would mean features are <i>interleaved</i> across heads. Both are valid reshapes with the same output shape,
-but they scramble the weights differently. <b>This is the single most common bug in from-scratch attention,
-and einops makes it visible instead of hidden inside a <code>.view()</code>.</b></p>
+8 blocks of 64: head 0 owns features 0 to 63, head 1 owns 64 to 127, and so on. Writing <code>(d h)</code>
+would mean the features are <i>interleaved</i> across heads. Both are valid reshapes with the same output shape,
+but they scramble the weights differently. <b>This is the most common bug in from-scratch attention,
+and einops makes it visible instead of hiding it inside a <code>.view()</code>.</b></p>
 </div>
 
 <h2>2.5 · Counting FLOPs — the skill that makes you sound senior</h2>
 
-<p>A matmul <code>(m, k) @ (k, n)</code> costs <b>2·m·k·n</b> floating-point operations (one multiply and
-one add per term). That factor of 2 is the convention everyone uses.</p>
+<p>A matmul <code>(m, k) @ (k, n)</code> costs <b>2·m·k·n</b> floating-point operations: one multiply and
+one add for each term. Everyone uses that factor of 2.</p>
 
-<p>For a transformer, the famous approximation is:</p>
+<p>For a transformer, the well-known approximation is:</p>
 
 <div class="mathblock">
 FLOPs per token ≈ 2 N &nbsp;&nbsp;(forward) &nbsp;&nbsp;·&nbsp;&nbsp; ≈ 6 N &nbsp;&nbsp;(forward + backward)
 <span class="lbl">N = number of parameters. Backward costs roughly 2× forward.</span>
 </div>
 
-<p>So training on <code>D</code> tokens costs about <b>6ND</b> FLOPs. That single formula is the basis of
-every scaling-law calculation in Chapter 21, and it's worth being able to derive:</p>
+<p>So training on <code>D</code> tokens costs about <b>6ND</b> FLOPs. Every scaling-law calculation in
+Chapter 21 rests on this formula, and you should be able to derive it:</p>
 
 <ul>
-<li>Forward: each weight is used in exactly one multiply-accumulate per token → <b>2N</b>.</li>
-<li>Backward: you compute gradients w.r.t. both inputs and weights → about <b>2× the forward cost</b> → <b>4N</b>.</li>
+<li>Forward: each weight is used in exactly one multiply-add per token, so <b>2N</b>.</li>
+<li>Backward: you compute gradients with respect to both the inputs and the weights, which costs about <b>2× the forward pass</b>, so <b>4N</b>.</li>
 <li>Total: <b>6N</b> per token.</li>
 </ul>
 
 <div class="box warn">
 <span class="t">What 6ND leaves out</span>
-<p style="margin-bottom:0">Attention's <code>T×T</code> score matrix costs FLOPs that don't scale with
-parameter count — roughly <code>12 · n_layer · d_model · T²</code> per sequence for a training step (4 for the two
-attention matmuls of the forward pass, × 3 for forward plus backward; a causal mask can skip about half). For short contexts this is a
-few percent and everyone ignores it. At <code>T = 128k</code> it can dominate. That crossover is exactly why
-sparse attention (Chapter 22) exists.</p>
+<p style="margin-bottom:0">Attention's <code>T×T</code> score matrix costs FLOPs that do not scale with
+parameter count: roughly <code>12 · n_layer · d_model · T²</code> per sequence for a training step (4 for the two
+attention matmuls of the forward pass, × 3 for forward plus backward; a causal mask can skip about half). For short
+contexts this is a few percent and everyone ignores it. At <code>T = 128k</code> it can dominate. That crossover is
+why sparse attention (Chapter 22) exists.</p>
 </div>
 
 <h3>Where 2N comes from: one layer, matmul by matmul</h3>
 
 <p>"2N per token" is a summary. Derive it once from the matmuls of a single standard transformer layer
-(multi-head attention, a 4× MLP; Chapters 5–8 build each piece) and you will never need to trust it again.
-A token's vector has <code>d</code> features. Each weight matrix <code>(d_in, d_out)</code> applied to one token
-is a <code>(1, d_in) @ (d_in, d_out)</code> matmul: <b>2 · d_in · d_out</b> FLOPs, i.e. 2 FLOPs per weight.</p>
+(multi-head attention and a 4× MLP; Chapters 5 to 8 build each piece) and you will not need to take it on trust again.
+A token's vector has <code>d</code> features. Applying a weight matrix <code>(d_in, d_out)</code> to one token
+is a <code>(1, d_in) @ (d_in, d_out)</code> matmul: <b>2 · d_in · d_out</b> FLOPs, which is 2 FLOPs per weight.</p>
 
 <div class="tw">
 <table>
@@ -397,9 +396,9 @@ is a <code>(1, d_in) @ (d_in, d_out)</code> matmul: <b>2 · d_in · d_out</b> FL
 </table>
 </div>
 
-<p>The <b>12d²</b> in the weight column is the per-layer parameter count Chapter 9 derives and checks against
-GPT-2 (12 · n_layer · d² is most of every transformer). The FLOP column is exactly twice it: that is the
-"2N". What 2N leaves out is the last row, the two matmuls that multiply activations by activations.
+<p>The <b>12d²</b> in the weight column is the per-layer parameter count that Chapter 9 derives and checks against
+GPT-2 (12 · n_layer · d² is most of every transformer). The FLOP column is exactly twice that, which is
+the "2N". What 2N leaves out is the last row: the two matmuls that multiply activations by activations.
 For GPT-2 small (<code>d = 768</code>) at <code>T = 1024</code>, <code>tfs.foundations.layer_flops_per_token</code>
 gives:</p>
 
@@ -408,11 +407,11 @@ MLP          16 × 768²        =  9,437,184
 attention    4 × 1024 × 768   =  3,145,728      (half that with a causal mask that skips masked blocks)
 total                         = 17,301,504      2N accounts for 82% of it</code></pre>
 
-<p>Multiply by 12 layers and add the unembedding (<code>2 × 768 × 50257</code> ≈ 77 M) and you have GPT-2's
-forward cost per token. Training multiplies by 3 (the backward pass computes two matmuls for every forward one:
-a gradient for the input and one for the weight). Push <code>T</code> up and the attention row grows while the
-others do not; for a layer it overtakes the weights at <code>4Td = 24d²</code>, i.e. <b>T = 6d</b>, which is
-Chapter 5's crossover.</p>
+<p>Multiply by 12 layers and add the unembedding (<code>2 × 768 × 50257</code> ≈ 77 M), and you have GPT-2's
+forward cost per token. Training multiplies that by 3, because the backward pass computes two matmuls for every forward one:
+a gradient for the input and one for the weight. Raise <code>T</code> and the attention row grows while the
+others stay fixed. In one layer it overtakes the weights at <code>4Td = 24d²</code>, that is at <b>T = 6d</b>, which is
+Chapter 5's crossover point.</p>
 
 <div class="quiz" data-title="Checkpoint 2 — einsum &amp; FLOPs">
 <div class="qitem" data-answer="1">
@@ -421,11 +420,11 @@ Chapter 5's crossover.</p>
     <div class="opt">The key axis <code>k</code></div>
     <div class="opt">The head-dimension axis <code>d</code></div>
     <div class="opt">The head axis <code>h</code></div>
-    <div class="opt">Nothing — it's an outer product</div>
+    <div class="opt">Nothing: it is an outer product</div>
   </div>
-  <div class="expl"><b><code>d</code></b>. It appears in both inputs but not the output, so it is contracted.
-  <code>q</code> and <code>k</code> both survive to the output as separate axes, producing the T×T score
-  matrix. Rule: <i>missing from the output ⇒ summed away</i>.</div>
+  <div class="expl"><b><code>d</code></b>. It appears in both inputs but not in the output, so it is summed away.
+  <code>q</code> and <code>k</code> both survive in the output as separate axes, which produces the T×T score
+  matrix. The rule: <i>missing from the output means summed away</i>.</div>
 </div>
 <div class="qitem" data-answer="2">
   <div class="qq">Roughly how many FLOPs to train a 7B model on 2 trillion tokens?</div>
@@ -436,25 +435,26 @@ Chapter 5's crossover.</p>
     <div class="opt">≈ 4.2 × 10<sup>25</sup></div>
   </div>
   <div class="expl"><b>6ND = 6 × 7×10⁹ × 2×10¹² = 8.4 × 10²².</b> For scale: an H100's dense bf16
-  <i>peak</i> is about 10¹⁵ FLOP/s, but real training runs reach roughly 40–50% of peak (Chapter 14 calls
+  <i>peak</i> is about 10¹⁵ FLOP/s, but real training runs reach roughly 40 to 50% of peak (Chapter 14 calls
   this MFU). At ~4.5×10¹⁴ FLOP/s that is ~1.9×10⁸ GPU-seconds ≈ 6 GPU-years ≈
-  <b>3 weeks on 100 H100s</b>. Dividing by the peak instead is the most common way this estimate goes wrong. Being able to do this estimate in your head is genuinely useful.</div>
+  <b>3 weeks on 100 H100s</b>. Dividing by the peak instead is the most common way this estimate goes wrong. It is
+  worth being able to do in your head.</div>
 </div>
 </div>
 
 <h2>2.6 · Shapes affect speed: intensity and tile alignment</h2>
 
 <p>FLOPs tell you how much arithmetic a matmul needs. They do not tell you how long it takes, because a GPU
-can only do arithmetic on numbers it has fetched from memory. Two facts about shapes decide which of the two
-limits you hit. Chapter 14 develops both fully; you need the first version now, because this is the first
-place shapes affect speed and not just correctness.</p>
+can only do arithmetic on numbers it has already fetched from memory. Two facts about shapes decide which of
+those limits you hit. Chapter 14 covers both in full; you need a first version now, because this is the first
+place where shapes affect speed as well as correctness.</p>
 
 <h3>Arithmetic intensity: FLOPs per byte moved</h3>
 
 <p>For <code>(M, K) @ (K, N)</code> in bf16, the matmul does <code>2MKN</code> FLOPs and must at least read
-both inputs and write the output once: <code>2(MK + KN + MN)</code> bytes. Their ratio is the
-<b>arithmetic intensity</b>. An H100 does about 295 bf16 FLOPs in the time it moves one byte from HBM
-(Chapter 14's <i>ridge point</i>); below 295 FLOPs/byte it waits on memory, above it on arithmetic. Hold
+both inputs and write the output once: <code>2(MK + KN + MN)</code> bytes. The ratio of the two is the
+<b>arithmetic intensity</b>. An H100 does about 295 bf16 FLOPs in the time it takes to move one byte from HBM
+(Chapter 14's <i>ridge point</i>). Below 295 FLOPs per byte it waits on memory; above it, it waits on arithmetic. Keep
 the weight fixed at <code>(4096, 4096)</code> and vary <code>M</code>, the number of tokens processed at once
 (<code>tfs.foundations.matmul_intensity</code>):</p>
 
@@ -471,33 +471,33 @@ the weight fixed at <code>(4096, 4096)</code> and vary <code>M</code>, the numbe
 </table>
 </div>
 
-<p>Read the bytes column: at small <code>M</code> it is almost all the weight matrix (33.5 MB), read once no
-matter how few tokens use it. That single row is the economics of LLM inference. <b>Decoding one token is
-M = 1</b>: a matrix-vector product, intensity 1, so a decode step is limited by how fast the weights stream
-from memory, not by FLOPs. Batching many users' tokens (raising M) is free until intensity reaches the ridge.
-Training and prefill run thousands of tokens at once and live on the compute side. Chapters 14, 15 and 18 are
-all consequences of this table.</p>
+<p>Look at the bytes column. At small <code>M</code> it is almost all the weight matrix (33.5 MB), which is read once no
+matter how few tokens use it. That row explains the economics of LLM inference. <b>Decoding one token means
+M = 1</b>: a matrix-vector product with intensity 1, so a decode step is limited by how fast the weights stream
+from memory, not by FLOPs. Batching many users' tokens together (raising M) costs nothing extra until the intensity reaches the ridge.
+Training and prefill process thousands of tokens at once and stay on the compute side. Chapters 14, 15 and 18 all
+follow from this table.</p>
 
 <h3>Tile alignment: why vocab sizes are padded</h3>
 
-<p>Tensor cores do not multiply single numbers. They multiply small fixed-size tiles (for bf16, the
-instruction shapes need dimensions in multiples of 8 or 16, and the kernels that run them cut every matrix into
-blocks of 64 or 128). A dimension that is not a multiple of the block size leaves the last block partly empty,
-and the kernel pays for the whole block anyway. NVIDIA's performance guide states the practical rule: for fp16
-and bf16, keep matmul dimensions <b>multiples of 8</b>, and larger powers of two are better still. The waste
-from a partial block is <code>n / (⌈n / tile⌉ · tile)</code> of useful work:</p>
+<p>Tensor cores do not multiply single numbers. They multiply small tiles of fixed size: for bf16 the
+instructions need dimensions in multiples of 8 or 16, and the kernels that use them cut every matrix into
+blocks of 64 or 128. If a dimension is not a multiple of the block size, the last block is partly empty,
+and the kernel pays for the whole block anyway. NVIDIA's performance guide gives the practical rule: for fp16
+and bf16, keep matmul dimensions <b>multiples of 8</b>, and larger powers of two are better still. The share
+of useful work with a partial block is <code>n / (⌈n / tile⌉ · tile)</code>:</p>
 
 <pre><code class="nohl">n = 4097,  tile 128:   4097 / (33 × 128)   = 97.0% useful     one extra element costs a whole block
 n = 65,    tile 64:      65 / (2 × 64)     = 50.8% useful     a small dimension can halve throughput
 n = 50257, tile 128:  50257 / (393 × 128)  = 99.9% useful     but the irregular size can also miss the fast kernel</code></pre>
 
-<p>The third row is GPT-2's vocabulary, 50,257, which is odd. The output projection <code>(d, V)</code> is
-the largest matmul in a small model, and an odd <code>V</code> rules out the vectorised, aligned code paths
+<p>The third row is GPT-2's vocabulary, 50,257, which is an odd number. The output projection <code>(d, V)</code> is
+the largest matmul in a small model, and an odd <code>V</code> rules out the fast aligned code paths
 entirely, whatever the tile arithmetic says. So implementations <b>pad the vocabulary</b> with unused rows:
-nanoGPT pads 50,257 to <b>50,304</b>, the next multiple of 64 (and also of 128), at a cost of 47 rows that are
-never predicted. Modern models choose aligned sizes up front: Llama 3's 128,256 is 1,002 × 128, and Qwen2.5's
-<code>config.json</code> vocabulary of 152,064 is 1,188 × 128, larger than its tokenizer's actual token count
-for the same reason. The same rule is why <code>d_ff</code> values like 11,008 and 14,336 are multiples of 256
+nanoGPT pads 50,257 to <b>50,304</b>, the next multiple of 64 (and also of 128), at the cost of 47 rows that are
+never predicted. Modern models pick aligned sizes from the start: Llama 3's 128,256 is 1,002 × 128, and the
+vocabulary of 152,064 in Qwen2.5's <code>config.json</code> is 1,188 × 128, larger than the tokenizer's real token
+count for the same reason. The same rule is why <code>d_ff</code> values such as 11,008 and 14,336 are multiples of 256
 (Chapter 8), and why head dimensions are 64 or 128 (Chapter 14).</p>
 
 <div class="quiz" data-title="Checkpoint 3 — shapes and speed">
@@ -510,8 +510,8 @@ for the same reason. The same rule is why <code>d_ff</code> values like 11,008 a
     <div class="opt">It depends only on the GPU's clock speed</div>
   </div>
   <div class="expl"><b>Intensity 1.</b> 2 × 4096² = 33.6 M FLOPs over 2 × (4096 + 4096² + 4096) ≈ 33.6 MB.
-  Every weight is read for one multiply-add. The GPU's arithmetic sits ~99.7% idle; only batching more tokens
-  through the same weights changes that.</div>
+  Every weight is read for one multiply-add. The GPU's arithmetic units sit ~99.7% idle, and only batching more
+  tokens through the same weights changes that.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">Your FLOP count says the forward pass of a 12-layer, d = 768 model at T = 1024 is about 82% weight matmuls. What is the rest?</div>
@@ -522,7 +522,7 @@ for the same reason. The same rule is why <code>d_ff</code> values like 11,008 a
     <div class="opt">The attention score and mixing matmuls, 4Td per token per layer, which multiply activations by activations and have no weights</div>
   </div>
   <div class="expl"><b>Attention's own matmuls.</b> 4 × 1024 × 768 = 3.1 M of 17.3 M per token per layer.
-  Softmax and norms are elementwise: real time, negligible FLOPs. The embedding is a lookup (Chapter 4).</div>
+  Softmax and norms are elementwise: they take real time but almost no FLOPs. The embedding is a lookup (Chapter 4).</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">Why does nanoGPT pad GPT-2's vocabulary from 50,257 to 50,304?</div>
@@ -532,9 +532,9 @@ for the same reason. The same rule is why <code>d_ff</code> values like 11,008 a
     <div class="opt">To make the embedding table a power of two</div>
     <div class="opt">Padding improves the model's perplexity</div>
   </div>
-  <div class="expl"><b>Alignment, not modelling.</b> 50,304 = 786 × 64 (and 393 × 128). It is not a power of two;
-  it only needs to be a multiple of the kernels' tile sizes. The extra logits are trained toward −∞ because their
-  tokens never appear.</div>
+  <div class="expl"><b>Alignment.</b> 50,304 = 786 × 64 (and 393 × 128). It is not a power of two;
+  it only has to be a multiple of the kernels' tile sizes. The extra logits are trained toward −∞ because their
+  tokens never appear, so the change has nothing to do with modelling.</div>
 </div>
 </div>
 
@@ -543,7 +543,7 @@ for the same reason. The same rule is why <code>d_ff</code> values like 11,008 a
 <div class="exercise">
 <div class="eh"><span class="n">2.1</span><span class="ti">Predict, then verify</span><span class="lvl">warm-up</span></div>
 <div class="eb">
-<p>Write the output shape, or "ERROR", for each. Then check.</p>
+<p>Write the output shape, or "ERROR", for each one. Then check.</p>
 <pre><code>a = torch.randn(8, 4, 3) @ torch.randn(3, 7)
 b = torch.randn(5, 3) @ torch.randn(5, 3)
 c = torch.randn(2, 1, 4, 3) @ torch.randn(1, 6, 3, 9)
@@ -562,8 +562,8 @@ e ERROR   — (10,) aligns with the LAST axis (size 4), 10 != 4 and neither is 1
 f (10, 7)  — outer-product-style broadcast
 g (4, 2, 5)
 h (2, 4, 10, 10)</code></pre>
-<p style="margin-bottom:0"><b><code>e</code> is the important one.</b> Intuitively "add one number per row"
-feels like it should work — but broadcasting aligns from the <i>right</i>. You need
+<p style="margin-bottom:0"><b><code>e</code> is the important one.</b> "Add one number per row" feels like it should work,
+but broadcasting lines shapes up from the <i>right</i>. You need
 <code>torch.randn(10)[:, None]</code> to make it <code>(10,1)</code>.</p>
 </div></details>
 </div></div>
@@ -571,9 +571,9 @@ feels like it should work — but broadcasting aligns from the <i>right</i>. You
 <div class="exercise">
 <div class="eh"><span class="n">2.2</span><span class="ti">Implement matmul three ways</span><span class="lvl">code</span></div>
 <div class="eb">
-<p>Write <code>matmul_loops</code>, <code>matmul_broadcast</code> (no explicit loop over k — use broadcasting
-and a <code>sum</code>), and <code>matmul_einsum</code>. Verify all three agree with <code>A @ B</code>
-using <code>torch.allclose</code>. Then time them on 256×256 matrices.</p>
+<p>Write <code>matmul_loops</code>, <code>matmul_broadcast</code> (no explicit loop over k: use broadcasting
+and a <code>sum</code>) and <code>matmul_einsum</code>. Check with <code>torch.allclose</code> that all three
+agree with <code>A @ B</code>. Then time them on 256×256 matrices.</p>
 <details class="reveal"><summary>Solution</summary><div>
 <pre><code>def matmul_loops(A, B):
     m, k = A.shape; k2, n = B.shape
@@ -597,16 +597,16 @@ for f in (matmul_loops, matmul_broadcast, matmul_einsum):
     assert torch.allclose(f(A, B), ref, atol=1e-4), f.__name__
 </code></pre>
 <p style="margin-bottom:0">Expect roughly: loops ≈ 4 s, broadcast ≈ 20 ms, einsum ≈ 1 ms, <code>@</code> ≈ 0.5 ms.
-The broadcast version is instructive but note it <i>materialises</i> an <code>(m,k,n)</code> intermediate —
-256³ = 16.7M floats = 67 MB. That "materialising a big intermediate" problem is exactly what FlashAttention
-solves in Chapter 17, at a much larger scale.</p>
+The broadcast version teaches something, but it <i>materialises</i> an <code>(m,k,n)</code> intermediate:
+256³ = 16.7M floats = 67 MB. FlashAttention (Chapter 17) solves exactly this problem of materialising a big
+intermediate, at a much larger scale.</p>
 </div></details>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">2.3</span><span class="ti">Find the broadcasting bug</span><span class="lvl">essential</span></div>
 <div class="eb">
-<p>This causal-mask code runs without error and trains badly. Find the bug.</p>
+<p>This causal-mask code runs without error but trains badly. Find the bug.</p>
 <pre><code>T = 8
 scores = torch.randn(2, 4, T, T)              # (B, H, T, T)
 mask = torch.tril(torch.ones(T, T))           # (T, T) lower triangular
@@ -617,11 +617,11 @@ pad = torch.tensor([1,1,1,1,1,0,0,0])         # (T,) 1 = real token
 scores = scores.masked_fill(pad == 0, -1e9)
 </code></pre>
 <details class="reveal"><summary>Answer</summary><div>
-<p>The causal mask is <b>fine</b> — <code>(T,T)</code> broadcasts correctly against <code>(B,H,T,T)</code>.</p>
-<p>The <b>padding</b> mask is the bug. <code>pad</code> has shape <code>(T,)</code>, which right-aligns to the
-<i>last</i> axis — the key axis. That happens to be what you usually want for padding, so this specific case
-is <i>accidentally</i> right. But it is unreadable and one refactor away from disaster: if someone later
-makes <code>pad</code> shape <code>(B, T)</code>, it will broadcast against <code>(B,H,T,T)</code> as
+<p>The causal mask is <b>fine</b>: <code>(T,T)</code> broadcasts correctly against <code>(B,H,T,T)</code>.</p>
+<p>The <b>padding</b> mask is the bug. <code>pad</code> has shape <code>(T,)</code>, which lines up with the
+<i>last</i> axis, the key axis. That happens to be what you usually want for padding, so this case is right
+<i>by accident</i>. But it is hard to read and one refactor away from breaking. If someone later
+gives <code>pad</code> the shape <code>(B, T)</code>, it will broadcast against <code>(B,H,T,T)</code> as
 <code>(1,1,B,T)</code> and silently mask the wrong thing whenever <code>B == T</code>, or crash otherwise.</p>
 <p style="margin-bottom:0">Always write the mask at full rank:</p>
 <pre style="margin-bottom:0"><code>pad = pad.view(1, 1, 1, T)      # (1,1,1,T) — explicitly "per key"
@@ -636,16 +636,16 @@ scores = scores.masked_fill(pad == 0, float('-inf'))</code></pre>
 <ol>
 <li>Estimate total training FLOPs.</li>
 <li>At 312 TFLOP/s peak bf16 per A100 and 40% achieved utilisation, how many A100-days?</li>
-<li>The paper reports 3.14×10²³ FLOPs. How close were you, and what does the gap tell you?</li>
+<li>The paper reports 3.14×10²³ FLOPs. How close were you, and what does the difference tell you?</li>
 </ol>
 <details class="reveal"><summary>Answers</summary><div>
 <ol>
 <li>6 × 1.75×10¹¹ × 3×10¹¹ = <b>3.15 × 10²³ FLOPs</b>.</li>
 <li>Effective rate = 312e12 × 0.4 = 1.25×10¹⁴ FLOP/s. 3.15e23 / 1.25e14 ≈ 2.52×10⁹ s ≈
-<b>29,000 A100-days</b> ≈ 1000 A100s for a month.</li>
-<li>Essentially exact (3.15 vs 3.14 ×10²³). The <code>6ND</code> rule is remarkably good for dense
-transformers at moderate context length. It starts to break down for MoE models (where you use
-<i>active</i> parameters, not total) and for very long contexts (where attention FLOPs matter).</li>
+<b>29,000 A100-days</b>, or about 1000 A100s for a month.</li>
+<li>Almost exact (3.15 against 3.14 ×10²³). The <code>6ND</code> rule works very well for dense
+transformers at moderate context length. It starts to break down for MoE models (where you count
+<i>active</i> parameters, not the total) and for very long contexts (where attention FLOPs matter).</li>
 </ol>
 </div></details>
 </div></div>
@@ -665,10 +665,10 @@ a batch of <code>M</code> single-token vectors by it.</p>
    intensity = 4096·14336·M / (4096·14336 + 18432·M)
 2. solve intensity = 295:  M = 295 / (1 − 295·18432/(4096·14336)) ≈ 325</code></pre>
 <p style="margin-bottom:0">3. When K·N is much larger than (K + N)·M, the weight dominates the bytes and the
-intensity is ≈ M: every token in the batch reuses each weight once. So "decode becomes compute-bound at a
-batch of roughly the ridge point" is a rule that holds for every large layer. (Check part 2 with
+intensity is ≈ M: each token in the batch reuses every weight once. So the rule "decode becomes compute-bound at a
+batch size of roughly the ridge point" holds for every large layer. (Check part 2 with
 <code>matmul_intensity(326, 4096, 14336)</code>, which gives 295.7.) In practice the KV cache, which is <i>not</i> shared between
-sequences, keeps decode memory-bound well past this batch size: Chapter 15.</p>
+sequences, keeps decode memory-bound well past this batch size; see Chapter 15.</p>
 </div></details>
 </div></div>
 
@@ -680,19 +680,19 @@ measure it on a GPU (or fp32 on CPU), timing 20 runs after 5 warm-ups and callin
 <code>torch.cuda.synchronize()</code> before reading the clock.</p>
 <details class="reveal"><summary>What to expect</summary><div>
 <p style="margin-bottom:0">The FLOP count grows by 0.07%, so a FLOP model predicts no change. Tile arithmetic
-predicts at least the 97%-useful figure from the text, about 3% slower, and on GPUs the measured penalty is
-often much larger, because a non-multiple-of-8 dimension can push cuBLAS onto a slower, unaligned kernel.
-On a CPU the difference is usually small. The lesson is that the shape that is cheapest to <i>think</i> about
-is not the shape that is cheapest to <i>run</i>; profile before believing either.</p>
+predicts at least the 97%-useful figure from the text, about 3% slower. On GPUs the measured penalty is
+often much larger, because a dimension that is not a multiple of 8 can push cuBLAS onto a slower, unaligned kernel.
+On a CPU the difference is usually small. The shape that is cheapest to <i>think</i> about
+is not always the cheapest to <i>run</i>, so profile before believing either.</p>
 </div></details>
 </div></div>
 
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
-<li><a href="https://rockt.ai/2018/04/30/einsum">Tim Rocktäschel — Einsum is All You Need</a> — the best einsum tutorial written.</li>
-<li><a href="https://einops.rocks/">einops documentation</a> — worth 30 minutes; it will change how you write tensor code.</li>
-<li><a href="https://arxiv.org/abs/2001.08361">Kaplan et al. 2020, Appendix B</a> — where the 6ND estimate is worked out carefully.</li>
-<li><a href="https://docs.nvidia.com/deeplearning/performance/dl-performance-matrix-multiplication/index.html">NVIDIA — Matrix Multiplication Background User's Guide</a> (arithmetic intensity, tile and wave quantization, alignment rules)</li>
+<li><a href="https://rockt.ai/2018/04/30/einsum">Tim Rocktäschel, Einsum is All You Need</a>: the best einsum tutorial there is.</li>
+<li><a href="https://einops.rocks/">einops documentation</a>: worth 30 minutes, and it will change how you write tensor code.</li>
+<li><a href="https://arxiv.org/abs/2001.08361">Kaplan et al. 2020, Appendix B</a>, where the 6ND estimate is worked out carefully.</li>
+<li><a href="https://docs.nvidia.com/deeplearning/performance/dl-performance-matrix-multiplication/index.html">NVIDIA, Matrix Multiplication Background User's Guide</a> (arithmetic intensity, tile and wave quantization, alignment rules)</li>
 <li>Reference code: <code>tfs/foundations.py</code> (Ch 2 section) · tests: <code>tests/test_foundations.py</code></li>
 <li>Companion notebook: <code>notebooks/02_matmul_and_einsum.ipynb</code></li>
 </ul>

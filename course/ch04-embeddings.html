@@ -13,9 +13,9 @@
 
 <h1>4 · Embeddings and the Residual Stream</h1>
 <p class="lead">
-Two ideas here. The first is mechanical and easy: an embedding is a lookup table. The second is the most
-useful mental model in this entire course — <em>the residual stream</em> — and it is what turns a transformer
-from "a stack of mystery boxes" into something you can reason about.
+This chapter has two ideas. The first is mechanical and easy: an embedding is a lookup table. The second is the
+most useful way of thinking about a transformer in this course, <em>the residual stream</em>, and it turns the
+model from a stack of mystery boxes into something you can reason about.
 </p>
 
 <div class="mn orient"><span class="k">Builds on</span><a href="ch03-tokenization.html">Ch&nbsp;03</a> &mdash; you need token ids before you can look them up<div class="sep"></div><span class="k">Leads to</span><a href="ch08-block.html">Ch&nbsp;08</a> &mdash; every block reads and writes this stream<br><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; the stream is the model's spine<div class="sep"></div><span class="k">Why this chapter</span>The residual stream is the single most useful mental model in this course.</div>
@@ -23,10 +23,10 @@ from "a stack of mystery boxes" into something you can reason about.
 <span class="t">The whole chapter in five sentences</span>
 <p style="margin-bottom:0"><b>An embedding is a row lookup</b> in a <code>(V, C)</code> table, and the output
 head is a <code>(C, V)</code> matmul that may share the same weights. <b>Every layer reads from and adds to one
-<code>(B, T, C)</code> residual stream</b>, whose shape never changes. <b>The stream's scale grows with depth</b>,
+<code>(B, T, C)</code> residual stream</b>, and its shape never changes. The stream's scale grows with depth,
 which is why initialisation scales the residual projections down and pre-norm normalises what each block
-reads. <b>The output side has its own stability tools</b>: logit soft-capping, z-loss, and a vocabulary padded
-for the hardware. <b>Because the stream lives in one space throughout</b>, the final head can decode any
+reads. The output side has its own stability tools: logit soft-capping, z-loss, and a vocabulary padded
+for the hardware. Because the stream uses one space all the way through, the final head can decode any
 layer (the logit lens), and that space holds more features than it has dimensions (superposition).</p>
 </div>
 
@@ -49,10 +49,10 @@ x.shape                           # (2, 3, 768)   ← (B, T, C)
 
 <div class="box intuition">
 <span class="t">What just happened, shape-wise</span>
-<p style="margin-bottom:0">Every <b>integer</b> in a <code>(B, T)</code> tensor was replaced by a
-<b>vector of length C</b>. So the rank went up by one and the last axis appeared:
-<code>(B, T) → (B, T, C)</code>. This is the only place in the whole model where the rank increases like
-this. From here to the very end, the shape stays <code>(B, T, C)</code>.</p>
+<p style="margin-bottom:0">Every <b>integer</b> in a <code>(B, T)</code> tensor has been replaced by a
+<b>vector of length C</b>. The rank went up by one and a new last axis appeared:
+<code>(B, T) → (B, T, C)</code>. This is the only place in the model where the rank grows like
+this. From here to the end, the shape stays <code>(B, T, C)</code>.</p>
 </div>
 
 <div data-viz="tensor" data-dims="2,3,8" data-names="batch,token,embedding"
@@ -74,7 +74,7 @@ emb.weight[15496]              # (768,)    — one memory read
 
 <div class="example">
 <span class="t">Worked example — the same answer, two ways</span>
-<p>A toy table: vocabulary of 6, embedding dimension 4.</p>
+<p>A toy table: a vocabulary of 6 and an embedding dimension of 4.</p>
 
 <div class="step"><div class="i">1</div><div>
 <b>The whole embedding matrix</b> <code>W</code>, shape <span class="shape"><b>6</b><span class="x">, </span><b>4</b></span>:
@@ -98,7 +98,7 @@ result = [1.2, 1.3, 1.4, 1.5]</code></pre>
 </div></div>
 
 <div class="step"><div class="i">3</div><div>
-<b>As a lookup.</b> <code>W[3]</code> → <code>[1.2, 1.3, 1.4, 1.5]</code>. Identical, and it
+<b>As a lookup.</b> <code>W[3]</code> → <code>[1.2, 1.3, 1.4, 1.5]</code>. The result is the same, and it
 read four numbers instead of doing 24 multiplies.
 </div></div>
 
@@ -110,38 +110,39 @@ lookup:                            768 memory reads
 50,257× more arithmetic for the same answer.</code></pre>
 </div></div>
 
-<p style="margin-bottom:0"><b>Two things follow from this.</b> (1) An embedding <i>is</i> a
-linear layer — which is why weight tying with the output projection is even coherent. (2) The
+<p style="margin-bottom:0"><b>Two things follow.</b> (1) An embedding <i>is</i> a
+linear layer, which is why sharing its weights with the output projection makes sense at all. (2) The
 gradient reaches <b>exactly one row</b> per token occurrence, because every other row was
-multiplied by zero. That sparsity is precisely the mechanism behind the under-trained "glitch
-tokens" of Chapter 3: a token seen once gets one gradient, ever. (With AdamW its row keeps moving after that gradient, but briefly on momentum: Adam's step decays like
-(β<sub>1</sub>/√β<sub>2</sub>)<sup>t</sup>, under 1% of its first size within about 45 steps. What keeps
-acting for hundreds of steps is weight decay, which shrinks the row every step, so a rare token's row
-ends up somewhere between a single update and zero: never trained, but not untouched either. The
+multiplied by zero. That is the cause of the under-trained "glitch
+tokens" in Chapter 3: a token seen once gets one gradient, ever. (With AdamW its row keeps moving after that
+gradient, but only briefly, on momentum: Adam's step decays like
+(β<sub>1</sub>/√β<sub>2</sub>)<sup>t</sup>, falling under 1% of its first size within about 45 steps. What keeps
+acting for hundreds of steps is weight decay, which shrinks the row every step. So a rare token's row
+ends up somewhere between a single update and zero: never really trained, but not untouched either. The
 companion notebook measures both.)</p>
 </div>
 
-<p>The one-hot view is conceptually useful (it explains why an embedding layer <i>is</i> a linear layer, and
-why gradients flow to exactly one row per token). The lookup view is what actually runs.</p>
+<p>The one-hot view helps you understand (it explains why an embedding layer <i>is</i> a linear layer, and
+why gradients reach exactly one row per token). The lookup view is what actually runs.</p>
 
 <div class="box math-note">
 <span class="t">Consequence: embeddings are sparse to train</span>
-<p style="margin-bottom:0">Each training step only computes a <i>gradient</i> for the rows of tokens that
-actually appeared in the batch (the optimizer may still move other rows through momentum and weight decay). A token appearing once in 10 billion gets one gradient, ever — which is precisely the
-mechanism behind the under-trained "glitch tokens" from Chapter 3.</p>
+<p style="margin-bottom:0">Each training step computes a <i>gradient</i> only for the rows of tokens that
+appeared in the batch (the optimizer may still move other rows through momentum and weight decay). A token that
+appears once in 10 billion gets one gradient, ever, which is how the under-trained "glitch tokens" of Chapter 3 arise.</p>
 </div>
 
 <h2>4.2 · Weight tying</h2>
 
-<p>At the end of the model you need to go the other way: from a <code>C</code>-dimensional vector back to a
+<p>At the end of the model you have to go the other way: from a <code>C</code>-dimensional vector back to a
 score for every vocabulary entry.</p>
 
 <pre><code>lm_head = nn.Linear(C, V, bias=False)     # weight shape (V, C)
 logits = lm_head(x)                        # (B, T, C) → (B, T, V)
 </code></pre>
 
-<p>Notice <code>lm_head.weight</code> has shape <code>(V, C)</code> — <b>the same shape as the embedding
-matrix.</b> That is not a coincidence, and many models share the same tensor for both:</p>
+<p>Notice that <code>lm_head.weight</code> has shape <code>(V, C)</code>, <b>the same shape as the embedding
+matrix.</b> That is deliberate, and many models use the same tensor for both:</p>
 
 <pre><code>model.lm_head.weight = model.embed.weight     # weight tying
 </code></pre>
@@ -156,8 +157,8 @@ matrix.</b> That is not a coincidence, and many models share the same tensor for
 </table>
 </div>
 
-<p>Rule of thumb: <b>tie when the model is small</b> (embeddings dominate the parameter count),
-<b>untie when it's large</b> (they're a rounding error and the extra capacity pays for itself).</p>
+<p>Rule of thumb: <b>tie them when the model is small</b> (embeddings are a large share of the parameters) and
+<b>untie them when it is large</b> (they are a tiny share, and the extra capacity is worth having).</p>
 
 <h2>4.3 · The residual stream — the model you should carry in your head</h2>
 
@@ -166,11 +167,11 @@ it, transformers stop looking like a stack of boxes.</p>
 
 <div class="box intuition">
 <span class="t">The residual stream</span>
-<p>A transformer maintains, for each token position, <b>one vector of size <code>d_model</code></b> that
-persists from the embedding all the way to the output. Call it the <b>residual stream</b>.</p>
+<p>For each token position, a transformer keeps <b>one vector of size <code>d_model</code></b> that
+lasts from the embedding all the way to the output. Call it the <b>residual stream</b>.</p>
 <p style="margin-bottom:0">Every layer <b>reads</b> from the stream, computes something, and <b>adds</b> its
-result back. No layer ever <i>replaces</i> the stream. It is a running total — a shared blackboard that every
-layer writes to and every later layer can read.</p>
+result back. No layer ever <i>replaces</i> the stream. It is a running total: a shared blackboard that every
+layer writes on and every later layer can read.</p>
 </div>
 
 <pre><code>x = embed(tokens)                 # (B, T, C)  ← the stream is born
@@ -182,8 +183,8 @@ for block in blocks:
 logits = lm_head(final_norm(x))   # (B, T, V) ← the stream is read out
 </code></pre>
 
-<p>Look at the shape of <code>x</code>. It is <code>(B, T, C)</code> on <i>every single line</i>. A 70-billion
-parameter model with 80 layers has exactly one tensor shape running through its spine.</p>
+<p>Look at the shape of <code>x</code>. It is <code>(B, T, C)</code> on <i>every line</i>. A 70-billion-parameter
+model with 80 layers has exactly one tensor shape running through its centre.</p>
 
 <figure>
 <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg">
@@ -238,37 +239,36 @@ parameter model with 80 layers has exactly one tensor shape running through its 
     <text x="400" y="137">any earlier layer wrote</text>
   </g>
 </svg>
-<figcaption>The residual stream. Layers are side-computations that add into a persistent per-token vector.</figcaption>
+<figcaption>The residual stream. Layers are side computations that add into a vector each token keeps.</figcaption>
 </figure>
 
 <h3>Why this model is so useful</h3>
 
 <ul>
-<li><b>It explains why gradients flow.</b> The <code>+</code> means the gradient has a direct highway from the
-loss back to layer 1, bypassing every non-linearity. This is the whole reason ResNets and transformers can be
-100+ layers deep. (§4.4)</li>
-<li><b>It explains what layers "do".</b> A layer isn't a transformation of everything; it's a specialist that
-reads a subspace and writes a subspace. Early layers write syntactic features; later layers write semantic
-ones.</li>
+<li><b>It explains why gradients flow.</b> The <code>+</code> gives the gradient a direct path from the
+loss back to layer 1 that skips every non-linearity. That is the reason ResNets and transformers can be
+more than 100 layers deep (§4.4).</li>
+<li><b>It explains what layers do.</b> A layer reads part of the stream and writes to part of it, and each layer
+specialises. Early layers write features about syntax; later layers write features about meaning.</li>
 <li><b>It explains the logit lens.</b> Because the stream lives in the same space throughout, you can apply
 the <i>final</i> unembedding to an <i>intermediate</i> layer's stream and get readable predictions. Doing so
-shows the model's guess sharpening layer by layer — an experiment you'll run in the notebook.</li>
-<li><b>It explains "superposition".</b> With <code>d_model</code> = 4096 but far more than 4096 concepts to
-represent, features must share dimensions at near-orthogonal angles. That's the central puzzle of
-interpretability research.</li>
+shows the model's guess getting sharper layer by layer, and you will run that experiment in the notebook.</li>
+<li><b>It explains superposition.</b> With <code>d_model</code> = 4096 but far more than 4096 concepts to
+represent, features must share dimensions at nearly perpendicular angles. Understanding that is the central
+problem of interpretability research.</li>
 </ul>
 
 <div class="box math-note">
 <span class="t">Bandwidth, precisely</span>
-<p style="margin-bottom:0">The residual stream is a fixed-width communication channel. Every attention head
-and every MLP in the whole network competes for the same <code>d_model</code> dimensions. That is a real
-constraint, and it is one reason <code>d_model</code> scales with depth in practice: wider models can be
+<p style="margin-bottom:0">The residual stream is a communication channel of fixed width. Every attention head
+and every MLP in the network competes for the same <code>d_model</code> dimensions. That is a real
+constraint, and it is one reason <code>d_model</code> grows with depth in practice: wider models can be
 deeper before the blackboard gets crowded.</p>
 </div>
 
 <h2>4.4 · Why <code>x + f(x)</code> instead of <code>f(x)</code></h2>
 
-<p>Consider the derivative of a residual block versus a plain block:</p>
+<p>Compare the derivative of a residual block with that of a plain block:</p>
 
 <div class="mathblock">
 plain: &nbsp; y = f(x) &nbsp;→&nbsp; <span class="frac"><span class="n">∂y</span><span class="d">∂x</span></span> = f′(x)
@@ -277,10 +277,10 @@ residual: &nbsp; y = x + f(x) &nbsp;→&nbsp; <span class="frac"><span class="n"
 <span class="lbl">the identity term is what keeps the gradient alive through 100 layers</span>
 </div>
 
-<p>Stack <code>L</code> plain layers and the gradient is a product of <code>L</code> Jacobians — if each has
-magnitude 0.9, after 80 layers you have 0.9<sup>80</sup> ≈ 0.0002 and the early layers learn nothing.
-With residuals, the product is of terms like <code>(1 + f′)</code>, which stays near 1. That's it. That's
-the whole trick, and it's why He et al.'s ResNet paper (2015) is one of the most-cited papers in science.</p>
+<p>Stack <code>L</code> plain layers and the gradient is a product of <code>L</code> Jacobians. If each has
+size 0.9, after 80 layers you have 0.9<sup>80</sup> ≈ 0.0002, and the early layers learn nothing.
+With residuals, the product is of terms like <code>(1 + f′)</code>, which stays near 1. That one change is
+why He et al.'s ResNet paper (2015) is among the most cited papers in all of science.</p>
 
 <div class="quiz" data-title="Checkpoint 1 — embeddings &amp; the stream">
 <div class="qitem" data-answer="1">
@@ -292,9 +292,9 @@ the whole trick, and it's why He et al.'s ResNet paper (2015) is one of the most
     <div class="opt">~26%</div>
     <div class="opt">~50%</div>
   </div>
-  <div class="expl"><b>~13%.</b> Each table is 128256 × 4096 ≈ 525M; two of them ≈ 1.05B out of 8B ≈ 13%.
-  For a 1B model with the same vocab it would be over 100% — which is exactly why small models tie their
-  embeddings and large ones don't.</div>
+  <div class="expl"><b>~13%.</b> Each table is 128256 × 4096 ≈ 525M; two of them make ≈ 1.05B out of 8B ≈ 13%.
+  For a 1B model with the same vocabulary the tables alone would exceed 100% of it, which is why small models tie their
+  embeddings and large ones do not.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">What shape is the residual stream at layer 40 of an 80-layer model with
@@ -305,30 +305,30 @@ the whole trick, and it's why He et al.'s ResNet paper (2015) is one of the most
     <div class="opt">(4, 2048, 327680)</div>
     <div class="opt">(4, 2048, 8192)</div>
   </div>
-  <div class="expl"><b>(4, 2048, 8192)</b> — identical at every layer. That invariance is the whole point of
-  the residual stream. Depth is a <i>loop</i> over the same shape, not an axis of the tensor.</div>
+  <div class="expl"><b>(4, 2048, 8192)</b>, the same at every layer. That the shape never changes is what makes the
+  residual stream useful. Depth is a <i>loop</i> over the same shape, not an axis of the tensor.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">Why does the residual connection help training deep networks?</div>
   <div class="opts">
-    <div class="opt">∂(x + f(x))/∂x = 1 + f′(x), so gradients have a path that doesn't shrink multiplicatively</div>
+    <div class="opt">∂(x + f(x))/∂x = 1 + f′(x), so gradients have a path that does not shrink multiplicatively</div>
     <div class="opt">It reduces the number of parameters</div>
     <div class="opt">It makes the forward pass faster</div>
     <div class="opt">It prevents overfitting by adding noise</div>
   </div>
   <div class="expl"><b>The identity term.</b> Without it, backprop multiplies L Jacobians and the signal
-  dies exponentially in depth. With it, there's an unobstructed highway from the loss to every layer.
-  Note it costs a small amount of extra compute and memory, not less.</div>
+  dies off exponentially with depth. With it, there is a clear path from the loss to every layer.
+  It costs a little extra compute and memory, not less.</div>
 </div>
 </div>
 
 <h2>4.5 · Scale: initialisation, √d, and a stream that grows</h2>
 
-<p>The residual stream is a sum: the embedding, plus every block's output. If each block adds an update that
-is roughly independent of what is already there, <b>variances add</b>. After <i>l</i> blocks that each add
-variance σ², the stream's RMS is about <code>√(σ<sub>0</sub>² + l·σ²)</code>: it grows like √l. Nothing in the
-architecture stops it. Two design decisions manage it, and you can measure both with
-<code>tfs.foundations.residual_norms</code>, which builds a 12-layer, <code>d = 256</code> model from
+<p>The residual stream is a sum: the embedding plus every block's output. If each block adds an update that
+is roughly independent of what is already there, <b>the variances add up</b>. After <i>l</i> blocks that each add
+variance σ², the stream's RMS is about <code>√(σ<sub>0</sub>² + l·σ²)</code>, so it grows like √l. Nothing in the
+architecture stops it. Two design decisions control it, and you can measure both with
+<code>tfs.foundations.residual_norms</code>. It builds a 12-layer, <code>d = 256</code> model from
 <code>tfs.model</code> at initialisation and records the stream's RMS after the embedding and after every
 block:</p>
 
@@ -337,50 +337,50 @@ GPT-2 init (residual outputs
   scaled by 1/√(2L))               0.020    0.022     0.029     0.044     0.058     2.9× growth
 same model, all weights std 0.02   0.020    0.045     0.159     0.250     0.320    16× growth</code></pre>
 
-<p><b>Scaled initialisation.</b> GPT-2's paper scales the weights of the layers that write into the stream
-(the attention output projection and the MLP's down projection) by <code>1/√N</code>, N the number of residual
+<p><b>Scaled initialisation.</b> The GPT-2 paper scales the weights of the layers that write into the stream
+(the attention output projection and the MLP's down projection) by <code>1/√N</code>, where N is the number of residual
 layers; <code>tfs.model</code> uses <code>0.02/√(2·n_layer)</code>. Each block's update starts small enough
-that their sum stays the same order as the embedding. Without it, the stream at layer 12 is already 16 times
-the embedding's scale, and the embedding (the only place token identity enters) is a rounding error in it.</p>
+that their sum stays about the size of the embedding. Without it, the stream at layer 12 is already 16 times
+larger than the embedding, and the embedding (the only place where token identity enters) is lost in it.</p>
 
 <p><b>Pre-norm.</b> Every block in this course reads <code>norm(x)</code>, not <code>x</code> (Chapter 8). So
-however large the stream grows, each block sees an input of RMS ≈ 1 and its update has a fixed scale. That
-keeps every block's arithmetic well conditioned. The price is <b>dilution</b>: a block's fixed-size update moves
+however large the stream grows, each block sees an input of RMS ≈ 1, and its update has a fixed size. That
+keeps every block's arithmetic well behaved. The cost is <b>dilution</b>: a block's fixed-size update changes
 a stream of RMS ∝ √l by a relative amount ∝ 1/√l, so later blocks in a deep pre-norm model change the stream
-less than early ones. It is one reason the post-sublayer "sandwich" norms of Chapter 8 exist.</p>
+less than early ones do. That is one reason for the extra "sandwich" norms after each sublayer in Chapter 8.</p>
 
 <h3>Why some models multiply the embedding by √d</h3>
 
 <p>The original Transformer (Vaswani et al. 2017) multiplies the embedding by <code>√d_model</code> before
 adding positions, and Gemma does the same (its embedding output is scaled by <code>√hidden_size</code>, about
-55 for <code>d = 3072</code>). The reason is the tied table. A shared <code>(V, C)</code> matrix is also the
-output head, and an output head wants small weights: initialised with std <code>1/√C</code>, each logit has
+55 for <code>d = 3072</code>). The reason is the shared table. A shared <code>(V, C)</code> matrix is also the
+output head, and an output head needs small weights: initialised with std <code>1/√C</code>, each logit has
 variance about 1. But then each <i>input</i> row has RMS <code>1/√C</code> too, tiny next to block updates of
-order 1. Multiplying by <code>√C</code> brings the input to RMS ≈ 1 without changing the head. Untied models
-can simply initialise the two tables differently, and most do not scale.</p>
+size about 1. Multiplying by <code>√C</code> brings the input up to RMS ≈ 1 without changing the head. Untied models
+can just initialise the two tables differently, and most of them do not scale.</p>
 
 <h2>4.6 · The output side: soft-capping, z-loss, padding</h2>
 
-<p>The last operation of the model, <code>logits = head(norm(x))</code>, gets three pieces of special
+<p>The model's last operation, <code>logits = head(norm(x))</code>, gets three kinds of special
 treatment in modern models.</p>
 
-<p><b>Final-logit soft-capping (Gemma 2).</b> Squash every logit smoothly into <code>(−cap, cap)</code>:</p>
+<p><b>Final-logit soft-capping (Gemma 2).</b> Squeeze every logit smoothly into <code>(−cap, cap)</code>:</p>
 
 <div class="mathblock">
 logits ← cap · tanh(logits / cap)
 <span class="lbl">Gemma 2: cap = 30 for the final logits (and 50 for attention logits, Chapter 5)</span>
 </div>
 
-<p>Near zero it is the identity; far away it saturates. <code>tfs.foundations.softcap</code> with cap 30
-maps <code>10 → 9.65</code>, <code>30 → 22.85</code>, <code>60 → 28.92</code>, <code>100 → 29.92</code>. So no
+<p>Near zero this changes nothing; far from zero it levels off. <code>tfs.foundations.softcap</code> with a cap of 30
+maps <code>10 → 9.65</code>, <code>30 → 22.85</code>, <code>60 → 28.92</code> and <code>100 → 29.92</code>. So no
 token can ever be more than <code>e<sup>60</sup></code> times likelier than another, and a few runaway
-directions in the stream cannot produce the enormous logits that make the loss spike. (It also interacts with
+directions in the stream cannot produce the huge logits that make the loss spike. (It also clashes with
 fused cross-entropy and FlashAttention kernels that do not implement it, and Gemma 3 later dropped the
 attention cap in favour of QK-norm, Chapter 8.)</p>
 
-<p><b>z-loss (PaLM).</b> Softmax is unchanged if you add a constant to every logit, so nothing in the
+<p><b>z-loss (PaLM).</b> Softmax does not change if you add the same constant to every logit, so nothing in the
 cross-entropy stops the logits drifting upward together until bf16 rounding of a large <code>log Z</code>
-costs precision. PaLM adds a small penalty on the log-partition function:</p>
+starts to lose precision. PaLM adds a small penalty on the log-partition function:</p>
 
 <div class="mathblock">
 ℒ<sub>z</sub> = 10<sup>−4</sup> · (log Z)² &nbsp;&nbsp;&nbsp; log Z = log <span class="op">Σ</span><sub>v</sub> e<sup>logit<sub>v</sub></sup>
@@ -388,38 +388,38 @@ costs precision. PaLM adds a small penalty on the log-partition function:</p>
 </div>
 
 <p>The penalty does not change which token is predicted; it only removes the free drift. It is cheap, and it is
-now a standard line in large-scale training recipes (Chapter 11's loss-spike discussion). The MoE router uses
+now a standard part of large-scale training recipes (see the discussion of loss spikes in Chapter 11). The MoE router uses
 the same trick on its own logits (Chapter 20).</p>
 
 <p><b>Vocabulary padding.</b> The head is a <code>(C, V)</code> matmul, usually the largest single one in a
 small model. Chapter 2 §2.6 shows why <code>V</code> is padded to a multiple of 64 or 128: GPT-2's 50,257
-becomes 50,304 in nanoGPT. The padded rows are never targets, so training drives their logits down, and a
-correct sampler must never return them (mask them to −∞ if you load a padded checkpoint into a tokenizer of the
+becomes 50,304 in nanoGPT. The padded rows are never targets, so training pushes their logits down, and a
+correct sampler must never return them (mask them to −∞ if you load a padded checkpoint with a tokenizer of the
 real size).</p>
 
 <div class="quiz" data-title="Checkpoint 2 — scale and the output head">
 <div class="qitem" data-answer="2">
   <div class="qq">A 48-layer model is initialised with every weight at std 0.02, including the residual output projections. What happens to the residual stream at initialisation?</div>
   <div class="opts">
-    <div class="opt">Nothing: pre-norm keeps the stream's scale fixed</div>
+    <div class="opt">Nothing, because pre-norm keeps the stream's scale fixed</div>
     <div class="opt">It shrinks with depth</div>
-    <div class="opt">It grows roughly like √(number of blocks), so the embedding's contribution is drowned out; scaling the residual outputs by 1/√(2L) prevents it</div>
+    <div class="opt">It grows roughly like √(number of blocks), so the embedding's contribution gets swamped; scaling the residual outputs by 1/√(2L) prevents it</div>
     <div class="opt">It becomes NaN</div>
   </div>
-  <div class="expl"><b>Variances add.</b> The 12-layer measurement grows 16× without the scaling and 2.9× with
+  <div class="expl"><b>The variances add up.</b> The 12-layer measurement grows 16× without the scaling and 2.9× with
   it. Pre-norm normalises what each block <i>reads</i>, not the stream itself, so option A is the common
-  misconception.</div>
+  misunderstanding.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">With final-logit soft-capping at 30, what is the largest possible probability ratio between two tokens?</div>
   <div class="opts">
-    <div class="opt">e<sup>60</sup>: logits lie in (−30, 30)</div>
+    <div class="opt">e<sup>60</sup>, because logits lie in (−30, 30)</div>
     <div class="opt">e<sup>30</sup></div>
     <div class="opt">30</div>
-    <div class="opt">Unbounded: tanh only affects the gradient</div>
+    <div class="opt">Unbounded, because tanh only affects the gradient</div>
   </div>
   <div class="expl"><b>The gap between the extremes.</b> Probability ratios are exponentials of logit
-  differences, and the most two capped logits can differ by is just under 60. That bound is what prevents
+  differences, and two capped logits can differ by just under 60 at most. That bound is what prevents
   runaway logits, and it is far looser than anything the model needs to express confidence.</div>
 </div>
 <div class="qitem" data-answer="3">
@@ -428,18 +428,18 @@ real size).</p>
     <div class="opt">It makes them less confident</div>
     <div class="opt">It favours frequent tokens</div>
     <div class="opt">It removes padded tokens from the vocabulary</div>
-    <div class="opt">Not directly: it penalises the common offset of all logits (log Z), which the softmax ignores, so it stabilises training without changing what is predicted</div>
+    <div class="opt">Not directly: it penalises the shared offset of all logits (log Z), which the softmax ignores, so it stabilises training without changing what is predicted</div>
   </div>
-  <div class="expl"><b>It fixes a free direction.</b> Adding c to every logit leaves softmax unchanged, so the
-  cross-entropy cannot see that drift; z-loss can. With a coefficient of 10<sup>−4</sup> it barely competes with
+  <div class="expl"><b>It pins down a free direction.</b> Adding c to every logit leaves the softmax unchanged, so the
+  cross-entropy cannot see that drift, but z-loss can. With a coefficient of 10<sup>−4</sup> it barely competes with
   the main loss anywhere else.</div>
 </div>
 </div>
 
 <h2>4.7 · What embeddings actually learn</h2>
 
-<p>The classic word2vec result — <code>king − man + woman ≈ queen</code> — holds, weakly, in transformer
-input embeddings too. But the more important modern finding is about the <b>output</b> side.</p>
+<p>The classic word2vec result, <code>king − man + woman ≈ queen</code>, also holds weakly in transformer
+input embeddings. The more important modern finding is about the <b>output</b> side.</p>
 
 <p>Because the unembedding maps the stream to vocabulary logits, <b>directions in the residual stream
 correspond to "makes token X more likely"</b>. The final layernorm plus <code>lm_head</code> is a readout
@@ -457,11 +457,11 @@ with torch.no_grad():
 
 <h3>A logit-lens run you can reproduce</h3>
 
-<p>Here is the experiment on the repo's own model, small enough to train in the test suite.
+<p>Here is the experiment on the repo's own model, which is small enough to train in the test suite.
 <code>tfs.foundations.train_toy_copy_model</code> trains a 2-layer <code>tfs.model.Model</code>
 (<code>d = 64</code>, 4 heads, RoPE) for 300 steps on sequences whose second half repeats the first. After the
-midpoint the next token is predictable, but only by attending back to the right earlier position, which takes an
-induction head: one layer to find "the token after the previous occurrence of this one", composed with another.
+midpoint the next token is predictable, but only by attending back to the right earlier position. That needs an
+induction head: one layer that finds "the token after the previous occurrence of this one", combined with another.
 <code>logit_lens</code> decodes the stream after the embedding and after each block with the model's own final
 norm and head, and scores the predictable half:</p>
 
@@ -476,33 +476,33 @@ norm and head, and scores the predictable half:</p>
 </table>
 </div>
 
-<p>Chance is 1/31 = 3.2%, so after block 1 the stream still says nothing decodable about the answer, and after
-block 2 it is certain. That is what an induction circuit looks like through the lens: the first layer writes
+<p>Chance is 1/31 = 3.2%, so after block 1 the stream still holds nothing about the answer that the head can decode,
+and after block 2 it is certain. This is what an induction circuit looks like through the lens: the first layer writes
 "what came before me" into the stream in a form the head cannot read, and only the second layer turns it into a
-prediction. In large models the picture is the same but smeared over dozens of layers.</p>
+prediction. In large models the picture is the same, but spread over dozens of layers.</p>
 
 <div class="box warn">
 <span class="t">The lens can lie: the tuned-lens caveat</span>
-<p style="margin-bottom:0">The logit lens assumes an intermediate layer's stream is already in the basis the
-final head reads. It need not be: early layers can carry the answer in directions the head ignores, and then
+<p style="margin-bottom:0">The logit lens assumes that an intermediate layer's stream is already in the basis the
+final head reads. It may not be: early layers can carry the answer in directions the head ignores, and then
 the lens reports "nothing yet" when the information is there. Belrose et al. (2023) found the plain logit lens
 unreliable on several model families and proposed the <b>tuned lens</b>: train one small affine map per layer
 to translate that layer's stream into the final layer's basis, then decode. Treat a plain logit-lens result as
 a lower bound on what a layer knows.</p>
 </div>
 
-<p>Run this and you typically see generic/frequent tokens early, snapping to the correct answer in the last
-third of the network. It is one of the most striking things you can observe in a language model with ten
+<p>Run this and you usually see generic, frequent tokens early on, switching to the correct answer in the last
+third of the network. It is one of the most striking things you can see in a language model with ten
 lines of code.</p>
 
 <h2>4.8 · Superposition, in one toy model</h2>
 
 <p>§4.3 claimed the stream holds more features than it has dimensions. Elhage et al. (2022, "Toy Models of
 Superposition") made that precise with a model small enough to draw. Take 5 features, each zero with probability
-<i>S</i> (the sparsity) and otherwise uniform in [0, 1]. Squeeze them into 2 dimensions and back:
+<i>S</i> (the sparsity) and otherwise uniform in [0, 1]. Squeeze them into 2 dimensions and back out:
 <code>x̂ = ReLU(Wᵀ W x + b)</code> with <code>W</code> of shape <code>(2, 5)</code>, trained to reconstruct
 <code>x</code>. Column <i>i</i> of <code>W</code> is where feature <i>i</i> lives in the 2-D "stream"; a column of
-length ≈ 1 means the feature is represented, ≈ 0 means it was dropped. <code>superposition_toy</code> trains it
+length ≈ 1 means the feature is represented, and ≈ 0 means it was dropped. <code>superposition_toy</code> trains it
 for 4,000 Adam steps:</p>
 
 <div class="tw">
@@ -516,12 +516,12 @@ for 4,000 Adam steps:</p>
 </table>
 </div>
 
-<p>When features are dense, two features collide whenever both are on, so the model does the PCA thing:
-represent two, drop three. When features are sparse, two are rarely on at once, so it pays to store all five at
-non-orthogonal angles and accept occasional interference; the ReLU and the negative bias clean up the small
-cross-talk. The pentagon is the geometry that minimises the worst-case overlap. Language features are
-overwhelmingly sparse (any given concept is absent from almost every token), which is why a 4,096-dimensional
-stream can carry far more than 4,096 of them, and why individual neurons and dimensions are so hard to
+<p>When features are dense, two features collide whenever both are on, so the model does what PCA would:
+it represents two and drops three. When features are sparse, two are rarely on at the same time, so it pays to store all five at
+angles that are not perpendicular and accept some interference now and then; the ReLU and the negative bias clean up the small
+leakage. The pentagon is the shape that minimises the worst overlap. Language features are almost all sparse
+(any given concept is absent from almost every token), which is why a 4,096-dimensional
+stream can carry far more than 4,096 of them, and why single neurons and dimensions are so hard to
 interpret: features are directions, not axes. The test <code>test_ch04_superposition</code> checks the counts
 and the 72° spacing.</p>
 
@@ -530,13 +530,13 @@ and the 72° spacing.</p>
   <div class="qq">In the 2-layer copy model, the logit lens after block 1 is at chance (3.3%), yet the full model is 100% accurate. What does that show?</div>
   <div class="opts">
     <div class="opt">Block 1 does nothing and could be removed</div>
-    <div class="opt">Block 1 writes information the final head cannot read directly; block 2 uses it to produce the prediction</div>
+    <div class="opt">Block 1 writes information that the final head cannot read directly; block 2 uses it to make the prediction</div>
     <div class="opt">The logit lens is broken for small models</div>
     <div class="opt">The model memorised the training sequences</div>
   </div>
   <div class="expl"><b>Composition.</b> An induction head needs a previous-token step and a matching step.
   Remove block 1 and the copy task fails; the lens only shows that its output is not yet in the head's
-  vocabulary basis. That is exactly the tuned-lens caveat in miniature.</div>
+  vocabulary basis. That is the tuned-lens caveat on a small scale.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">In the toy model, why does increasing feature sparsity make the model store all 5 features in 2 dimensions?</div>
@@ -544,10 +544,10 @@ and the 72° spacing.</p>
     <div class="opt">Sparse features are smaller in magnitude</div>
     <div class="opt">The optimiser runs longer</div>
     <div class="opt">Sparse inputs make W orthogonal</div>
-    <div class="opt">Features that are rarely on together rarely interfere, so the reconstruction gain of storing them outweighs the occasional cross-talk</div>
+    <div class="opt">Features that are rarely on together rarely interfere, so the gain from storing them outweighs the occasional leakage</div>
   </div>
-  <div class="expl"><b>Interference is paid only when features co-occur.</b> At S = 0.9 two given features are
-  both on 1% of the time. Non-orthogonal storage costs a little then and gains a lot the rest of the time.</div>
+  <div class="expl"><b>Interference only costs anything when features occur together.</b> At S = 0.9 two given features are
+  both on 1% of the time. Storing them at shared angles costs a little then and gains a lot the rest of the time.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">What does superposition imply for interpreting a single neuron or residual dimension?</div>
@@ -555,10 +555,10 @@ and the 72° spacing.</p>
     <div class="opt">It usually responds to several unrelated features, because features are stored as directions shared across dimensions</div>
     <div class="opt">Each neuron encodes exactly one concept</div>
     <div class="opt">Neurons in later layers are always interpretable</div>
-    <div class="opt">Nothing: superposition only happens in toy models</div>
+    <div class="opt">Nothing, because superposition only happens in toy models</div>
   </div>
-  <div class="expl"><b>Polysemanticity.</b> If more features than dimensions share a space, no basis aligns with
-  all of them. That is the motivation for sparse autoencoders, which look for the directions rather than the
+  <div class="expl"><b>Polysemanticity.</b> If more features than dimensions share a space, no basis lines up with
+  all of them. That is why sparse autoencoders look for the feature directions instead of the
   axes.</div>
 </div>
 </div>
@@ -570,20 +570,20 @@ and the 72° spacing.</p>
 <div class="eb">
 <p>Prove the equivalence numerically. Build <code>emb = nn.Embedding(10, 4)</code>, then show that
 <code>emb(torch.tensor([3]))</code> equals <code>F.one_hot(torch.tensor([3]), 10).float() @ emb.weight</code>.
-Then time both for <code>V=50000</code>. What's the speed ratio, and where does it come from?</p>
+Then time both for <code>V=50000</code>. What is the speed ratio, and where does it come from?</p>
 <details class="reveal"><summary>Answer</summary><div>
-<p style="margin-bottom:0">They match exactly. The lookup is typically 100–1000× faster because the matmul
-does <code>V×C</code> multiply-adds (49,999 of every 50,000 by zero) plus materialises a
-<code>(B, T, V)</code> one-hot tensor, while the lookup does <code>C</code> memory reads. It's the same
-computation with completely different <i>arithmetic intensity</i> — a theme that returns in Chapter 15.</p>
+<p style="margin-bottom:0">They match exactly. The lookup is usually 100 to 1000× faster, because the matmul
+does <code>V×C</code> multiply-adds (49,999 of every 50,000 of them by zero) and builds a
+<code>(B, T, V)</code> one-hot tensor, while the lookup does <code>C</code> memory reads. The two do the same
+computation with completely different <i>arithmetic intensity</i>, which comes up again in Chapter 15.</p>
 </div></details>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">4.2</span><span class="ti">Nearest neighbours in embedding space</span><span class="lvl">code</span></div>
 <div class="eb">
-<p>Load GPT-2's embedding matrix. Write <code>nearest(word, k=10)</code> that returns the <code>k</code>
-tokens whose embeddings have highest <b>cosine similarity</b> to a given token's embedding.</p>
+<p>Load GPT-2's embedding matrix. Write <code>nearest(word, k=10)</code>, which returns the <code>k</code>
+tokens whose embeddings have the highest <b>cosine similarity</b> to a given token's embedding.</p>
 <pre><code>W = model.transformer.wte.weight            # (50257, 768)
 Wn = W / W.norm(dim=-1, keepdim=True)       # normalise rows → cosine = dot
 
@@ -593,13 +593,13 @@ def nearest(token_str, k=10):
     top = sims.topk(k + 1).indices[1:]      # skip itself
     return [(tokenizer.decode([j]), sims[j].item()) for j in top]
 </code></pre>
-<p>Try <code>" king"</code>, <code>" Monday"</code>, <code>" Paris"</code>, <code>" 7"</code>.
-Note the leading spaces — Chapter 3 explains why they matter.</p>
+<p>Try <code>" king"</code>, <code>" Monday"</code>, <code>" Paris"</code> and <code>" 7"</code>.
+Note the leading spaces; Chapter 3 explains why they matter.</p>
 <details class="reveal"><summary>What to expect</summary><div>
-<p style="margin-bottom:0"><code>" Monday"</code> gives you the other weekdays, which is a clean win.
-<code>" king"</code> gives royalty-adjacent words but also a lot of noise. Input embeddings in a transformer
-are <i>less</i> semantically clean than word2vec vectors, because the model can defer meaning to later
-layers — the embedding only needs to be a useful <i>starting point</i>, not a finished representation.</p>
+<p style="margin-bottom:0"><code>" Monday"</code> gives you the other weekdays, which works cleanly.
+<code>" king"</code> gives words related to royalty but also a lot of noise. Input embeddings in a transformer
+are <i>less</i> clean in meaning than word2vec vectors, because the model can leave meaning to later
+layers: the embedding only has to be a useful <i>starting point</i>, not a finished representation.</p>
 </div></details>
 </div></div>
 
@@ -608,14 +608,14 @@ layers — the embedding only needs to be a useful <i>starting point</i>, not a 
 <div class="eb">
 <p>Take any small transformer implementation and change <code>x = x + attn(ln(x))</code> to
 <code>x = attn(ln(x))</code> in every block. Train both on the same tiny dataset for the same number of
-steps. Plot both loss curves.</p>
+steps, and plot both loss curves.</p>
 <details class="reveal"><summary>What you'll see, and why</summary><div>
-<p style="margin-bottom:0">The residual-free model trains dramatically worse, and in a pre-norm model the gap is
-already large at 2 layers (the companion notebook measures it). The gradient check is the surprising part:
+<p style="margin-bottom:0">The model without residuals trains far worse, and in a pre-norm model the gap is
+already large at 2 layers (the companion notebook measures it). The gradient check is the surprise:
 inspect <code>block[0].attn.weight.grad.norm()</code> in both, and the non-residual model's first-layer gradient
 is <i>not</i> orders of magnitude smaller; it is about as large or larger. With a norm in front of every
-sublayer, each block rescales its input, so the gradient does not vanish. What the residual-free model loses
-is the identity path itself: every layer must re-encode everything the layers before it knew, instead of
+sublayer, each block rescales its input, so the gradient does not vanish. What the model without residuals loses
+is the identity path itself: every layer has to re-encode everything the earlier layers knew, instead of
 adding a small correction to a stream that already carries it. (In a post-norm or norm-free stack, the
 textbook vanishing gradient does appear; Ch 8's exercise 8.2 measures that.)</p>
 </div></details>
@@ -626,13 +626,13 @@ textbook vanishing gradient does appear; Ch 8's exercise 8.2 measures that.)</p>
 <div class="eb">
 <p>Using <code>tfs.foundations.residual_norms</code>, predict and then measure the stream's RMS after the last
 block for a 24-layer and a 48-layer version of the §4.5 model (same width), with and without the scaled
-initialisation. Then check the √l model: is the growth closer to linear or to √l in the number of blocks?</p>
+initialisation. Then test the √l model: is the growth closer to linear or to √l in the number of blocks?</p>
 <details class="reveal"><summary>What to look for</summary><div>
 <p style="margin-bottom:0">With the scaled init, each block's update variance falls like 1/L, so the total added
 variance stays roughly constant as L grows: the final RMS is 0.058, 0.059 and 0.062 at 12, 24 and 48 layers.
-Without it, the variance added per block is fixed and the final RMS keeps growing with depth: 0.32, 0.47, 0.69. The early blocks of the
+Without it, each block adds a fixed amount of variance and the final RMS keeps growing with depth: 0.32, 0.47, 0.69. The early blocks of the
 unscaled model grow faster than √l, because a block's output is correlated with its input (attention averages
-the same stream it reads), which is a useful reminder that "independent updates" is an approximation.</p>
+the same stream it reads). It is a useful reminder that "independent updates" is an approximation.</p>
 </div></details>
 </div></div>
 
@@ -641,44 +641,44 @@ the same stream it reads), which is a useful reminder that "independent updates"
 <div class="eb">
 <p>Training Llama-3-8B (V = 128,256) with micro-batches of 4 × 8,192 tokens:</p>
 <ol>
-<li>How large is the logits tensor in bf16, and in fp32 (which the cross-entropy usually upcasts to)?</li>
+<li>How large is the logits tensor in bf16, and in fp32 (which the cross-entropy usually converts it to)?</li>
 <li>Compare it with one layer's residual-stream activation <code>(4, 8192, 4096)</code> in bf16.</li>
-<li>Name two ways to avoid materialising it.</li>
+<li>Give two ways to avoid materialising it.</li>
 </ol>
 <details class="reveal"><summary>Answers</summary><div>
 <pre><code class="nohl">1. 4 × 8192 × 128,256 = 4.20 G elements → 8.4 GB bf16, 16.8 GB fp32
 2. 4 × 8192 × 4096    = 134 M elements  → 0.27 GB: the logits are 31× larger (63× in fp32)</code></pre>
-<p style="margin-bottom:0">3. Compute the loss in chunks of positions, so only one chunk's logits exist at a
-time; or use a fused linear-plus-cross-entropy kernel that computes the log-sum-exp blockwise and never writes
-the full logits out (the approach of Liger Kernel and similar libraries). Chapter 10 returns to this: it is often
-the single largest tensor in training.</p>
+<p style="margin-bottom:0">3. Compute the loss in chunks of positions, so that only one chunk's logits exist at a
+time; or use a fused linear-plus-cross-entropy kernel that computes the log-sum-exp block by block and never writes
+the full logits out (the approach of Liger Kernel and similar libraries). Chapter 10 comes back to this: the logits are often
+the largest single tensor in training.</p>
 </div></details>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">4.6</span><span class="ti">Superposition with unequal importance</span><span class="lvl">exploration</span></div>
 <div class="eb">
-<p>Modify <code>superposition_toy</code> so feature <i>i</i>'s reconstruction error is weighted by
-0.7<sup><i>i</i></sup>, as in Elhage et al. Sweep sparsity from 0 to 0.95. At what sparsity does the third feature
+<p>Change <code>superposition_toy</code> so that feature <i>i</i>'s reconstruction error is weighted by
+0.7<sup><i>i</i></sup>, as in Elhage et al. Sweep the sparsity from 0 to 0.95. At what sparsity does the third feature
 first get represented, and which features does the model drop first?</p>
 <details class="reveal"><summary>What the paper finds</summary><div>
-<p style="margin-bottom:0">Dense: the two most important features get the two dimensions. As sparsity rises,
-less important features are added in order of importance, through intermediate arrangements (antipodal pairs,
-then larger polygons), with sharp transitions between them. Importance decides who gets stored first; sparsity
-decides how many can share.</p>
+<p style="margin-bottom:0">When features are dense, the two most important features get the two dimensions. As sparsity rises,
+less important features are added in order of importance, through intermediate arrangements (pairs pointing in
+opposite directions, then larger polygons), with sharp jumps between them. Importance decides which features are stored first; sparsity
+decides how many can share the space.</p>
 </div></details>
 </div></div>
 
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
-<li><a href="https://transformer-circuits.pub/2021/framework/index.html">Elhage et al. — A Mathematical Framework for Transformer Circuits</a> — where the residual-stream framing was made precise. Dense but transformative.</li>
-<li><a href="https://arxiv.org/abs/1512.03385">He et al. 2015 — Deep Residual Learning</a> — the original ResNet paper.</li>
-<li><a href="https://arxiv.org/abs/1608.05859">Press &amp; Wolf 2016 — Using the Output Embedding to Improve Language Models</a> — the weight-tying result.</li>
-<li><a href="https://www.lesswrong.com/posts/AcKRB8wDpdaN6v6ru/interpreting-gpt-the-logit-lens">nostalgebraist — the logit lens</a></li>
-<li><a href="https://arxiv.org/abs/2303.08112">Belrose et al. 2023 — Eliciting Latent Predictions from Transformers with the Tuned Lens</a></li>
-<li><a href="https://transformer-circuits.pub/2022/toy_model/index.html">Elhage et al. 2022 — Toy Models of Superposition</a></li>
-<li><a href="https://arxiv.org/abs/2408.00118">Gemma Team 2024 — Gemma 2</a> (logit soft-capping: 30 final, 50 attention) · <a href="https://arxiv.org/abs/2204.02311">Chowdhery et al. 2022 — PaLM</a> (z-loss)</li>
-<li><a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf">Radford et al. 2019 — GPT-2</a> (1/√N residual initialisation) · <a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a> §3.4 (embeddings × √d<sub>model</sub>)</li>
+<li><a href="https://transformer-circuits.pub/2021/framework/index.html">Elhage et al., A Mathematical Framework for Transformer Circuits</a>: where the residual-stream view was made precise. Dense, and worth the effort.</li>
+<li><a href="https://arxiv.org/abs/1512.03385">He et al. 2015, Deep Residual Learning</a>: the original ResNet paper.</li>
+<li><a href="https://arxiv.org/abs/1608.05859">Press &amp; Wolf 2016, Using the Output Embedding to Improve Language Models</a>: the weight-tying result.</li>
+<li><a href="https://www.lesswrong.com/posts/AcKRB8wDpdaN6v6ru/interpreting-gpt-the-logit-lens">nostalgebraist, the logit lens</a></li>
+<li><a href="https://arxiv.org/abs/2303.08112">Belrose et al. 2023, Eliciting Latent Predictions from Transformers with the Tuned Lens</a></li>
+<li><a href="https://transformer-circuits.pub/2022/toy_model/index.html">Elhage et al. 2022, Toy Models of Superposition</a></li>
+<li><a href="https://arxiv.org/abs/2408.00118">Gemma Team 2024, Gemma 2</a> (logit soft-capping: 30 final, 50 attention) · <a href="https://arxiv.org/abs/2204.02311">Chowdhery et al. 2022, PaLM</a> (z-loss)</li>
+<li><a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf">Radford et al. 2019, GPT-2</a> (1/√N residual initialisation) · <a href="https://arxiv.org/abs/1706.03762">Vaswani et al. 2017</a> §3.4 (embeddings × √d<sub>model</sub>)</li>
 <li>Reference code: <code>tfs/foundations.py</code> (Ch 4 section) · tests: <code>tests/test_foundations.py</code></li>
 <li>Companion notebook: <code>notebooks/04_embeddings.ipynb</code></li>
 </ul>
