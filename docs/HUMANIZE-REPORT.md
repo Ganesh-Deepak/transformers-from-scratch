@@ -19,3 +19,4 @@ Flesch (higher is easier; 60-70 is plain English).
 | ch08-block.html | 13.4 | 0.3 | 16.4 | 14.5 | 15.9 | 16.4 | 58.1 | 61.0 |
 | ch09-architectures.html | 11.5 | 0.4 | 14.1 | 12.1 | 16.4 | 17.1 | 53.7 | 56.3 |
 | ch10-backprop.html | 9.9 | 0.0 | 19.6 | 17.7 | 16.4 | 17.4 | 61.2 | 63.4 |
+| ch11-training.html | 8.2 | 0.1 | 15.0 | 13.8 | 18.6 | 19.2 | 55.6 | 57.9 |

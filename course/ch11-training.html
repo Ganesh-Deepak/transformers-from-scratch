@@ -13,7 +13,7 @@
 
 <h1>11 · Training a Transformer</h1>
 <p class="lead">
-You have a model that maps tokens to logits. Now make it good. This chapter covers the loss, the optimizer,
+You have a model that maps tokens to logits. Now you have to make it good. This chapter covers the loss, the optimizer,
 the schedule, and the dozen practical details that separate a run that works from one that spikes at step
 4000 and never recovers.
 </p>
@@ -22,19 +22,19 @@ the schedule, and the dozen practical details that separate a run that works fro
 <div class="box intuition">
 <span class="t">The whole chapter in five sentences</span>
 <p style="margin-bottom:0"><b>Pretraining minimises next-token cross-entropy with AdamW under a warmup-then-decay
-schedule</b>, and every loss must be read against ln V and compared across tokenizers in bits per byte.
-<b>Which tokens you train on matters as much as how</b>: exact and MinHash deduplication, rule- and
-classifier-based quality filters, mixture weights capped by how often a source can be repeated, and the best data
-saved for the final decay. <b>The batch should track the gradient noise scale</b>, which grows as the loss falls,
+schedule.</b> Every loss must be read against ln V, and compared across tokenizers in bits per byte.
+Which tokens you train on matters as much as how: exact and MinHash deduplication, rule-based and
+classifier-based quality filters, mixture weights limited by how often a source can be repeated, and the best data
+kept for the final decay. The batch should follow the gradient noise scale, which grows as the loss falls,
 and the learning rate should come from a parameterisation (μP) that transfers from a small proxy, because you
-cannot sweep it at scale. <b>Throughput is measured as MFU</b> and diagnosed with a profiler. <b>A long run
-survives by bounding its logits (z-loss, QK-norm), rolling back past spikes, and checkpointing every piece of
-state</b>, data position included, so that a resumed run is the run you planned.</p>
+cannot sweep it at scale. Throughput is measured as MFU and diagnosed with a profiler. A long run
+survives by keeping its logits bounded (z-loss, QK-norm), rolling back past spikes, and checkpointing every piece of
+state, including the data position, so that a resumed run is the run you planned.</p>
 </div>
 
 <h2>11.1 · The objective: predict the next token</h2>
 
-<p>That's the whole thing. There is no clever auxiliary loss in standard pretraining.</p>
+<p>That is all of it. Standard pretraining has no clever auxiliary loss.</p>
 
 <div class="mathblock">
 ℒ = − <span class="frac"><span class="n">1</span><span class="d">T</span></span> <span class="op">Σ</span><sub>t=1</sub><sup>T</sup> log P<sub>θ</sub>(x<sub>t</sub> | x<sub>&lt;t</sub>)
@@ -45,8 +45,8 @@ state</b>, data position included, so that a resumed run is the run you planned.
                        ids[:, 1:].reshape(-1))          # (B*(T-1),)
 </code></pre>
 
-<p><code>F.cross_entropy</code> fuses log-softmax and negative-log-likelihood into one numerically stable op.
-Never write <code>log(softmax(x))</code> yourself — it overflows.</p>
+<p><code>F.cross_entropy</code> fuses the log-softmax and the negative log-likelihood into one numerically stable operation.
+Never write <code>log(softmax(x))</code> yourself, because it overflows.</p>
 
 <h3>Reading the number</h3>
 
@@ -64,12 +64,12 @@ Never write <code>log(softmax(x))</code> yourself — it overflows.</p>
 </table>
 </div>
 
-<p><b>Perplexity = exp(loss)</b>, and it means "the model is as uncertain as if it were choosing uniformly
-among this many options." Perplexity 20 ≈ "it has narrowed the next token down to about 20 candidates."</p>
+<p><b>Perplexity = exp(loss)</b>. It means the model is as uncertain as if it were choosing uniformly
+among that many options: a perplexity of 20 means it has narrowed the next token down to about 20 candidates.</p>
 
 <div class="example">
 <span class="t">Worked example — reading a loss number three ways</span>
-<p>A loss on its own means very little. Convert it every time.</p>
+<p>A loss on its own means very little, so convert it every time.</p>
 
 <div class="step"><div class="i">1</div><div>
 <b>Loss → perplexity:</b> <span class="math">ppl = e<sup>loss</sup></span>. "As uncertain as
@@ -101,15 +101,15 @@ initialisation is broken.
 </div></div>
 
 <p style="margin-bottom:0"><b>The habit:</b> never quote a loss without saying which tokenizer
-produced it, and compare runs on <code>bpb</code>. Row 2 of step 2 is the trap in one line — the
+produced it, and compare runs on <code>bpb</code>. Row 2 of step 2 shows the trap in one line: the
 model with nearly <b>triple</b> the loss is the better one.</p>
 </div>
 
 <div class="box gotcha">
 <span class="t">Loss is NOT comparable across tokenizers</span>
-<p>The table above assumes a ~32k BPE vocabulary. Change the tokenizer and every number moves, because
+<p>The table above assumes a BPE vocabulary of ~32k. Change the tokenizer and every number moves, because
 loss is measured <b>per token</b> and tokens carry different amounts of text. A character-level model on
-Shakespeare reaching loss 1.5 and a BPE-2048 model reaching about 4.95 are <i>the same quality</i>: the BPE
+Shakespeare reaching a loss of 1.5 and a BPE-2048 model reaching about 4.95 are <i>the same quality</i>: each BPE
 token is worth ~3.3 characters, so 1.5 nats per character is 1.5 × 3.3 ≈ 4.95 nats per token. (At 5.8 the BPE
 model would be 17% worse in bits per byte.)</p>
 <p style="margin-bottom:0">The comparable metric is <b>bits per byte</b>:</p>
@@ -119,22 +119,22 @@ bpb = <span class="frac"><span class="n">loss<sub>nats/token</sub></span><span c
 <pre style="margin:.4em 0 .6em"><code class="nohl">char-level Shakespeare, good small model   ~2.1 bits/byte
 GPT-2 on web text                          ~1.0 bits/byte
 strong modern LLMs                         ~0.6-0.8 bits/byte</code></pre>
-<p style="margin-bottom:0">Always report bits-per-byte when comparing runs with different vocabularies.
-<code>tfs/train.py</code> prints it as <code>bpb</code> on every eval line for exactly this reason.</p>
+<p style="margin-bottom:0">Always report bits per byte when you compare runs with different vocabularies.
+<code>tfs/train.py</code> prints it as <code>bpb</code> on every evaluation line for this reason.</p>
 </div>
 
 <div class="box math-note">
 <span class="t">Teacher forcing, and its consequence</span>
 <p style="margin-bottom:0">During training we always condition on the <b>true</b> prefix, never on the
-model's own predictions. That's what makes the causal mask trick work — all T predictions computed in one
+model's own predictions. That is what makes the causal-mask trick work, with all T predictions computed in one
 pass. But it creates <b>exposure bias</b>: at generation time the model conditions on its own (possibly
-flawed) output, a distribution it never trained on. This is one reason long generations drift, and part of
-why RL-based post-training (Part VI) helps — it trains on the model's own rollouts.</p>
+flawed) output, a distribution it never trained on. This is one reason long generations drift, and part of the
+reason RL-based post-training (Part VI) helps: it trains on the model's own outputs.</p>
 </div>
 
 <h2>11.2 · The optimizer: AdamW</h2>
 
-<p>Plain SGD does not train transformers well. Adam does, and AdamW is the correction that made it right.</p>
+<p>Plain SGD does not train transformers well. Adam does, and AdamW is the correction that fixed Adam's weight decay.</p>
 
 <pre><code># Adam: per-parameter adaptive step sizes from first and second gradient moments
 m = β₁·m + (1-β₁)·g                 # momentum      (β₁ = 0.9)
@@ -143,17 +143,17 @@ m̂ = m / (1 - β₁ᵗ);  v̂ = v / (1 - β₂ᵗ)          # bias correction
 θ = θ - lr · m̂ / (√v̂ + ε)
 </code></pre>
 
-<p>The key behaviour: dividing by <code>√v̂</code> means <b>parameters with consistently small gradients get
-large steps and vice versa</b>. Transformers have wildly different gradient scales across embeddings, norms
+<p>The key behaviour is that dividing by <code>√v̂</code> gives <b>parameters with consistently small gradients
+large steps, and the reverse</b>. Transformers have very different gradient scales across embeddings, norms
 and attention, so this per-parameter normalisation matters a lot.</p>
 
 <div class="box intuition">
 <span class="t">What the W in AdamW fixes</span>
-<p>L2 regularisation adds <code>λ‖θ‖²</code> to the loss, so the gradient gains a <code>λθ</code> term —
-which then gets divided by <code>√v̂</code> along with everything else. Parameters with large gradients get
-<i>less</i> regularisation. That is not what anyone wanted.</p>
-<p style="margin-bottom:0"><b>AdamW decouples it:</b> apply weight decay directly to the parameters, outside
-the adaptive machinery.</p>
+<p>L2 regularisation adds <code>λ‖θ‖²</code> to the loss, so the gradient gains a <code>λθ</code> term,
+which is then divided by <code>√v̂</code> along with everything else. Parameters with large gradients get
+<i>less</i> regularisation, which is not what anyone wanted.</p>
+<p style="margin-bottom:0"><b>AdamW separates the two:</b> it applies weight decay directly to the parameters, outside
+the adaptive part.</p>
 <pre style="margin:.7em 0 0"><code>θ = θ - lr · m̂/(√v̂ + ε) - lr · λ · θ      # ← decoupled decay term</code></pre>
 </div>
 
@@ -186,25 +186,25 @@ opt = torch.optim.AdamW(
 
 <div class="box warn">
 <span class="t">The memory cost of Adam</span>
-<p style="margin-bottom:0">Adam stores <code>m</code> and <code>v</code> per parameter, in fp32.
-That is <b>8 bytes per parameter</b> on top of the weights — for a 7B model, 56 GB of optimizer state alone.
-Add fp32 master weights (28 GB) and gradients (28 GB) and you understand why training needs ZeRO / FSDP
+<p style="margin-bottom:0">Adam stores <code>m</code> and <code>v</code> for every parameter, in fp32.
+That is <b>8 bytes per parameter</b> on top of the weights: for a 7B model, 56 GB of optimizer state alone.
+Add fp32 master weights (28 GB) and gradients (28 GB), and you can see why training needs ZeRO or FSDP
 sharding while inference fits on one GPU.</p>
 </div>
 
 <div class="box sota">
 <span class="t">2026 note: Muon</span>
-<p style="margin-bottom:0">Adam's ~9-year reign is finally seeing real competition. <b>Muon</b>
-(Jordan et al., 2024) orthogonalises the momentum matrix via a Newton–Schulz iteration before stepping,
-which empirically improves the loss-per-FLOP for the 2-D weight matrices. It's used for hidden layers with
-AdamW retained for embeddings and the LM head. <b>Kimi K2</b> (1T params) was trained with a Muon variant at
-scale, which is the strongest evidence so far that it isn't just a small-model effect. Still not the default,
-but worth knowing about.</p>
+<p style="margin-bottom:0">After about 9 years as the default, Adam now has real competition. <b>Muon</b>
+(Jordan et al., 2024) orthogonalises the momentum matrix with a Newton-Schulz iteration before each step,
+which in practice improves the loss per FLOP for the 2-D weight matrices. It is used for the hidden layers, with
+AdamW kept for the embeddings and the LM head. <b>Kimi K2</b> (1T parameters) was trained with a Muon variant at
+scale, the strongest evidence so far that the gain is not limited to small models. It is still not the default,
+but it is worth knowing about.</p>
 </div>
 
 <h2>11.3 · The learning-rate schedule</h2>
 
-<p>A constant learning rate is leaving a lot on the table. The standard is <b>linear warmup → cosine
+<p>A constant learning rate leaves a lot of performance unused. The standard schedule is <b>linear warmup, then cosine
 decay</b>:</p>
 
 <pre><code>def lr_at(step, base_lr, warmup=2000, total=100_000, min_ratio=0.1):
@@ -231,25 +231,25 @@ decay</b>:</p>
     <text x="118" y="164">~2k steps</text>
   </g>
 </svg>
-<figcaption>Warmup prevents early divergence; decay lets the model settle into a sharper minimum.</figcaption>
+<figcaption>Warmup prevents early divergence, and decay lets the model settle into a sharper minimum.</figcaption>
 </figure>
 
 <div class="box math-note">
 <span class="t">Why warmup is not optional</span>
 <p style="margin-bottom:0">At step 0, Adam's second-moment estimate <code>v</code> is near zero, so
-<code>m̂/√v̂</code> can be enormous — the very first updates are effectively unbounded. Combine that with a
-randomly-initialised model whose gradients are large and uninformative, and a full-size first step can push
-the weights somewhere unrecoverable. Warmup ramps in gently while <code>v</code> stabilises. Post-LN models
-need it desperately; pre-LN models need it less, but everyone still uses it.</p>
+<code>m̂/√v̂</code> can be enormous and the very first updates are effectively unbounded. Combine that with a
+randomly initialised model whose gradients are large and carry little information, and a full-size first step can push
+the weights somewhere they never recover from. Warmup starts gently while <code>v</code> settles. Post-LN models
+need it badly; pre-LN models need it less, but everyone still uses it.</p>
 </div>
 
 <div class="box sota">
 <span class="t">The WSD alternative</span>
 <p style="margin-bottom:0">Cosine has an annoying property: you must fix <code>total_steps</code> in advance,
-and the intermediate checkpoints are all mid-decay and therefore not usable as final models. <b>WSD</b>
-(Warmup–Stable–Decay, popularised by MiniCPM and now used by several labs) holds the LR constant for most of
-training and only decays over the last ~10%. You can stop at any point, decay briefly, and get a good model —
-which makes continued pretraining and mid-run data changes far more practical. The decay is also where runs
+and the checkpoints along the way are all in the middle of the decay, so none of them is usable as a final model. <b>WSD</b>
+(Warmup-Stable-Decay, made popular by MiniCPM and now used by several labs) keeps the LR constant for most of
+training and decays it only over the last ~10%. You can stop at any point, decay briefly, and get a good model,
+which makes continued pretraining and changes of data in the middle of a run far more practical. The decay is also when runs
 switch to their best data (§11.7).</p>
 </div>
 
@@ -305,21 +305,21 @@ for step in range(total_steps):
 <span class="t">Two accumulation bugs</span>
 <ol style="margin-bottom:0">
 <li><b>Forgetting to divide by <code>ACC_STEPS</code>.</b> The gradient becomes 8× larger than you think.
-Under SGD that is an 8× learning rate and it diverges. Under AdamW it is quieter than that: Adam's step
+Under SGD that is an 8× learning rate, and the run diverges. Under AdamW the effect is quieter: Adam's step
 m̂/(√v̂ + ε) does not change when the gradient is scaled by a constant, so the trajectory is almost the same,
 and <code>clip_grad_norm_</code> clips the inflated norm anyway. What it does break: your clipping threshold now
 means something different, every logged loss and gradient norm is 8× off, and switching optimizers (or
 changing the accumulation count) silently changes the run. Divide anyway; the companion notebook shows both
 cases.</li>
-<li><b>Calling <code>opt.zero_grad()</code> inside the micro-batch loop.</b> Then you're not accumulating at
-all — you just did 8× the work for one micro-batch's gradient.</li>
+<li><b>Calling <code>opt.zero_grad()</code> inside the micro-batch loop.</b> Then you are not accumulating at
+all: you did 8× the work for one micro-batch's gradient.</li>
 </ol>
 </div>
 
 <h2>11.5 · Data I: packing</h2>
 
-<p>Documents have different lengths. Padding each to <code>T</code> wastes compute on <code>&lt;pad&gt;</code>
-tokens — sometimes 50% of it. The standard fix is to <b>concatenate everything and slice</b>:</p>
+<p>Documents have different lengths. Padding each one to <code>T</code> wastes compute on <code>&lt;pad&gt;</code>
+tokens, sometimes 50% of it. The standard fix is to <b>join everything together and slice it</b>:</p>
 
 <pre><code># Tokenize the whole corpus once, write to a flat uint16/uint32 memmap.
 data = np.memmap("train.bin", dtype=np.uint16, mode="r")     # (N_total,)
@@ -331,53 +331,53 @@ def get_batch(B, T):
     return x, y                                              # (B,T), (B,T)
 </code></pre>
 
-<p>Zero padding, 100% of the compute does useful work. The trade-off is that sequences can span document
-boundaries — the model sometimes attends across an unrelated document break. Most pretraining just accepts
-this; if you care, you can pass a document-id mask to block cross-document attention (supported by
+<p>There is no padding, and 100% of the compute does useful work. The trade-off is that sequences can span document
+boundaries, so the model sometimes attends across a break between unrelated documents. Most pretraining just accepts
+this. If you care, you can pass a document-ID mask to block attention across documents (supported by
 FlashAttention's varlen API and PyTorch FlexAttention).</p>
 
 <div class="quiz" data-title="Checkpoint 1 — training mechanics">
 <div class="qitem" data-answer="1">
-  <div class="qq">Your loss starts at 10.4 (V=32000), drops to 6.2 in 200 steps, then plateaus for
-  2000 steps. Most likely cause?</div>
+  <div class="qq">Your loss starts at 10.4 (V=32000), drops to 6.2 in 200 steps, then stays flat for
+  2000 steps. What is the most likely cause?</div>
   <div class="opts">
     <div class="opt">The model is broken</div>
-    <div class="opt">Nothing is wrong — it learned unigram frequencies fast, and syntax takes much longer</div>
-    <div class="opt">Learning rate is too low</div>
+    <div class="opt">Nothing is wrong: it learned the unigram frequencies fast, and syntax takes much longer</div>
+    <div class="opt">The learning rate is too low</div>
     <div class="opt">You have the label-shift bug</div>
   </div>
-  <div class="expl"><b>Normal.</b> The fastest available win is matching the marginal token distribution
-  ("the" is common, "aardvark" isn't), which gets you to roughly the unigram entropy — around 6 for English.
-  Everything after that requires actual modelling and comes much more slowly. Loss curves are
-  characteristically <i>step-like</i> for this reason.</div>
+  <div class="expl"><b>This is normal.</b> The fastest win available is matching the overall token frequencies
+  ("the" is common, "aardvark" is not), which gets you to roughly the unigram entropy, around 6 for English.
+  Everything after that needs real modelling and comes much more slowly. Loss curves often look
+  <i>step-like</i> for this reason.</div>
 </div>
 <div class="qitem" data-answer="0">
-  <div class="qq">Why <code>β₂ = 0.95</code> for LLMs instead of PyTorch's default 0.999?</div>
+  <div class="qq">Why use <code>β₂ = 0.95</code> for LLMs instead of PyTorch's default of 0.999?</div>
   <div class="opts">
-    <div class="opt">0.999 averages over ~1000 steps, adapting too slowly to LLM gradient statistics and reacting badly to outlier batches</div>
+    <div class="opt">0.999 averages over ~1000 steps, so it adapts too slowly to LLM gradient statistics and reacts badly to outlier batches</div>
     <div class="opt">0.95 uses less memory</div>
     <div class="opt">0.999 causes NaN in bf16</div>
-    <div class="opt">It's arbitrary</div>
+    <div class="opt">It is arbitrary</div>
   </div>
-  <div class="expl"><b>Adaptation speed.</b> The effective averaging window is ~1/(1−β₂): 20 steps at 0.95
-  vs 1000 at 0.999. LLM gradients are noisy and non-stationary, and a long window means a single bad batch's
-  huge gradient inflates <code>v</code> for a thousand steps afterwards, suppressing learning. GPT-3, Llama,
+  <div class="expl"><b>Speed of adaptation.</b> The effective averaging window is ~1/(1−β₂): 20 steps at 0.95
+  against 1000 at 0.999. LLM gradients are noisy and keep changing, and with a long window a single bad batch's
+  huge gradient inflates <code>v</code> for a thousand steps afterwards, which suppresses learning. GPT-3, Llama,
   Chinchilla and most others use 0.95.</div>
 </div>
 <div class="qitem" data-answer="3">
-  <div class="qq">You want an effective batch of 512 sequences but only 8 fit in memory. What do you do,
+  <div class="qq">You want an effective batch of 512 sequences, but only 8 fit in memory. What do you do,
   and what must you not forget?</div>
   <div class="opts">
     <div class="opt">Reduce sequence length instead</div>
     <div class="opt">Use gradient checkpointing; nothing else changes</div>
-    <div class="opt">Accumulate over 64 micro-batches; call <code>opt.step()</code> each time</div>
-    <div class="opt">Accumulate over 64 micro-batches; divide each loss by 64 and step once</div>
+    <div class="opt">Accumulate over 64 micro-batches, and call <code>opt.step()</code> after each one</div>
+    <div class="opt">Accumulate over 64 micro-batches, divide each loss by 64, and step once</div>
   </div>
-  <div class="expl"><b>Divide by the accumulation count, step once.</b> <code>loss.backward()</code>
-  <i>adds</i> into <code>.grad</code>, so without the division you get the sum of 64 losses: a gradient 64× too large. With SGD that is a
-  64× learning rate; with AdamW the step barely changes (it is scale-invariant), but clipping thresholds,
-  logged losses and gradient norms are all 64× off. Option C defeats the purpose entirely (that's just 64
-  small steps).</div>
+  <div class="expl"><b>Divide by the accumulation count, and step once.</b> <code>loss.backward()</code>
+  <i>adds</i> into <code>.grad</code>, so without the division you get the sum of 64 losses and a gradient 64× too large. With SGD that is a
+  64× learning rate; with AdamW the step barely changes (it ignores scale), but clipping thresholds,
+  logged losses and gradient norms are all 64× off. Option C defeats the purpose entirely: it is just 64
+  small steps.</div>
 </div>
 </div>
 
@@ -386,42 +386,42 @@ FlashAttention's varlen API and PyTorch FlexAttention).</p>
 <p>Packing decides how tokens are laid out. Everything else about data decides <i>which</i> tokens, and for a
 pretraining team that is most of the job. A web crawl is full of repetition: the same article syndicated on
 fifty sites, the same cookie banner on a million pages, the same page captured in every monthly crawl.
-Duplicated text costs compute without teaching anything new, and heavily repeated text is memorised, which
-shows up later as regurgitated training data and inflated benchmark scores. Every modern pipeline removes
-duplicates at three granularities. Llama 3, for example, keeps the most recent version of each URL, runs a
+Duplicated text costs compute without teaching anything new, and heavily repeated text gets memorised, which
+shows up later as copied training data and inflated benchmark scores. Every modern pipeline removes
+duplicates at three levels. Llama 3, for example, keeps the most recent version of each URL, runs a
 <b>global MinHash</b> pass over all documents, and then removes <b>lines</b> that appear more than 6 times in
 each bucket of 30 million documents (which strips boilerplate such as navigation menus without dropping the
 page).</p>
 
 <h3>Exact duplicates: hash the normalised text</h3>
 
-<p>Exact duplicates are cheap. Normalise each document (lower-case, collapse whitespace), hash it, keep the
-first document per hash. One pass, one hash table. <code>tfs.data.exact_dedup</code> is six lines. It
-catches the copy of an article whose only change is capitalisation, and nothing else: change one word and the
+<p>Exact duplicates are cheap to remove. Normalise each document (lower-case it, collapse whitespace), hash it, and keep the
+first document for each hash. It takes one pass and one hash table, and <code>tfs.data.exact_dedup</code> is six lines. It
+catches a copy of an article whose only change is capitalisation, and nothing else: change one word and the
 hash changes completely.</p>
 
 <h3>Near duplicates: MinHash</h3>
 
-<p>The useful notion of "near duplicate" is overlap of content. Represent a document as its set of
-<b>shingles</b>, the word n-grams it contains (FineWeb uses 5-grams), and measure two documents by their
-<b>Jaccard similarity</b>, the size of the intersection over the size of the union. Comparing every pair is
-impossible at web scale (10<sup>10</sup> documents is 10<sup>20</sup> pairs), and so is storing every set.
-MinHash replaces each set with a short fixed-length <b>signature</b> whose agreement rate estimates the
+<p>The useful idea of a "near duplicate" is overlap of content. Represent a document as its set of
+<b>shingles</b>, the word n-grams it contains (FineWeb uses 5-grams), and compare two documents by their
+<b>Jaccard similarity</b>, the size of the intersection divided by the size of the union. Comparing every pair is
+impossible at web scale (10<sup>10</sup> documents make 10<sup>20</sup> pairs), and so is storing every set.
+MinHash replaces each set with a short <b>signature</b> of fixed length whose agreement rate estimates the
 Jaccard similarity.</p>
 
 <div class="box math-note">
 <span class="t">Why the minimum of a random hash estimates Jaccard</span>
 <p style="margin-bottom:0">Apply one random hash function h to every shingle of A and of B, and keep the
 smallest value from each. Consider the shingle in A ∪ B with the smallest hash. Every element of the union is
-equally likely to be that one. The two minima are <b>equal exactly when it lies in A ∩ B</b>. So
-P[min h(A) = min h(B)] = |A ∩ B| / |A ∪ B| = J(A, B). Repeat with k independent hash functions and the
-fraction of agreeing slots is an unbiased estimate of J, with standard error √(J(1 − J)/k).</p>
+equally likely to be that one, and the two minima are <b>equal exactly when it lies in A ∩ B</b>. So
+P[min h(A) = min h(B)] = |A ∩ B| / |A ∪ B| = J(A, B). Repeat with k independent hash functions, and the
+fraction of matching slots is an unbiased estimate of J, with standard error √(J(1 − J)/k).</p>
 </div>
 
 <div class="example">
 <span class="t">Worked example — one news story, three ways (tfs/data.py, 112 hashes)</span>
 <p><b>A</b> is a 59-word local-news paragraph about a library budget. <b>B</b> is A with a newsletter footer
-appended ("Subscribe to our newsletter for more local news."). <b>C</b> is B with "Tuesday" changed to
+added ("Subscribe to our newsletter for more local news."). <b>C</b> is B with "Tuesday" changed to
 "Wednesday". <b>D</b> is an unrelated paragraph about gradient descent.</p>
 
 <div class="step"><div class="i">1</div><div>
@@ -444,9 +444,9 @@ hash functions the A-vs-C estimate averages 0.737, against a true 0.735: unbiase
 </div></div>
 
 <div class="step"><div class="i">3</div><div>
-<b>Banding (LSH).</b> Comparing signatures pairwise is still quadratic. Locality-sensitive hashing cuts each
+<b>Banding (LSH).</b> Comparing signatures pair by pair is still quadratic. Locality-sensitive hashing cuts each
 signature into <b>14 bands of 8 slots</b> (FineWeb's choice), and puts two documents in the same bucket if
-<i>every</i> slot of <i>any</i> band agrees. Only documents sharing a bucket are compared. Here B shares
+<i>every</i> slot of <i>any</i> band matches. Only documents that share a bucket are compared. Here B shares
 <b>4 complete bands</b> with A and is caught. C shares <b>none</b> and is missed.
 </div></div>
 
@@ -463,19 +463,19 @@ Clustering then has to be <b>transitive</b>: if A~B and B~E, keep one of the thr
 </div></div>
 </div>
 
-<p>Bands and rows are the knobs: more rows per band make each band stricter (shift the curve right), more
-bands give more chances (shift it left and steepen it). The cost is linear in the number of hashes, so
+<p>Bands and rows are the settings to tune. More rows per band make each band stricter (the curve shifts right), and more
+bands give more chances (the curve shifts left and gets steeper). The cost grows linearly with the number of hashes, so
 pipelines pick the smallest signature whose S-curve is steep enough around their chosen threshold.</p>
 
 <div class="box warn">
 <span class="t">More deduplication is not always better</span>
 <p style="margin-bottom:0">The FineWeb team expected global deduplication across all 96 Common Crawl snapshots
-to be best. It was not. Deduplicating globally left 4 trillion tokens and "showed little improvement";
+to work best. It did not. Deduplicating globally left 4 trillion tokens and "showed little improvement";
 deduplicating <b>each crawl separately</b> left 20 trillion and matched RefinedWeb. Their explanation: global
-dedup keeps a page only in the one crawl where it first appears and deletes the rest, so in old crawls the
+dedup keeps a page only in the one crawl where it first appears and deletes the other copies, so in old crawls the
 surviving data is what nobody ever re-published, and the data it removed was of <i>higher</i> quality than
-the data it kept. Content that keeps being re-posted is, on average, content people value. Deduplication is
-a data-quality decision, and it has to be evaluated by training on the result.</p>
+the data it kept. Content that keeps being re-posted is, on average, content people value. So deduplication is
+a data-quality decision, and it has to be judged by training on the result.</p>
 </div>
 
 <h2>11.7 · Data III: quality, mixtures and annealing</h2>
@@ -484,15 +484,15 @@ a data-quality decision, and it has to be evaluated by training on the result.</
 
 <p>Most of a raw crawl is not worth training on: menus, spam, machine-generated pages, keyword lists. The
 first pass is cheap rules. Gopher's MassiveWeb filters (Rae et al. 2021) are still the template, and
-<code>tfs.data.gopher_rules</code> implements them: keep a document only if it has 50 to 100,000 words, a
+<code>tfs.data.gopher_rules</code> implements them. Keep a document only if it has 50 to 100,000 words, a
 mean word length of 3 to 10 characters, at most 0.1 hash symbols or ellipses per word, no more than 90% of
 lines starting with a bullet or 30% ending with an ellipsis, at least 80% of words containing a letter, and
-at least two of the eight stop words <i>the, be, to, of, and, that, have, with</i>. The stop-word rule is the
-clever one: real English prose cannot avoid them, and keyword spam rarely contains them. The news paragraph
+at least two of the eight stop words <i>the, be, to, of, and, that, have, with</i>. The stop-word rule works
+well because real English prose cannot avoid those words and keyword spam rarely contains them. The news paragraph
 above passes every rule; "BUY NOW!!!" repeated 60 times fails exactly one, the stop-word rule.</p>
 
-<p>Rules remove garbage; they cannot recognise <i>good</i>. The second pass is a model. The pattern that took
-over in 2024 is <b>distil an expensive judge into a cheap classifier</b>:</p>
+<p>Rules remove junk, but they cannot recognise <i>good</i> text. The second pass is a model. The pattern that took
+over in 2024 is to <b>distil an expensive judge into a cheap classifier</b>:</p>
 
 <div class="example">
 <span class="t">How FineWeb-Edu was built</span>
@@ -502,31 +502,31 @@ over in 2024 is <b>distil an expensive judge into a cheap classifier</b>:</p>
 </div></div>
 <div class="step"><div class="i">2</div><div>
 <b>Train a cheap imitator.</b> A linear regression head on frozen Snowflake-arctic-embed-m embeddings,
-trained on 410,000 of the labels and validated on 50,000: 82% F1 at the chosen threshold.
+trained on 410,000 of the labels and validated on 50,000, reached 82% F1 at the chosen threshold.
 </div></div>
 <div class="step"><div class="i">3</div><div>
-<b>Run it over everything and cut.</b> Keeping pages scored 3 or above left <b>1.3 trillion tokens</b> of the
-15-trillion-token FineWeb, and models trained on it did dramatically better on knowledge and reasoning
+<b>Run it over everything and cut.</b> Keeping pages that scored 3 or above left <b>1.3 trillion tokens</b> of the
+15-trillion-token FineWeb, and models trained on it did much better on knowledge and reasoning
 benchmarks (MMLU, ARC) per token trained.
 </div></div>
 </div>
 
 <p>Llama 3 did the same with different parts: a fastText classifier trained to recognise text that Wikipedia
-would reference, and DistilRoberta classifiers trained on Llama 2's quality judgements, plus specialised
-classifiers for code and mathematical reasoning. <code>tfs.data.QualityClassifier</code> is the idea at toy
+would cite, and DistilRoberta classifiers trained on Llama 2's quality judgements, plus specialised
+classifiers for code and mathematical reasoning. <code>tfs.data.QualityClassifier</code> is the same idea at toy
 scale (logistic regression on hashed unigrams and bigrams, trained on a handful of labelled sentences), so you
-can see that the whole mechanism is "a cheap model imitating an expensive one". The real difficulty is not
-the classifier, it is that <b>a filter optimised for one benchmark family narrows the data</b>: an
+can see that the whole mechanism is a cheap model imitating an expensive one. The real difficulty is not
+the classifier. It is that <b>a filter tuned for one family of benchmarks narrows the data</b>: an
 educational-value filter helps MMLU and can hurt the model's ability to write casual dialogue or fiction. That
-is why the filtered set becomes one <i>source</i> in a mixture, not the whole dataset.</p>
+is why the filtered set becomes one <i>source</i> in a mixture instead of the whole dataset.</p>
 
 <h3>Mixture weights: how often each source is seen</h3>
 
-<p>A pretraining corpus is several sources of very different size and value: web text, code, mathematics,
-books, papers, many languages. Sampling in proportion to size lets web text drown everything else. The
-standard knob is <b>temperature sampling</b>: source i is drawn with probability proportional to
-n<sub>i</sub><sup>1/τ</sup>. τ = 1 is proportional sampling; larger τ flattens toward uniform. The cost of
-flattening is <b>repetition</b>, because a small source sampled often is seen many times.</p>
+<p>A pretraining corpus has several sources of very different size and value: web text, code, mathematics,
+books, papers and many languages. Sampling in proportion to size lets web text swamp everything else. The
+standard setting is <b>temperature sampling</b>: source i is drawn with probability proportional to
+n<sub>i</sub><sup>1/τ</sup>. τ = 1 is proportional sampling, and larger τ flattens the mix toward uniform. The cost of
+flattening is <b>repetition</b>, because a small source that is sampled often is seen many times.</p>
 
 <div class="example">
 <span class="t">Worked example — five sources, 15 T tokens of training (tfs.data, illustrative sizes)</span>
@@ -537,11 +537,11 @@ code            1,500          0.107   1.07      0.209   2.09
 math              300          0.021   1.07      0.094   4.68
 books             150          0.011   1.07      0.066   6.62
 papers             50          0.004   1.07      0.038  11.47</code></pre>
-<p style="margin-bottom:0">At τ = 1 every source is seen 1.07 times: fair, and math is 2% of what the model
+<p style="margin-bottom:0">At τ = 1 every source is seen 1.07 times, which is fair, and math is 2% of what the model
 reads. At τ = 2 math rises to 9% of the mix, but the 50 B tokens of papers are now read <b>11.5 times</b>.
-Chapter 21 §21.2 shows what repetition costs: around 4 epochs it is nearly free, by 16 epochs each repeat is
-worth about two-thirds of fresh data, and the model starts to memorise. So in practice mixtures are set by
-small-scale ablations (train a 1B model on candidate mixes, compare downstream scores) under a cap on epochs
+Chapter 21 §21.2 shows what repetition costs: up to around 4 epochs it is nearly free, by 16 epochs each repeat is
+worth about two-thirds as much as fresh data, and the model starts to memorise. So in practice mixtures are set by
+small-scale ablations (train a 1B model on candidate mixes and compare downstream scores), with a cap on epochs
 per source. Llama 3's final mix was roughly <b>50% general knowledge, 25% mathematics and reasoning, 17% code
 and 8% multilingual</b> tokens.</p>
 </div>
@@ -549,9 +549,9 @@ and 8% multilingual</b> tokens.</p>
 <h3>Annealing: the best data, at the end</h3>
 
 <p>The last phase of training has an outsized effect. As the learning rate decays, the model settles into
-whatever the most recent data looks like, so pipelines save their highest-quality data for that phase. This
-is where the WSD schedule of §11.3 pays off: the long constant-LR plateau runs on the broad mix, and the short
-decay at the end runs on an upsampled high-quality mix. <code>tfs.data.wsd_lr</code> is the schedule:</p>
+whatever the most recent data looks like, so pipelines keep their highest-quality data for that phase. This
+is where the WSD schedule of §11.3 pays off: the long plateau at constant LR runs on the broad mix, and the short
+decay at the end runs on a mix with more high-quality data. <code>tfs.data.wsd_lr</code> is the schedule:</p>
 
 <pre><code>def wsd_lr(step, base_lr, warmup, total, decay_frac=0.1, final_ratio=0.0):
     if step < warmup:          return base_lr * (step + 1) / warmup        # warmup
@@ -574,11 +574,11 @@ decay at the end runs on an upsampled high-quality mix. <code>tfs.data.wsd_lr</c
 
 <div class="box intuition">
 <span class="t">Why the order matters at all</span>
-<p style="margin-bottom:0">At high learning rate each update is large and the model keeps moving; what it
+<p style="margin-bottom:0">At a high learning rate each update is large and the model keeps moving, so what it
 learned from data seen long ago is partly overwritten. As the rate decays, updates shrink and the weights
 settle in a region shaped by the recent batches. So the same tokens are worth more late than early, and
 spending the cleanest, most valuable data in the decay phase gets more out of it. It is also why
-"continued pretraining" on a new domain is usually done as a fresh short warmup-and-decay on a mix that still
+"continued pretraining" on a new domain is usually done as a fresh short warmup and decay on a mix that still
 contains some of the original data: decaying on only the new domain makes the model forget the old one.</p>
 </div>
 
@@ -591,9 +591,9 @@ contains some of the original data: decaying on only the new domain makes the mo
     <div class="opt">Certain, because 0.735 is above the 0.72 threshold</div>
     <div class="opt">About 8.5%: one band of 8 rows matches with probability 0.735⁸</div>
   </div>
-  <div class="expl"><b>0.712.</b> One band matches with probability J⁸ = 0.085, and the pair is caught if any of
-  14 bands matches. The threshold is the midpoint of an S-curve, not a hard cut, which is why the worked
-  example's "Wednesday" copy was missed by that particular set of hash functions.</div>
+  <div class="expl"><b>0.712.</b> One band matches with probability J⁸ = 0.085, and the pair is caught if any of the
+  14 bands matches. The threshold is the midpoint of an S-curve, not a hard cut-off, which is why that particular
+  set of hash functions missed the "Wednesday" copy in the worked example.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">Why does changing a single word lower the 5-gram Jaccard similarity so much?</div>
@@ -603,41 +603,41 @@ contains some of the original data: decaying on only the new domain makes the mo
     <div class="opt">Jaccard ignores repeated words</div>
     <div class="opt">Every one of the 5 shingles that contain the word changes, so one edit removes 5 shingles from the intersection and adds 5 to the union</div>
   </div>
-  <div class="expl"><b>An edit touches n shingles.</b> In the example, A vs B shared 55 of 63 shingles (0.873);
-  changing "Tuesday" dropped it to 50 of 68 (0.735). Smaller n is more forgiving of edits but matches more
-  unrelated text by accident; 5 is the common compromise.</div>
+  <div class="expl"><b>An edit touches n shingles.</b> In the example, A and B shared 55 of 63 shingles (0.873);
+  changing "Tuesday" dropped it to 50 of 68 (0.735). A smaller n tolerates edits better but matches more
+  unrelated text by accident, and 5 is the usual compromise.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">FineWeb found that deduplicating across all crawls at once gave worse models than deduplicating each crawl separately. The best explanation?</div>
   <div class="opts">
-    <div class="opt">Global dedup deleted the re-published copies, and re-published content was on average higher quality than what remained</div>
+    <div class="opt">Global dedup deleted the re-published copies, and re-published content was on average of higher quality than what remained</div>
     <div class="opt">MinHash is less accurate on larger corpora</div>
     <div class="opt">Global dedup left too few tokens to train on</div>
     <div class="opt">Per-crawl dedup removes more duplicates</div>
   </div>
-  <div class="expl"><b>What survives is a quality signal.</b> Their analysis showed the data global dedup removed
+  <div class="expl"><b>What survives is a signal of quality.</b> Their analysis showed that the data global dedup removed
   from older crawls was better than the data it kept. Dedup changes the distribution, so its value has to be
   measured by training on the result.</div>
 </div>
 <div class="qitem" data-answer="2">
-  <div class="qq">You raise the sampling temperature so a 50 B-token source makes up 3.8% of a 15 T-token run. What is the hidden cost?</div>
+  <div class="qq">You raise the sampling temperature so that a 50 B-token source makes up 3.8% of a 15 T-token run. What is the hidden cost?</div>
   <div class="opts">
     <div class="opt">The web data becomes lower quality</div>
     <div class="opt">Training becomes slower per token</div>
-    <div class="opt">That source is read 11.5 times, deep into the range where repeated data is worth much less and is memorised</div>
+    <div class="opt">That source is read 11.5 times, well into the range where repeated data is worth much less and gets memorised</div>
     <div class="opt">None, as long as the source is high quality</div>
   </div>
-  <div class="expl"><b>Weight × total ÷ size = epochs.</b> 0.038 × 15,000 / 50 = 11.5 epochs. Mixture design is a
-  trade between how much a source is worth and how many times you can afford to repeat it.</div>
+  <div class="expl"><b>Weight × total ÷ size = epochs.</b> 0.038 × 15,000 / 50 = 11.5 epochs. Designing a mixture means trading
+  how much a source is worth against how many times you can afford to repeat it.</div>
 </div>
 </div>
 
 <h2>11.8 · Batch size: how much data per step</h2>
 
-<p>The batch size has a property the learning rate does not: up to a point, doubling it halves the number of steps
-you need, for the same total data. Past that point it stops helping, and you are paying for data that does not
-speed anything up. Where that point is, and why it moves during training, is one of the few genuinely predictive
-results in optimisation.</p>
+<p>Batch size has a property the learning rate does not: up to a point, doubling it halves the number of steps
+you need, for the same total data. Past that point it stops helping, and you pay for data that does not
+speed anything up. Where that point is, and why it moves during training, is one of the few results in
+optimisation that makes accurate predictions.</p>
 
 <h3>The noise scale</h3>
 
@@ -651,9 +651,9 @@ E |G<sub>B</sub>|² = |G|² + tr(Σ) / B &nbsp;&nbsp;&nbsp;&nbsp; B<sub>noise</s
 
 <p>When B ≪ B<sub>noise</sub> the gradient is mostly noise, and doubling B nearly halves the steps. When B ≫
 B<sub>noise</sub> the gradient is already accurate and extra examples are wasted. McCandlish et al. showed that
-across many tasks the steps S and examples E needed to reach a given loss lie on one curve,
+across many tasks, the steps S and examples E needed to reach a given loss lie on one curve,
 (S/S<sub>min</sub> − 1)(E/E<sub>min</sub> − 1) = 1, with a <b>critical batch size</b> B<sub>crit</sub> =
-E<sub>min</sub>/S<sub>min</sub> that is well predicted by B<sub>noise</sub>. At B = B<sub>crit</sub> you pay twice
+E<sub>min</sub>/S<sub>min</sub> that B<sub>noise</sub> predicts well. At B = B<sub>crit</sub> you pay twice
 the minimum number of steps and twice the minimum data (<code>tfs.trainkit.steps_and_examples(1000, 1000)</code>
 returns exactly (2.0, 2.0)); at a tenth of it, 11× the steps for 1.1× the data.</p>
 
@@ -675,69 +675,69 @@ batch 64 (<code>python -m tfs.trainkit</code>):</p>
  400           48.0             6,141      0.295      14.2
 1200          137.1            17,543      0.0730     10.0</code></pre>
 <p style="margin-bottom:0"><b>The noise scale grows 60-fold in 1,200 steps.</b> At initialisation the true gradient is huge
-(|G|² = 79) and any two sequences agree on it: a batch of 2 or 3 would do. As the loss falls the signal shrinks
+(|G|² = 79) and any two sequences agree on it, so a batch of 2 or 3 would do. As the loss falls the signal shrinks
 far faster than the noise, and by step 1,200 the efficient batch is about 137 sequences. The exercise trains at
-32: well above B<sub>noise</sub> for the first hundred steps (wasting data), below it from somewhere between step 100
-and step 400 on (wasting steps, which on one CPU is the cheaper thing to waste). The estimates are noisy (8 draws each); treat
-them as factors of two, not three significant figures. <code>test_noise_scale_grows_during_training</code>
+32: well above B<sub>noise</sub> for the first hundred steps (wasting data), and below it from somewhere between step 100
+and step 400 onward (wasting steps, which on one CPU is the cheaper thing to waste). The estimates are noisy (8 draws each), so treat
+them as accurate to a factor of two, not to three significant figures. <code>test_noise_scale_grows_during_training</code>
 checks the direction on a smaller model.</p>
 </div>
 
 <h3>Why the batch grows during a big run</h3>
 
-<p>The noise scale grows as the loss falls: early on any batch points roughly downhill, later the remaining
-signal is subtle and needs many examples to see. So the efficient batch is small at the start and large later,
-and large runs <b>ramp the batch</b>. GPT-3 increased it linearly from 32k tokens to its full size over the first
-4–12 billion tokens. Llama 3 405B started at 4M tokens per step (sequences of 4,096), doubled to 8M (sequences of
-8,192) after 252M tokens, and doubled again to 16M after 2.87T. DeepSeek-V3 ramped from 3,072 to 15,360 sequences
-of 4,096 tokens (12.6M to 62.9M tokens per step) over its first 469B tokens. A batch above B<sub>crit</sub> is not
-harmful, only wasteful; the real ceiling is data parallelism's (Chapter 19 §19.2), because past B<sub>crit</sub>
-more GPUs stop shortening the run.</p>
+<p>The noise scale grows as the loss falls. Early on, any batch points roughly downhill; later, the remaining
+signal is subtle and takes many examples to see. So the efficient batch is small at the start and large later,
+and large runs <b>increase the batch size as they go</b>. GPT-3 increased it linearly from 32k tokens to its full size over the first
+4 to 12 billion tokens. Llama 3 405B started at 4M tokens per step (sequences of 4,096), doubled to 8M (sequences of
+8,192) after 252M tokens, and doubled again to 16M after 2.87T. DeepSeek-V3 went from 3,072 to 15,360 sequences
+of 4,096 tokens (12.6M to 62.9M tokens per step) over its first 469B tokens. A batch above B<sub>crit</sub> does no
+harm; it only wastes data. The real ceiling is data parallelism's (Chapter 19 §19.2), because past B<sub>crit</sub>
+more GPUs stop making the run shorter.</p>
 
 <div class="box gotcha">
 <span class="t">Changing the batch means changing the learning rate</span>
 <p style="margin-bottom:0">A larger batch gives a less noisy gradient, so it tolerates (and needs) a larger step.
-For SGD below B<sub>crit</sub> the optimal LR rises roughly linearly with B; for Adam closer to √B; above
-B<sub>crit</sub> it stops rising. The working practice: if you change the batch, re-tune the LR, and if you cannot,
+For SGD below B<sub>crit</sub> the best LR rises roughly linearly with B, for Adam closer to √B, and above
+B<sub>crit</sub> it stops rising. In practice: if you change the batch, re-tune the LR, and if you cannot,
 scale it by √(B<sub>new</sub>/B<sub>old</sub>) as a first guess.</p>
 </div>
 
 <h2>11.9 · A learning rate you cannot afford to sweep: μP</h2>
 
-<p>The best learning rate is the hyperparameter that matters most, and it moves with model size (GPT-3's own
-table: 6e-4 at 125M, 0.6e-4 at 175B). You cannot sweep it at 70B. The obvious approach, sweep small and
-extrapolate, fails in the standard parameterisation, because the optimum keeps drifting as width grows. Here is
+<p>The learning rate matters more than any other hyperparameter, and its best value moves with model size (GPT-3's own
+table: 6e-4 at 125M, 0.6e-4 at 175B). You cannot sweep it at 70B. The obvious approach, sweeping on a small model and
+extrapolating, fails in the standard parameterisation, because the best value keeps drifting as width grows. Here is
 why, measured.</p>
 
 <div class="example">
 <span class="t">Measurement — how far one Adam step moves a layer's output (tfs.trainkit.adam_output_change)</span>
 <p>A square linear layer of width n, standard initialisation (std 1/√n), one Adam step at a fixed learning rate of
-1e-3, average change of each output coordinate:</p>
+1e-3, and the average change of each output coordinate:</p>
 <pre style="margin:.4rem 0"><code class="nohl">width          256      1024      4096
 standard       0.025    0.087     0.332     <- 13× larger at 16× the width
 muP            0.025    0.022     0.021     <- LR scaled by 256/width: flat</code></pre>
 <p style="margin-bottom:0"><b>Why it grows.</b> Adam's first step is lr × sign(gradient) on every weight, an update
-of the same size per entry regardless of width. A change in output y = Wx sums n such entries, and because the
-update is aligned with the input that produced the gradient, they add coherently: the output change grows like
-n·lr. The same learning rate is therefore a much larger step for a wide model, which is why the optimum moves down
-as models widen.</p>
+of the same size per entry whatever the width. A change in the output y = Wx adds up n such entries, and because the
+update is aligned with the input that produced the gradient, they add in the same direction, so the output change grows like
+n·lr. The same learning rate is therefore a much larger step for a wide model, which is why the best value moves down
+as models get wider.</p>
 </div>
 
-<p><b>μP</b> (the Maximal Update Parameterisation, Yang et al. 2022) fixes the scaling instead of re-tuning: for
+<p><b>μP</b> (the Maximal Update Parameterisation, Yang et al. 2022) fixes the scaling instead of re-tuning. For
 Adam, the hidden-layer learning rates scale as <b>base_width / width</b>, the output logits are multiplied by
 base_width / width, and attention scores are scaled by 1/d<sub>head</sub> instead of 1/√d<sub>head</sub>. Under
-those rules the size of each update to every layer's output is independent of width (the "muP" row), so the
-optimal learning rate, initialisation scale and other hyperparameters found on a narrow proxy carry over to the
-wide model. The paper's headline: tuning on a 40M-parameter proxy and transferring outperformed the published
+those rules the size of each update to every layer's output does not depend on width (the "muP" row), so the
+best learning rate, initialisation scale and other hyperparameters found on a narrow proxy carry over to the
+wide model. The paper's headline result: tuning on a 40M-parameter proxy and transferring beat the published
 6.7B GPT-3, at a tuning cost of 7% of one pretraining run.</p>
 
 <div class="box warn">
 <span class="t">What transfers, and what does not</span>
 <p style="margin-bottom:0">μP transfers across <b>width</b> cleanly. Transfer across depth, batch size and training
 length needs more care (depth-μP variants exist, and the batch size interacts with the LR as above), and
-regularisation hyperparameters such as weight decay do not transfer automatically. In practice teams combine a
-μP-style parameterisation with small sweeps near the target scale, or fit how the optimal LR scales with model size
-from a ladder of small runs (DeepSeek's LLM papers fit the optimal LR and batch as power laws in compute).</p>
+regularisation settings such as weight decay do not transfer automatically. In practice teams combine a
+μP-style parameterisation with small sweeps near the target scale, or fit how the best LR scales with model size
+from a ladder of small runs (DeepSeek's LLM papers fit the best LR and batch size as power laws in compute).</p>
 </div>
 
 <h2>11.10 · Throughput: tokens per second and MFU</h2>
@@ -750,8 +750,8 @@ MFU = <span class="frac"><span class="n">tokens per second × FLOPs per token</s
 <span class="lbl">FLOPs per token = 6·N<sub>matmul</sub> + 12·L·H·d<sub>head</sub>·T &nbsp;(PaLM's accounting)</span>
 </div>
 
-<p>"Model" FLOPs means the FLOPs the model mathematically needs, not what the hardware executed: recomputation for
-checkpointing does not count, so MFU penalises it. The 6N part counts forward (2) and backward (4) for every weight
+<p>"Model" FLOPs are the FLOPs the model mathematically needs, not what the hardware actually ran: recomputation for
+checkpointing does not count, so MFU penalises it. The 6N part counts the forward (2) and backward (4) pass for every weight
 matmul, including the LM head; the second term is attention's scores and weighted sum, which grows with context
 length (Chapter 21 §21.5 shows it dominating at 128k).</p>
 
@@ -773,25 +773,25 @@ achieved                        2,005 × 16,000,128 = 32.1 GFLOP/s
 MFU                             32.1 / 191.2 = 16.8%</code></pre>
 </div></div>
 <div class="step"><div class="i">=</div><div>
-<b>16.8% is what a small model looks like.</b> With C = 192, the matmuls are (4096 × 192) @ (192 × 192):
-far too small to reach the big-GEMM rate, and a large share of the step is elementwise work (norms, SwiGLU,
+<b>16.8% is what a small model looks like.</b> With C = 192, the matmuls are (4096 × 192) @ (192 × 192),
+far too small to reach the rate of a big GEMM, and a large share of the step is elementwise work (norms, SwiGLU,
 softmax, AdamW over 2.4 M parameters) that does no counted FLOPs at all. Make the model wider and MFU rises,
-which is exactly Chapter 14's arithmetic-intensity argument seen from the other side. The number is
-machine-dependent, so the test (<code>test_mfu_measurement_is_sane</code>) asserts only that it lies between 0
+which is Chapter 14's arithmetic-intensity argument seen from the other side. The number depends on the
+machine, so the test (<code>test_mfu_measurement_is_sane</code>) only asserts that it lies between 0
 and 1; the FLOP count is exact and asserted (<code>test_flops_per_token</code>).
 </div></div>
 </div>
 
-<p>For reference at scale: Llama 3 405B trained at 380–430 TFLOP/s per H100, <b>38–43% MFU</b> against the bf16
+<p>For comparison at scale: Llama 3 405B trained at 380 to 430 TFLOP/s per H100, <b>38 to 43% MFU</b> against the bf16
 peak of 989 (Chapter 19 §19.10).</p>
 
 <h3>Finding the bottleneck</h3>
 
-<p>When MFU is low, the question is always which of four things the time goes to: <b>matmuls that are too
-small</b> (the GPU is not saturated: raise batch or width, Chapter 14), <b>memory-bound elementwise work</b>
+<p>When MFU is low, the question is always which of four things is taking the time: <b>matmuls that are too
+small</b> (the GPU is not kept busy: raise the batch or the width, Chapter 14), <b>memory-bound elementwise work</b>
 (norms, activations, softmax, the optimizer step: fuse them with <code>torch.compile</code> or fused kernels),
 <b>communication</b> that is not overlapped (Chapter 19), and <b>stalls</b> (data loading, Python overhead,
-host-device synchronisation such as <code>loss.item()</code> every step). The profiler answers it directly:</p>
+CPU-GPU synchronisation such as <code>loss.item()</code> every step). The profiler answers it directly:</p>
 
 <pre><code>from torch.profiler import profile, ProfilerActivity
 with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
@@ -799,7 +799,7 @@ with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
         _, loss, _ = model(x, targets=x); loss.backward(); opt.step(); opt.zero_grad()
 print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=15))</code></pre>
 
-<p>Read the top of the table: if matmul kernels are not most of it, MFU is going somewhere else, and the names of
+<p>Read the top of the table. If matmul kernels are not most of it, the time is going somewhere else, and the names of
 the kernels above them tell you where.</p>
 
 <div class="quiz" data-title="Checkpoint 3 — batch, learning rate, throughput">
@@ -811,19 +811,19 @@ the kernels above them tell you where.</p>
     <div class="opt">The batch is far above the critical size: you use about 80× more data than necessary per unit of progress, and halving the batch would barely add steps</div>
     <div class="opt">The learning rate is too low</div>
   </div>
-  <div class="expl"><b>E/E_min = 1 + B/B_crit ≈ 81.</b> Above the critical batch, steps barely fall while data per step keeps
-  rising. This is why runs ramp the batch up as the noise scale grows, rather than starting at full size.</div>
+  <div class="expl"><b>E/E_min = 1 + B/B_crit ≈ 81.</b> Above the critical batch, the number of steps barely falls while the data per step keeps
+  rising. That is why runs increase the batch size as the noise scale grows, instead of starting at full size.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">At a fixed Adam learning rate, one step changes a width-4096 layer's output about 13× more than a width-256 layer's. Why?</div>
   <div class="opts">
-    <div class="opt">Adam moves every weight by about lr regardless of width, and an output sums n aligned updates, so the change grows with n</div>
+    <div class="opt">Adam moves every weight by about lr whatever the width, and an output adds up n aligned updates, so the change grows with n</div>
     <div class="opt">Wider layers have larger initial weights</div>
     <div class="opt">Wider layers have larger gradients</div>
     <div class="opt">The bias correction differs with width</div>
   </div>
-  <div class="expl"><b>Per-entry updates, coherent sums.</b> That is exactly what μP corrects by scaling the hidden-layer LR
-  by base_width/width: the measured output change then stays at 0.021–0.025 from width 256 to 4096.</div>
+  <div class="expl"><b>Same-size updates per entry, adding in the same direction.</b> μP corrects exactly this by scaling the hidden-layer LR
+  by base_width/width: the measured output change then stays at 0.021 to 0.025 from width 256 to 4096.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">You turn on full activation checkpointing. Tokens per second fall by 25%. What happens to MFU?</div>
@@ -834,7 +834,7 @@ the kernels above them tell you where.</p>
     <div class="opt">It falls by 25%, because model FLOPs per token are unchanged and recomputed FLOPs do not count</div>
   </div>
   <div class="expl"><b>MFU counts what the model needs, not what the hardware did.</b> Hardware FLOPs utilisation (HFU)
-  would count the recompute; MFU deliberately does not, so it measures useful throughput and makes recomputation an
+  would count the recomputation; MFU deliberately does not, so it measures useful throughput and makes recomputation an
   honest cost.</div>
 </div>
 </div>
@@ -843,12 +843,12 @@ the kernels above them tell you where.</p>
 
 <div class="box gotcha">
 <span class="t">Case study: a real bug this course shipped, and what caught it</span>
-<p>While building the training script for this course, <code>get_batch</code> returned a
+<p>While the training script for this course was being built, <code>get_batch</code> returned a
 <b>pre-shifted</b> <code>y = data[i+1 : i+1+T]</code>, and it was passed to a
-<code>forward()</code> that <b>also</b> shifts internally (<code>logits[:, :-1]</code> vs
-<code>targets[:, 1:]</code>). The labels were shifted <b>twice</b>: the model was trained to
+<code>forward()</code> that <b>also</b> shifts internally (<code>logits[:, :-1]</code> against
+<code>targets[:, 1:]</code>). The labels were shifted <b>twice</b>, so the model was trained to
 predict <b>two tokens ahead</b>.</p>
-<p>Here is what that looked like, on a model trained to memorise a short text:</p>
+<p>Here is what that looked like on a model trained to memorise a short text:</p>
 <div class="tw" style="margin:.7em 0">
 <table style="margin:0">
 <thead><tr><th></th><th class="num">train loss</th><th class="num">chars correct</th><th>greedy output</th></tr></thead>
@@ -859,13 +859,13 @@ predict <b>two tokens ahead</b>.</p>
 </table>
 </div>
 <p><b>The buggy version had the LOWER training loss.</b> Predicting two tokens ahead is a
-perfectly learnable task — it just isn't language modelling. No exception, no NaN, no
+perfectly learnable task; it just is not language modelling. There was no exception, no NaN and no
 suspicious curve. Every unit test on <code>forward()</code> still passed, because
 <code>forward()</code> was never wrong; the <i>caller</i> was.</p>
-<p style="margin-bottom:0"><b>What caught it:</b> closing the loop. Train a model to memorise a
-short text, then check that <b>greedy generation reproduces it</b>. A memorised model that cannot
-echo its own training data has a train/inference mismatch. The tell for this particular bug is
-that teacher-forced output is off by <b>exactly one token</b>. That check is
+<p style="margin-bottom:0"><b>What caught it</b> was checking the output end to end. Train a model to memorise a
+short text, then check that <b>greedy generation reproduces it</b>. A model that has memorised its training data but cannot
+repeat it has a mismatch between training and inference. For this particular bug, the giveaway is
+that the teacher-forced output is off by <b>exactly one token</b>. That check is
 <code>test_generation_reproduces_memorised_text</code> in <code>tests/test_tfs.py</code>.</p>
 </div>
 
@@ -877,9 +877,9 @@ for step in range(500):
     _, loss = model(ids, targets)      # SAME batch every time
     loss.backward(); opt.step()
     if step % 50 == 0: print(step, loss.item())</code></pre>
-<p style="margin-bottom:0">Loss must go to <b>near zero</b>. If it can't memorise 8 sequences, no amount of
-data will help — you have a bug, not a capacity problem. This test takes 30 seconds and catches label-shift
-errors, broken masks, frozen parameters, and detached graphs.</p>
+<p style="margin-bottom:0">The loss must go to <b>near zero</b>. If the model cannot memorise 8 sequences, no amount of
+data will help: you have a bug, not a capacity problem. This test takes 30 seconds and catches label-shift
+errors, broken masks, frozen parameters and detached graphs.</p>
 </div>
 
 <div class="tw">
@@ -902,12 +902,12 @@ errors, broken masks, frozen parameters, and detached graphs.</p>
 
 <p>Small models rarely spike. Large ones do, and a spike that does not recover can cost days. PaLM (540B)
 reports loss spikes "roughly 20 times during training, despite the fact that gradient clipping was enabled",
-at irregular intervals and not tied to particular data. The defences fall into three layers, roughly in the
+at irregular intervals and not tied to particular data. The defences come in three layers, roughly in the
 order a run meets them.</p>
 
 <h3>1. Make the logits and attention scores unable to grow</h3>
 
-<p>The most common root cause is a scalar that drifts upward until a softmax saturates: the output logits or
+<p>The most common root cause is a value that drifts upward until a softmax saturates: the output logits or
 the attention scores. Two cheap fixes target them directly.</p>
 
 <ul>
@@ -920,53 +920,53 @@ log Z near 0 and takes that freedom away. PaLM uses coef = 10<sup>−4</sup>.
     return coef * torch.logsumexp(logits.float(), dim=-1).pow(2).mean()
 loss = F.cross_entropy(logits.view(-1, V), targets.view(-1)) + z_loss(logits)</code></pre></li>
 <li><b>QK-norm.</b> Apply RMSNorm to q and k, per head, before the dot product. The attention logit becomes a
-cosine similarity times a learned scale and cannot grow without bound. Introduced for ViT-22B, adopted by
-OLMo 2, Gemma 3, Qwen3 and others; it costs almost nothing.</li>
+cosine similarity times a learned scale, so it cannot grow without limit. It was introduced for ViT-22B and adopted by
+OLMo 2, Gemma 3, Qwen3 and others, and it costs almost nothing.</li>
 </ul>
 
-<p>OLMo 2's report is a good catalogue of what a stability-focused recipe changed together: QK-norm, a
+<p>OLMo 2's report is a good list of what a recipe focused on stability changed at once: QK-norm, a
 z-loss term, no weight decay on the embeddings, RMSNorm applied to the <i>outputs</i> of the attention and MLP
 sublayers, a plain normal initialisation with std 0.02, and Adam's ε lowered from 10<sup>−5</sup> to
-10<sup>−8</sup>. None of these is exotic; together they turned spiky curves smooth.</p>
+10<sup>−8</sup>. None of these is unusual, but together they turned spiky curves smooth.</p>
 
 <h3>2. Detect the spike</h3>
 
 <p>Gradient clipping (§11.4) handles a single bad batch. What clipping cannot handle is a run whose optimizer
-state has been driven somewhere bad: Adam's second moment <span class="math">v</span> adapted to small
-gradients, a sudden large gradient arrives, and <code>m̂/√v̂</code> is huge for many steps. A simple
-statistical trigger is enough to catch it: flag a step whose loss exceeds the recent mean by many standard
-deviations (<code>tfs.trainkit.SpikeDetector</code>, mean and spread over the last 50 steps, threshold 6σ; the
-test feeds it a smooth curve at loss 2.00 and a step at 2.50 and checks that only the 2.50 fires). Monitor the
-gradient norm the same way: it usually moves first.</p>
+state has been pushed somewhere bad: Adam's second moment <span class="math">v</span> adapted to small
+gradients, a sudden large gradient arrives, and <code>m̂/√v̂</code> stays huge for many steps. A simple
+statistical trigger is enough to catch it: flag a step whose loss is many standard deviations above the recent mean
+(<code>tfs.trainkit.SpikeDetector</code> uses the mean and spread over the last 50 steps and a threshold of 6σ; the
+test feeds it a smooth curve at a loss of 2.00 and one step at 2.50, and checks that only the 2.50 fires). Watch the
+gradient norm the same way, because it usually moves first.</p>
 
 <h3>3. Roll back and skip</h3>
 
 <p>PaLM's procedure is the standard one: restart from a checkpoint <b>roughly 100 steps before the spike
-started</b> and <b>skip roughly 200–500 batches</b> around it. The authors found the spikes were not caused
-by "bad data" alone (the same batches did not spike when replayed from a different state); they were an
-interaction of particular batches with a particular optimizer state. Skipping changes that interaction.
-Other levers, in increasing order of cost: lower the learning rate for a while, raise Adam's ε, reset
-<span class="math">v</span>. This only works if you checkpoint often enough to have somewhere to roll back to
+started</b> and <b>skip roughly 200 to 500 batches</b> around it. The authors found that the spikes were not caused
+by "bad data" alone (the same batches did not spike when replayed from a different state); they came from an
+interaction between particular batches and a particular optimizer state, and skipping batches changes that interaction.
+Other options, from cheapest to most expensive: lower the learning rate for a while, raise Adam's ε, or reset
+<span class="math">v</span>. All of this only works if you checkpoint often enough to have somewhere to roll back to
 (§11.13), and if the loader can skip batches deterministically.</p>
 
 <div class="box sota">
 <span class="t">What "no spikes" looks like now</span>
 <p style="margin-bottom:0">DeepSeek-V3's report states that over its 14.8 T-token run the team "did not
-experience any irrecoverable loss spikes or perform any rollbacks". That is the payoff of the architecture-side
-fixes: when logits and attention scores are kept bounded, the remaining spikes are small and recover by
-themselves, and the expensive rollback machinery becomes insurance rather than routine.</p>
+experience any irrecoverable loss spikes or perform any rollbacks". That is the reward for the fixes on the
+architecture side: when logits and attention scores stay bounded, the remaining spikes are small and recover by
+themselves, and the expensive rollback machinery becomes insurance instead of routine.</p>
 </div>
 
 <h2>11.13 · Checkpointing and exact resumption</h2>
 
 <p>A run of weeks on thousands of GPUs will be interrupted: Llama 3 recorded 466 interruptions in a 54-day
-window, 419 of them unexpected (Chapter 19 does the arithmetic of how often to checkpoint). Each interruption
-costs the work since the last checkpoint. It must not also cost <b>correctness</b>: a resumed run should
-continue exactly as if it had never stopped. "Approximately the same" is not good enough, because you can no
-longer tell a real effect from a resumption artefact, and a silently repeated or skipped stretch of data
+window, 419 of them unexpected (Chapter 19 works out how often to checkpoint). Each interruption
+costs the work done since the last checkpoint. It must not also cost <b>correctness</b>: a resumed run should
+continue exactly as if it had never stopped. "Roughly the same" is not good enough, because you can no
+longer tell a real effect from a side effect of resuming, and a stretch of data that is silently repeated or skipped
 changes what the model learns.</p>
 
-<p>The state that influences the next step is more than the weights:</p>
+<p>The state that affects the next step includes more than the weights:</p>
 
 <div class="tw">
 <table>
@@ -997,20 +997,20 @@ def state_dict(self):                     # ResumableRun
             "step": self.step, "loader": self.loader.state_dict(),
             "rng_torch": torch.get_rng_state(), "rng_python": random.getstate()}</code></pre>
 
-<p>The test is the definition of "exact" (<code>test_exact_resumption_is_bit_identical</code>): train 40 steps
-straight through; separately train 20, save, build a <b>fresh</b> run with a different random initialisation,
+<p>The test defines what "exact" means (<code>test_exact_resumption_is_bit_identical</code>). Train 40 steps
+straight through. Separately, train 20, save, build a <b>fresh</b> run with a different random initialisation,
 load the checkpoint, and train 20 more. The 40 losses must be identical and every weight tensor must be
-<b>bit-for-bit equal</b>. They are. Then the test resets only the loader position to 0 and shows the final
-weights differ: forgetting one integer is enough to make resumption inexact.</p>
+<b>equal bit for bit</b>, and they are. The test then resets only the loader position to 0 and shows that the final
+weights differ: forgetting one integer is enough to make the resumption inexact.</p>
 
 <div class="box gotcha">
 <span class="t">What makes bit-identical hard on real hardware</span>
-<p style="margin-bottom:0">On CPU with a fixed thread count the test above is exact. On GPUs, exactness also
-needs deterministic kernels (atomic adds in scatter and some backward kernels sum in a varying order;
+<p style="margin-bottom:0">On a CPU with a fixed thread count the test above is exact. On GPUs, exactness also
+needs deterministic kernels (atomic adds in scatter and in some backward kernels add up in a varying order, and
 <code>torch.use_deterministic_algorithms(True)</code> refuses the nondeterministic ones), the same parallel
-layout on resume (a different number of data-parallel ranks changes which samples are summed together), and
+layout on resume (a different number of data-parallel ranks changes which samples are added together), and
 a loader that does not depend on worker timing. Large teams often settle for "same data order and same
-optimizer state, numerically close", and verify it by replaying a few hundred steps after each restart and
+optimizer state, numerically close", and check it by replaying a few hundred steps after each restart and
 comparing loss curves.</p>
 </div>
 
@@ -1023,31 +1023,31 @@ comparing loss curves.</p>
     <div class="opt">Nothing in the loss stops the logits drifting upward together until the softmax saturates; penalising (log Z)² removes that free direction</div>
     <div class="opt">It speeds up convergence by sharpening the softmax</div>
   </div>
-  <div class="expl"><b>It pins a direction the main loss ignores.</b> With log Z held near 0 the logits stay in a
-  range where bf16 softmax and its gradient are well behaved. PaLM's coefficient is 1e-4, small enough not to
+  <div class="expl"><b>It pins down a direction the main loss ignores.</b> With log Z kept near 0, the logits stay in a
+  range where the bf16 softmax and its gradient behave well. PaLM's coefficient is 1e-4, small enough not to
   change what is learned.</div>
 </div>
 <div class="qitem" data-answer="0">
   <div class="qq">A 70B run spikes and does not recover. What is PaLM's procedure?</div>
   <div class="opts">
-    <div class="opt">Restart from a checkpoint ~100 steps before the spike and skip ~200–500 batches</div>
+    <div class="opt">Restart from a checkpoint ~100 steps before the spike and skip ~200 to 500 batches</div>
     <div class="opt">Lower the gradient-clipping threshold and continue</div>
     <div class="opt">Restart from the latest checkpoint with the same data</div>
     <div class="opt">Restart training from scratch with a lower learning rate</div>
   </div>
-  <div class="expl"><b>Roll back past the onset and change the data the state meets.</b> Replaying the same batches
-  from the same state tends to reproduce the spike; the spikes came from batches interacting with a particular
+  <div class="expl"><b>Roll back to before the spike started, and change the data the optimizer state meets.</b> Replaying the same batches
+  from the same state tends to reproduce the spike, because the spikes came from batches interacting with a particular
   optimizer state.</div>
 </div>
 <div class="qitem" data-answer="3">
   <div class="qq">You resume from a checkpoint that saved weights, Adam's m and v, and the step number, but not the data-loader state. What goes wrong?</div>
   <div class="opts">
-    <div class="opt">Nothing; data order does not matter for pretraining</div>
+    <div class="opt">Nothing, because data order does not matter for pretraining</div>
     <div class="opt">Adam's bias correction restarts</div>
     <div class="opt">The learning rate schedule restarts</div>
-    <div class="opt">The loader restarts its epoch, so the run re-reads data it already saw and skips the rest; the result is no longer the run you planned</div>
+    <div class="opt">The loader restarts its epoch, so the run re-reads data it has already seen and skips the rest; the result is no longer the run you planned</div>
   </div>
-  <div class="expl"><b>Data position is training state.</b> The test shows that resetting a single integer (the
+  <div class="expl"><b>The data position is part of the training state.</b> The test shows that resetting one integer (the
   loader position) makes the final weights differ. For a one-epoch pretraining run it also means some data is
   seen twice and some never.</div>
 </div>
@@ -1077,22 +1077,22 @@ comparing loss curves.</p>
 </tbody>
 </table>
 </div>
-<p style="margin-bottom:0"><b>Target: val ≈ 1.51 (≈2.18 bits/byte), reached around step 1250.</b> Past
-that the model overfits — Tiny Shakespeare has ~1 M characters against 2.4 M parameters, i.e.
-<b>0.42 tokens per parameter</b> where Chapter 21 says you want ~20. Note the val curve goes
-<i>flat</i> while train keeps falling; that divergence is the signal, not any single number.</p>
+<p style="margin-bottom:0"><b>Target: val ≈ 1.51 (≈2.18 bits per byte), reached around step 1250.</b> Past
+that point the model overfits: Tiny Shakespeare has ~1 M characters against 2.4 M parameters, that is
+<b>0.42 tokens per parameter</b>, where Chapter 21 says you want ~20. Note that the validation curve goes
+<i>flat</i> while the training curve keeps falling; that gap is the signal, not any single number.</p>
 </div>
 
 <div class="box warn" style="margin:1em 0">
 <span class="t">Context for that number</span>
-<p style="margin-bottom:0"><b>nanoGPT's famous 1.47</b> on this dataset uses a <b>4.5× larger</b> model
-(10.6 M params, <code>d_model=384</code>, <code>block_size=256</code>) trained 5000 iterations.
-Reaching <b>1.51 with 2.4 M parameters in 14 CPU-minutes</b> is a good result, not a near-miss.</p>
+<p style="margin-bottom:0"><b>nanoGPT's well-known 1.47</b> on this dataset uses a <b>4.5× larger</b> model
+(10.6 M parameters, <code>d_model=384</code>, <code>block_size=256</code>) trained for 5000 iterations.
+Reaching <b>1.51 with 2.4 M parameters in 14 CPU-minutes</b> is a good result, not a near miss.</p>
 </div>
 
 <div class="box math-note" style="margin:1em 0">
 <span class="t">Now the payoff: the same model, two tokenizers</span>
-<p>Both of these are real runs of the same architecture on the same data, differing only in
+<p>Both of these are real runs of the same architecture on the same data, differing only in the
 tokenizer:</p>
 <div class="tw" style="margin:.6em 0">
 <table style="margin:0">
@@ -1103,9 +1103,9 @@ tokenizer:</p>
 </tbody>
 </table>
 </div>
-<p>The BPE run's loss is <b>2.9× larger</b>. Judged on raw loss you would call it far worse.
-In bits per byte it is <b>12% better</b> — it is the stronger model. Its samples are visibly better
-too, because a subword vocabulary makes non-words hard to emit:</p>
+<p>The BPE run's loss is <b>2.9× larger</b>. Judged on raw loss you would call it far worse,
+but in bits per byte it is <b>12% better</b>, so it is the stronger model. Its samples are visibly better
+too, because a subword vocabulary makes non-words hard to produce:</p>
 <pre style="margin:.6em 0"><code class="nohl">Richard of the second partime, that you do, I say.
 
 FLORIZEL:
@@ -1113,16 +1113,16 @@ What, now, good sir; I pray you?
 
 ANGELO:
 I thank you, sir; what you can I would be contleure.</code></pre>
-<p style="margin-bottom:0"><b>Second lesson from the same table:</b> the BPE run peaks at step
+<p style="margin-bottom:0"><b>A second lesson from the same table:</b> the BPE run peaks at step
 <b>500</b> and the character run at <b>1250</b>. A 2048-entry embedding table trained on only
-~324 k tokens sees each rare token a handful of times, so it overfits far sooner. Larger vocabulary
-is not free — it buys shorter sequences and costs data efficiency.</p>
+~324 k tokens sees each rare token a handful of times, so it overfits much sooner. A larger vocabulary
+is not free: it buys shorter sequences at the cost of data efficiency.</p>
 </div>
-<p>Deliverables: a loss curve (train + val), 500 characters of generated text, and one paragraph on what
-the model clearly learned versus clearly didn't.</p>
+<p>Deliverables: a loss curve (training and validation), 500 characters of generated text, and one paragraph on what
+the model clearly learned and what it clearly did not.</p>
 <details class="reveal"><summary>What output at this scale actually looks like</summary><div>
 <p>This is the <b>real, uncurated</b> first sample from the run in the table above
-(val 1.51, temperature 0.8, top-p 0.95) — not a cherry-picked one:</p>
+(val 1.51, temperature 0.8, top-p 0.95), not a hand-picked one:</p>
 <pre style="margin:.6em 0"><code class="nohl">BUCKINGHAM:
 Not to possess of you, and set to repose
 My misery with a thing, speaking as effect
@@ -1133,30 +1133,30 @@ He calls to your brother to his accest.
 
 DUKE VINCENTIO:
 Some, and he inearnothinorantail ourobey.</code></pre>
-<p>Read it carefully, because both halves are informative:</p>
+<p>Read it carefully, because both halves tell you something:</p>
 <ul>
 <li><b>What it learned:</b> real speaker names it was never explicitly taught, the
 <code>NAME:</code>-newline convention, blank lines between speeches, roughly iambic line lengths,
-mostly-real words, locally grammatical clauses.</li>
-<li><b>What it did not:</b> meaning. "Not to possess of you, and set to repose" is syntactically
-plausible and semantically empty. And it still degrades —
+mostly real words, and clauses that are grammatical locally.</li>
+<li><b>What it did not learn:</b> meaning. "Not to possess of you, and set to repose" is grammatically
+plausible and means nothing. And it still breaks down:
 <code>"inearnothinorantail ourobey"</code> is what a 2.4 M-parameter model does when it loses the thread.</li>
 </ul>
-<p style="margin-bottom:0">That gap between <b>form</b> and <b>meaning</b> at small scale is the genuinely
-instructive thing here. Also note: if your output looks like the <i>character soup</i> in the case-study
-box in §11.11 rather than this, you have a bug, not an under-trained model.</p>
+<p style="margin-bottom:0">At small scale, this gap between <b>form</b> and <b>meaning</b> is the most
+useful thing to see. Note too that if your output looks like the <i>character soup</i> in the case-study
+box in §11.11 instead of this, you have a bug, not an under-trained model.</p>
 </div></details>
 </div></div>
 
 <div class="exercise">
 <div class="eh"><span class="n">11.2</span><span class="ti">Ablate the schedule</span><span class="lvl">code</span></div>
 <div class="eb">
-<p>Train the same model 4 ways for the same number of steps: (a) constant LR, (b) cosine without warmup,
-(c) warmup + cosine, (d) warmup + cosine at 10× the LR. Plot all four loss curves on one chart.</p>
+<p>Train the same model in 4 ways for the same number of steps: (a) a constant LR, (b) cosine without warmup,
+(c) warmup and cosine, (d) warmup and cosine at 10× the LR. Plot all four loss curves on one chart.</p>
 <details class="reveal"><summary>What you'll see</summary><div>
 <p style="margin-bottom:0">(c) wins, usually by a clear margin. (b) often shows a spike in the first ~100
-steps. (d) either diverges to NaN or plateaus high. The gap between (a) and (c) is typically 0.05–0.15 nats
-— small-looking, but that's the difference between a model and a better model at zero extra compute, which
+steps. (d) either diverges to NaN or levels off high. The gap between (a) and (c) is typically 0.05 to 0.15 nats.
+It looks small, but it is the difference between a model and a better model at no extra compute, which
 is why nobody skips it.</p>
 </div></details>
 </div></div>
@@ -1164,10 +1164,10 @@ is why nobody skips it.</p>
 <div class="exercise">
 <div class="eh"><span class="n">11.3</span><span class="ti">Plant a bug, then find it</span><span class="lvl">essential</span></div>
 <div class="eb">
-<p>Introduce each bug below one at a time, run 200 steps, and record the loss-curve signature. Build
-yourself a lookup table so you can diagnose these by sight later.</p>
+<p>Add each bug below one at a time, run 200 steps, and record what the loss curve looks like. Build
+yourself a lookup table so that you can diagnose these by sight later.</p>
 <ol>
-<li>Remove the label shift (predict input instead of next token)</li>
+<li>Remove the label shift (predict the input instead of the next token)</li>
 <li>Remove the causal mask</li>
 <li>Forget <code>opt.zero_grad()</code></li>
 <li>Use <code>lr=1.0</code></li>
@@ -1175,21 +1175,21 @@ yourself a lookup table so you can diagnose these by sight later.</p>
 </ol>
 <details class="reveal"><summary>Signatures</summary><div>
 <ol>
-<li>Loss crashes to ~0 within a few dozen steps. Generation is gibberish. <b>Diagnostic: loss below the
+<li>The loss crashes to ~0 within a few dozen steps, and generation is gibberish. <b>Diagnostic: a loss below the
 data's entropy is impossible.</b></li>
-<li>Loss drops much faster than normal and reaches an implausibly low value; generation is incoherent.
-Same tell as (1) — the model is cheating.</li>
-<li>Gradients accumulate forever. Under SGD the effective LR grows without bound and the loss explodes. Under
-AdamW, which normalises the ever-growing sum, the run stays finite but degrades: every step uses a stale
-average of all past gradients, so the loss stalls well above the honest run.</li>
+<li>The loss drops much faster than normal and reaches an implausibly low value, and generation is incoherent.
+It gives the same signal as (1): the model is cheating.</li>
+<li>Gradients accumulate forever. Under SGD the effective LR grows without limit and the loss explodes. Under
+AdamW, which normalises the ever-growing sum, the run stays finite but gets worse: every step uses a stale
+average of all past gradients, so the loss stalls well above the correct run.</li>
 <li>Under SGD, NaN within ~10 steps. Under AdamW the loss spikes far above ln V and the run is ruined, but it
-may not produce NaN at once: watch for the spike, not only for NaN.</li>
-<li>Under SGD it behaves like an 8× LR (divergence or a high, noisy plateau). Under AdamW the loss curve looks
-almost normal, because Adam's step ignores the gradient's scale; the tell is that the logged gradient norm is
+may not produce NaN straight away, so watch for the spike, not only for NaN.</li>
+<li>Under SGD it behaves like an 8× LR (divergence, or a high, noisy plateau). Under AdamW the loss curve looks
+almost normal, because Adam's step ignores the gradient's scale; the giveaway is that the logged gradient norm is
 8× what the same run reports with the division.</li>
 </ol>
-<p style="margin-bottom:0"><b>The meta-lesson:</b> (1) and (2) both produce a <i>beautiful</i> loss curve.
-Never trust a loss curve alone — always generate samples and always check loss against
+<p style="margin-bottom:0"><b>The general lesson:</b> (1) and (2) both produce a <i>beautiful</i> loss curve.
+Never trust a loss curve alone: always generate samples, and always check the loss against
 <code>ln(V)</code> at step 0.</p>
 </div></details>
 </div></div>
@@ -1197,20 +1197,20 @@ Never trust a loss curve alone — always generate samples and always check loss
 <div class="exercise">
 <div class="eh"><span class="n">11.4</span><span class="ti">Deduplicate a corpus</span><span class="lvl">code</span></div>
 <div class="eb">
-<p>Take Tiny Shakespeare, split it into documents of 40 lines, and plant near-duplicates: copy 50 random documents
-and in each copy change k random words (k = 1, 3, 10) or append a footer. Run <code>tfs.data.dedup</code> with
+<p>Take Tiny Shakespeare, split it into documents of 40 lines, and plant near-duplicates: copy 50 random documents,
+and in each copy change k random words (k = 1, 3, 10) or add a footer. Run <code>tfs.data.dedup</code> with
 14 × 8 bands and with 20 × 5.</p>
 <ol>
 <li>For each k, predict the 5-gram Jaccard similarity before measuring it (each changed word removes up to 5
 shingles from the intersection).</li>
-<li>Measure recall (planted duplicates caught) and the false-positive rate (distinct documents merged) for both
-band settings, and compare with <code>lsh_catch_probability</code>.</li>
+<li>Measure the recall (planted duplicates caught) and the false-positive rate (distinct documents merged) for both
+band settings, and compare them with <code>lsh_catch_probability</code>.</li>
 </ol>
 <details class="reveal"><summary>What to expect</summary><div>
-<p style="margin-bottom:0">A 40-line document is a few hundred words, so k = 1 or 3 keeps J above 0.9 and both
-settings catch nearly all of them; at k = 10 J falls toward the S-curve's midpoint and recall drops. 20 × 5 has its
-midpoint at (1/20)<sup>1/5</sup> = 0.55, so it catches more edits and starts merging genuinely different scenes that
-share stock phrases: the false positives are the price. Measured recall should track the S-curve to within
+<p style="margin-bottom:0">A 40-line document is a few hundred words, so k = 1 or 3 keeps J above 0.9, and both
+settings catch nearly all of them; at k = 10, J falls toward the midpoint of the S-curve and recall drops. 20 × 5 has its
+midpoint at (1/20)<sup>1/5</sup> = 0.55, so it catches more edits but starts merging genuinely different scenes that
+share stock phrases; the false positives are the price. The measured recall should follow the S-curve to within
 sampling noise.</p>
 </div></details>
 </div></div>
@@ -1219,13 +1219,13 @@ sampling noise.</p>
 <div class="eh"><span class="n">11.5</span><span class="ti">Measure your own critical batch</span><span class="lvl">code</span></div>
 <div class="eb">
 <p>Run <code>python -m tfs.trainkit</code> to get B<sub>noise</sub> along a training run. Then test the prediction:
-from the same checkpoint at step 400, train 200 more steps at batch 8, 32 and 128 sequences, scaling the LR by
+from the same checkpoint at step 400, train 200 more steps at batch sizes of 8, 32 and 128 sequences, scaling the LR by
 √(B/32), and record how many <i>tokens</i> each needs to reach the same loss.</p>
 <details class="reveal"><summary>How to read it</summary><div>
-<p style="margin-bottom:0">Below the noise scale, the token count to reach a target loss is nearly the same at every
-batch (doubling the batch halves the steps). Above it, tokens rise with the batch: you are buying data that does not
-help. The crossover should sit within a factor of a few of the measured B<sub>noise</sub>; the noise scale is a
-prediction of B<sub>crit</sub>, not an exact value.</p>
+<p style="margin-bottom:0">Below the noise scale, the number of tokens needed to reach a target loss is nearly the same at every
+batch size (doubling the batch halves the steps). Above it, the tokens needed rise with the batch: you are buying data that does not
+help. The crossover should be within a factor of a few of the measured B<sub>noise</sub>; the noise scale is a
+prediction of B<sub>crit</sub>, not its exact value.</p>
 </div></details>
 </div></div>
 
@@ -1233,12 +1233,12 @@ prediction of B<sub>crit</sub>, not an exact value.</p>
 <div class="eh"><span class="n">11.6</span><span class="ti">Break resumption on purpose</span><span class="lvl">essential</span></div>
 <div class="eb">
 <p>Starting from <code>test_exact_resumption_is_bit_identical</code>, remove one piece of state at a time from
-<code>ResumableRun.state_dict</code> (the optimizer state, the step number, the loader state, the RNG state) and
-record, for each, the maximum difference in the final weights and in the loss curve after the resume.</p>
+<code>ResumableRun.state_dict</code> (the optimizer state, the step number, the loader state, the RNG state), and
+record for each the largest difference in the final weights and in the loss curve after the resume.</p>
 <details class="reveal"><summary>What you'll see</summary><div>
 <p style="margin-bottom:0">Dropping the optimizer state is the most visible: Adam restarts with empty moments and a
 step count of 0, so its first steps are large and the loss jumps. Dropping the step number restarts the LR warmup.
-Dropping the loader state gives a smooth curve with different weights: the worst kind of bug, because nothing looks
+Dropping the loader state gives a smooth curve with different weights, the worst kind of bug, because nothing looks
 wrong. With no dropout in this model, the RNG state only matters if something samples; add dropout and it matters
 too.</p>
 </div></details>
@@ -1248,34 +1248,34 @@ too.</p>
 <div class="eh"><span class="n">11.7</span><span class="ti">Estimate a frontier run's wall-clock</span><span class="lvl">thinking</span></div>
 <div class="eb">
 <p>A 70B dense model, 15T tokens at T = 8,192, on 8,192 H100s at 40% MFU (bf16 peak 989 TFLOP/s). Use
-6N + 12·L·d·T FLOPs per token with L = 80, d = 8192.</p>
+6N + 12·L·d·T FLOPs per token, with L = 80 and d = 8192.</p>
 <details class="reveal"><summary>Answer</summary><div>
 <pre><code class="nohl">per token: 6 × 70e9 + 12 × 80 × 8192 × 8192 = 4.20e11 + 6.44e10 = 4.84e11 FLOPs
 total:     4.84e11 × 15e12                 = 7.27e24 FLOPs
 cluster:   8192 × 989e12 × 0.40            = 3.24e18 FLOP/s
 time:      7.27e24 / 3.24e18 = 2.24e6 s    ≈ 26 days</code></pre>
-<p style="margin-bottom:0">Add the interruptions of Chapter 19 §19.9 (about 10% lost at a sensible checkpoint
-interval) and the answer is about four weeks. Note the attention term is 13% of the FLOPs at 8k context; ignoring it
-under-estimates the run by three days.</p>
+<p style="margin-bottom:0">Add the interruptions from Chapter 19 §19.9 (about 10% lost at a sensible checkpoint
+interval) and the answer comes to about four weeks. Note that the attention term is 13% of the FLOPs at 8k context, and
+leaving it out underestimates the run by three days.</p>
 </div></details>
 </div></div>
 
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
-<li><a href="https://arxiv.org/abs/1711.05101">Loshchilov &amp; Hutter 2017 — Decoupled Weight Decay (AdamW)</a></li>
-<li><a href="https://github.com/karpathy/nanoGPT/blob/master/train.py">nanoGPT train.py</a> — a real, complete, readable training script.</li>
-<li><a href="https://github.com/google-research/tuning_playbook">Google — Deep Learning Tuning Playbook</a> — the best practical guide to hyperparameters that exists.</li>
-<li><a href="https://kellerjordan.github.io/posts/muon/">Keller Jordan — Muon optimizer</a></li>
-<li><a href="https://arxiv.org/abs/2404.06395">Hu et al. 2024 — MiniCPM</a> (the WSD schedule)</li>
-<li><a href="https://arxiv.org/abs/2406.17557">Penedo et al. 2024 — The FineWeb Datasets</a> — MinHash settings, per-crawl vs global dedup, and the FineWeb-Edu classifier.</li>
-<li><a href="https://arxiv.org/abs/2112.11446">Rae et al. 2021 — Gopher</a>, Appendix A — the MassiveWeb quality rules in <code>tfs.data.gopher_rules</code>.</li>
-<li>Broder 1997 — On the resemblance and containment of documents — MinHash.</li>
-<li><a href="https://arxiv.org/abs/2407.21783">Llama Team 2024 — The Llama 3 Herd of Models</a> — §3.1 (data pipeline, mix, annealing), §3.4 (batch and LR schedule).</li>
-<li><a href="https://arxiv.org/abs/2501.00656">OLMo Team 2024 — 2 OLMo 2 Furious</a> — stability changes, mid-training, model souping.</li>
-<li><a href="https://arxiv.org/abs/1812.06162">McCandlish et al. 2018 — An Empirical Model of Large-Batch Training</a> — the noise scale and the critical batch.</li>
-<li><a href="https://arxiv.org/abs/2203.03466">Yang et al. 2022 — Tensor Programs V (μP)</a> — hyperparameter transfer across width.</li>
-<li><a href="https://arxiv.org/abs/2204.02311">Chowdhery et al. 2022 — PaLM</a> — z-loss, the spike-and-skip procedure, and the MFU definition (Appendix B).</li>
-<li><a href="https://arxiv.org/abs/2405.18392">Hägele et al. 2024 — Scaling Laws and Compute-Optimal Training Beyond Fixed Training Durations</a> — WSD and its cooldown.</li>
+<li><a href="https://arxiv.org/abs/1711.05101">Loshchilov &amp; Hutter 2017, Decoupled Weight Decay (AdamW)</a></li>
+<li><a href="https://github.com/karpathy/nanoGPT/blob/master/train.py">nanoGPT train.py</a>: a real, complete and readable training script.</li>
+<li><a href="https://github.com/google-research/tuning_playbook">Google, Deep Learning Tuning Playbook</a>: the best practical guide to hyperparameters there is.</li>
+<li><a href="https://kellerjordan.github.io/posts/muon/">Keller Jordan, Muon optimizer</a></li>
+<li><a href="https://arxiv.org/abs/2404.06395">Hu et al. 2024, MiniCPM</a> (the WSD schedule)</li>
+<li><a href="https://arxiv.org/abs/2406.17557">Penedo et al. 2024, The FineWeb Datasets</a>: MinHash settings, per-crawl against global dedup, and the FineWeb-Edu classifier.</li>
+<li><a href="https://arxiv.org/abs/2112.11446">Rae et al. 2021, Gopher</a>, Appendix A: the MassiveWeb quality rules in <code>tfs.data.gopher_rules</code>.</li>
+<li>Broder 1997, On the resemblance and containment of documents: MinHash.</li>
+<li><a href="https://arxiv.org/abs/2407.21783">Llama Team 2024, The Llama 3 Herd of Models</a>: §3.1 (data pipeline, mix, annealing) and §3.4 (batch and LR schedule).</li>
+<li><a href="https://arxiv.org/abs/2501.00656">OLMo Team 2024, 2 OLMo 2 Furious</a>: stability changes, mid-training, model souping.</li>
+<li><a href="https://arxiv.org/abs/1812.06162">McCandlish et al. 2018, An Empirical Model of Large-Batch Training</a>: the noise scale and the critical batch.</li>
+<li><a href="https://arxiv.org/abs/2203.03466">Yang et al. 2022, Tensor Programs V (μP)</a>: hyperparameter transfer across width.</li>
+<li><a href="https://arxiv.org/abs/2204.02311">Chowdhery et al. 2022, PaLM</a>: z-loss, the spike-and-skip procedure, and the MFU definition (Appendix B).</li>
+<li><a href="https://arxiv.org/abs/2405.18392">Hägele et al. 2024, Scaling Laws and Compute-Optimal Training Beyond Fixed Training Durations</a>: WSD and its cooldown.</li>
 <li>Reference code: <code>tfs/data.py</code>, <code>tfs/trainkit.py</code> · tests: <code>tests/test_training.py</code> (Ch 11 section)</li>
 <li>Companion notebook: <code>notebooks/11_training.ipynb</code></li>
 </ul>
