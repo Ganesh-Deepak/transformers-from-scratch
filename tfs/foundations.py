@@ -332,7 +332,7 @@ def copy_batch(B, T, vocab, g):
     return torch.cat([a, a], dim=1)                          # (B, T)
 
 
-def train_toy_copy_model(T=64, steps=800, seed=0):
+def train_toy_copy_model(T=64, steps=300, seed=0, batch=16):
     """
     Train TOY_CFG (2 layers, RoPE) to copy: the second half of every sequence repeats
     the first, so after the midpoint the next token is predictable ONLY by attention
@@ -346,7 +346,7 @@ def train_toy_copy_model(T=64, steps=800, seed=0):
     m = Model(TOY_CFG)
     opt = torch.optim.AdamW(m.parameters(), lr=3e-3, weight_decay=0.0)
     for _ in range(steps):
-        ids = copy_batch(32, T, TOY_CFG.vocab_size, g)
+        ids = copy_batch(batch, T, TOY_CFG.vocab_size, g)
         _, loss, _ = m(ids, targets=ids)
         opt.zero_grad()
         loss.backward()
@@ -366,6 +366,55 @@ def copy_loss(m, T, n=64, seed=123):
     lp = logits[:, half:-1].log_softmax(-1)                 # (n, half-1, V)
     tgt = ids[:, half + 1:]
     return -lp.gather(-1, tgt[..., None]).mean().item()
+
+
+def periodic_batch(B, T, period, vocab, g):
+    """A random block of `period` tokens, repeated until the sequence is T long."""
+    a = torch.randint(2, vocab, (B, period), generator=g)
+    return a.repeat(1, math.ceil(T / period))[:, :T]       # (B, T)
+
+
+@torch.no_grad()
+def periodic_loss(m, T, period=32, n=64, seed=321):
+    """
+    Loss on every predictable position (t >= period) when the copy distance stays at
+    the TRAINED value but absolute positions run past the training length.
+    Returns (loss on positions < 64, loss on positions >= 64).
+    """
+    g = torch.Generator().manual_seed(seed)
+    ids = periodic_batch(n, T, period, TOY_CFG.vocab_size, g)
+    logits, _, _ = m(ids)
+    lp = logits[:, :-1].log_softmax(-1)
+    nll = -lp.gather(-1, ids[:, 1:, None])[..., 0]          # (n, T-1): predicting position t+1
+    pos = torch.arange(1, T)
+    inside = (pos >= period) & (pos < 64)
+    outside = pos >= 64
+    out_l = nll[:, outside].mean().item() if outside.any() else float("nan")
+    return nll[:, inside].mean().item(), out_l
+
+
+@torch.no_grad()
+def periodic_loss_interpolated(m, T, period=32, train_T=64, n=64, seed=321):
+    """
+    Position interpolation (Chen et al. 2023) without retraining: positions are scaled by
+    train_T / T so no rotation angle exceeds the trained range. Returns the loss on
+    predictable positions >= 64, as periodic_loss does.
+    """
+    g = torch.Generator().manual_seed(seed)
+    ids = periodic_batch(n, T, period, TOY_CFG.vocab_size, g)
+    d = TOY_CFG.d_head
+    inv = 1.0 / (TOY_CFG.rope_base ** (torch.arange(0, d, 2).float() / d))
+    pos = torch.arange(T).float() * (train_T / T)
+    fr = torch.outer(pos, inv)
+    emb = torch.cat([fr, fr], -1)
+    cos, sin = emb.cos(), emb.sin()
+    x = m.embed(ids)
+    for blk in m.blocks:
+        x, _ = blk(x, cos, sin)
+    logits = m.head(m.norm(x))
+    nll = -logits[:, :-1].log_softmax(-1).gather(-1, ids[:, 1:, None])[..., 0]
+    p = torch.arange(1, T)
+    return nll[:, p >= 64].mean().item()
 
 
 @torch.no_grad()
@@ -654,3 +703,18 @@ def fertility_table(vocab_size=1024):
         n = len(tok.encode(s, allow_special=False))
         rows.append((lang, len(s), len(s.encode("utf-8")), n, n / base))
     return rows
+
+
+def flops_per_character(n_body, V, d, chars_per_token):
+    """
+    Forward FLOPs to process one CHARACTER of text: (2 x body params + 2 V d for the
+    output projection) per token, divided by how many characters a token covers.
+    The input embedding is a lookup and costs no FLOPs (Ch 4). Attention's T^2 term
+    is ignored here (it would favour the larger vocabulary further).
+    """
+    return (2 * n_body + 2 * V * d) / chars_per_token
+
+
+def llama3_8b_body_params():
+    cfg = llama3_8b_config()
+    return cfg.n_params() - 2 * cfg.vocab_size * cfg.d_model

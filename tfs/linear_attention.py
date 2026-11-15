@@ -167,6 +167,21 @@ def recall_error(n_pairs, dk=64, rule="linear", keys="random", seed=0):
     return ((read - V).norm(dim=1) / V.norm(dim=1)).mean().item()
 
 
+def recall_error_by_age(n_pairs, dk=32, rule="delta", seed=0, frac=0.1):
+    """Mean relative recall error for the OLDEST and the NEWEST `frac` of the pairs written."""
+    g = torch.Generator().manual_seed(seed)
+    K = torch.randn(n_pairs, dk, generator=g, dtype=torch.float64)
+    K = K / K.norm(dim=1, keepdim=True)                      # (n, dk)
+    V = torch.randn(n_pairs, dk, generator=g, dtype=torch.float64)
+    if rule == "linear":
+        _, S = linear_attention_recurrent(K, K, V)
+    else:
+        _, S = delta_rule_recurrent(K, K, V, torch.ones(n_pairs, dtype=torch.float64))
+    err = (K @ S.T - V).norm(dim=1) / V.norm(dim=1)          # (n,)
+    m = max(1, int(round(frac * n_pairs)))
+    return err[:m].mean().item(), err[-m:].mean().item()
+
+
 def overwrite_demo():
     """
     The 2-D worked example in Ch 22.2: write (k1, v1), (k2, v2), then write a NEW

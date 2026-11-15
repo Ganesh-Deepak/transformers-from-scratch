@@ -211,7 +211,7 @@ print(GPT2_PAT.findall("Hello world's 123 items!"))
 <p>This prevents merges from crossing category boundaries — you never get a single token spanning
 <code>"dog."</code> or <code>"3cats"</code>. Note that <b>the leading space is attached to the following
 word</b>: <code>" world"</code> is a different token from <code>"world"</code>. That detail causes an entire
-family of bugs, covered in §3.5.</p>
+family of bugs, covered in §3.7.</p>
 
 <div class="quiz" data-title="Checkpoint 1 — BPE mechanics">
 <div class="qitem" data-answer="1">
@@ -242,7 +242,59 @@ family of bugs, covered in §3.5.</p>
 </div>
 </div>
 
-<h2>3.3 · Vocabulary size: the real trade-off</h2>
+<h2>3.3 · Modern pre-tokenization, normalisation, and Unigram</h2>
+
+<h3>GPT-4's pattern: digits in threes, and one leading symbol</h3>
+
+<p>GPT-2's regex was replaced in GPT-4's <code>cl100k_base</code> (and the Llama 3 tokenizer, which builds on
+it) by a pattern with two changes that matter. Numbers are split into groups of <b>at most three digits</b>
+(<code>\p{N}{1,3}</code>), and a word may absorb <b>one</b> leading non-letter character instead of only a
+space. <code>tfs.foundations</code> carries both patterns, rewritten for Python's built-in <code>re</code>
+(which lacks <code>\p{L}</code>; the rewrite agrees with the original on ordinary text), so you can compare
+them on the same string:</p>
+
+<pre><code class="nohl">text: "I've got 1234567 apples!!  ok"
+
+GPT-2 :  'I'  "'ve"  ' got'  ' 1234567'          ' apples'  '!!'  ' '  ' ok'
+cl100k:  'I'  "'ve"  ' got'  ' '  '123' '456' '7'  ' apples'  '!!'  ' '  ' ok'</code></pre>
+
+<p>Under GPT-2's pattern the whole number is one pre-token, so BPE is free to merge it into whatever chunks
+were frequent in training: <code>1234567</code> might become <code>12</code>, <code>345</code>, <code>67</code>.
+Under cl100k's pattern the number is cut into fixed groups <i>before</i> BPE runs, and since every 1–3 digit
+group is frequent, each becomes one token. The groups are counted from the left, so they still do not align
+with place value (<code>1,234,567</code> would want <code>1 234 567</code>), but at least the same digits always
+split the same way. Llama 3 inherits this; other models split every digit separately.</p>
+
+<h3>Normalisation: NFKC, and why it is lossy</h3>
+
+<p>Before pre-tokenization, many tokenizers (SentencePiece's defaults, most BERT-style ones) apply Unicode
+<b>normalisation</b>, usually NFKC, which folds "compatibility" characters into their plain equivalents.
+<code>tfs.foundations.nfkc_examples</code>, computed with Python's <code>unicodedata</code>:</p>
+
+<pre><code class="nohl">'ﬁle'   -&gt; 'file'      the ligature ﬁ becomes two letters
+'Ｈｅｌｌｏ' -&gt; 'Hello'   full-width Latin becomes ASCII
+'x²'    -&gt; 'x2'        a superscript becomes a digit
+'①②'    -&gt; '12'        circled digits become digits
+'½'     -&gt; '1⁄2'       a vulgar fraction becomes three characters
+'ℌ'     -&gt; 'H'         a mathematical letter loses its style</code></pre>
+
+<p>Every one of those is <b>irreversible</b>: after normalisation, <code>x²</code> and <code>x2</code> are the
+same text, and no decoder can tell which one the user wrote. For search and classification that is a feature.
+For a generative model it means the tokenizer is no longer lossless, which is why byte-level BPE tokenizers
+(GPT-2 onward, Llama 3, Qwen) apply no normalisation at all and leave every byte as written.</p>
+
+<h3>The other algorithm: Unigram language model</h3>
+
+<p>BPE builds a vocabulary bottom-up by merging. SentencePiece's default, the <b>Unigram</b> model
+(Kudo 2018), works top-down: start from a large candidate vocabulary, fit a unigram probability to each piece,
+and repeatedly delete the pieces whose removal costs the corpus the least likelihood until the target size is
+reached. Encoding is then a search, not a replay: Viterbi finds the segmentation with the highest total
+log-probability. Two practical differences follow. Unigram can <b>sample</b> alternative segmentations
+(subword regularisation, useful as data augmentation), and its pieces are chosen for likelihood rather than raw
+frequency. Note that "SentencePiece" is a library, not an algorithm: it implements both, and Llama 2's
+SentencePiece tokenizer uses BPE (the table below). Gemma's and T5's tokenizers are SentencePiece models too.</p>
+
+<h2>3.4 · Vocabulary size: the real trade-off</h2>
 
 <div class="tw">
 <table>
@@ -268,11 +320,65 @@ and better coverage of non-English languages and code.</li>
 tokens get few gradient updates, so they're poorly trained.</li>
 </ul>
 
+<h3>The trade, computed</h3>
+
+<p>"Embeddings are cheap" is half true. The <i>input</i> table is a lookup: it costs memory, no FLOPs. The
+<i>output</i> projection is a <code>(d, V)</code> matmul at every position: <code>2·V·d</code> FLOPs per token.
+What a bigger vocabulary buys is fewer tokens for the same text. So the honest unit is <b>FLOPs per
+character</b>, not per token. Take Llama-3-8B's body (everything except its two embedding tables:
+6,979,588,096 parameters, from its config) and give it either Llama 2's 32,000-token vocabulary or Llama 3's
+128,256. The Llama 3 paper reports the compression on English for each: 3.17 and 3.94 characters per
+token. <code>tfs.foundations.flops_per_character</code>:</p>
+
+<pre><code class="nohl">                     body 2N        output 2Vd      per token     chars/token   per character
+V =  32,000         13.96 GFLOP     0.26 GFLOP     14.22 GFLOP       3.17        4.49 GFLOP
+V = 128,256         13.96 GFLOP     1.05 GFLOP     15.01 GFLOP       3.94        3.81 GFLOP   (15% less)</code></pre>
+
+<p>The larger vocabulary costs 0.79 GFLOP more per token and still makes each character 15% cheaper, before
+counting the attention term (quadratic in tokens, so it shrinks faster still) or the KV cache (linear in tokens).
+The price is paid elsewhere: 0.79 B more parameters across the two tables, and rare tokens that see few
+gradient updates.</p>
+
+<p>Where is the optimum? Tao et al. (2024, "Scaling Laws with Vocabulary") fit the loss as a function of
+parameters, data and vocabulary jointly and found that the optimal vocabulary grows with compute; they predict
+Llama-2-70B's should have been at least 216K, seven times the 32K it used. That is the quantitative case for
+the move to 128k–256k.</p>
+
+<p>You can watch the compression side of the trade with the repo's own tokenizer. Train
+<code>BPETokenizer</code> at increasing sizes on the same 4,791-byte English corpus
+(<code>tests/fixtures/ch03_corpus.txt</code>, via <code>toy_vocab_sweep</code>):</p>
+
+<div class="tw">
+<table>
+<thead><tr><th class="num">vocab</th><th class="num">tokens</th><th class="num">bytes / token</th></tr></thead>
+<tbody>
+<tr><td class="num">256 (bytes only)</td><td class="num">4,791</td><td class="num">1.00</td></tr>
+<tr><td class="num">384</td><td class="num">2,151</td><td class="num">2.23</td></tr>
+<tr><td class="num">512</td><td class="num">1,671</td><td class="num">2.87</td></tr>
+<tr><td class="num">707 (merges run out)</td><td class="num">1,261</td><td class="num">3.80</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Each doubling buys less. Asked for 1,024 the trainer stops at 707, because no pair occurs twice any more:
+on a corpus this small, extra vocabulary has nothing left to compress. On real corpora the curve has the same
+shape at much larger sizes, which is why the gain from 128k to 256k is smaller than from 32k to 128k.</p>
+
+<h3>Or no tokenizer at all</h3>
+
+<p>The limit of this argument is to throw the vocabulary away and model bytes. That has been too expensive
+because bytes make sequences 3–4× longer. The <b>Byte Latent Transformer</b> (Pagnoni et al. 2024) groups
+bytes into variable-length <i>patches</i>, starting a new patch where a small byte-level model finds the next
+byte hard to predict (high entropy), and runs the large transformer over patches. In a FLOP-controlled study up
+to 8B parameters it matched a tokenized Llama 3 baseline, while being robust to the misspellings and character
+manipulations that trip up BPE models. It is not yet in a frontier model; it is the most credible route to
+removing the tokenizer.</p>
+
 <p>The trend since 2024 has been clearly <b>toward larger vocabularies</b>, because inference-time sequence
 length is the expensive thing and embedding parameters are cheap (they're a lookup, not a matmul — see
 Chapter 4).</p>
 
-<h2>3.4 · Special tokens and chat templates</h2>
+<h2>3.5 · Special tokens and chat templates</h2>
 
 <p>Beyond learned merges, tokenizers reserve IDs for control signals the model learns to obey:</p>
 
@@ -300,7 +406,121 @@ bad. <b>Always</b> use <code>tokenizer.apply_chat_template(messages, tokenize=Fa
 result before training. Never hand-write the format.</p>
 </div>
 
-<h2>3.5 · Tokenizer pathologies — why LLMs are weird about specific things</h2>
+<h3>Special-token injection: a security boundary</h3>
+
+<p>If special tokens are the only thing separating the system prompt from the user, then <b>who can produce
+them</b> matters. A user who types the <i>text</i> <code>&lt;|eot_id|&gt;</code> must get the ordinary byte
+tokens for those characters, never the special id, or they can close the user turn and write their own
+"system" or "assistant" turn. The repo's tokenizer shows both behaviours:</p>
+
+<pre><code>tok.add_special_tokens(["&lt;|eot|&gt;"])
+tok.encode("hi&lt;|eot|&gt;")                       # [104, 105, 512]       512 is the special id
+tok.encode("hi&lt;|eot|&gt;", allow_special=False)  # [104, 105, 60, 124, 101, 111, 116, 124, 62]
+                                              #  h    i    &lt;   |    e    o    t    |    &gt;</code></pre>
+
+<p>The first call is what you want for the template you assemble yourself; the second is what you must use for
+every string that came from a user, a document, or a tool. Both decode to the same text, so nothing in the
+output reveals which happened. Real libraries differ in their defaults, which is the dangerous part:
+<code>tiktoken</code>'s <code>encode</code> <b>raises an error</b> if the text contains a special token's
+string unless you pass <code>allowed_special</code>, while Hugging Face tokenizers by default <b>do</b> parse
+special-token strings inside text (<code>split_special_tokens=False</code>). The safe architecture is to
+tokenize untrusted pieces separately with special parsing off, then splice in the template's special ids by
+number. The test <code>test_ch03_special_token_injection</code> checks the repo's version.</p>
+
+<h2>3.6 · Streaming detokenization</h2>
+
+<p>A server streams text to the user as tokens are generated. The obvious implementation decodes each new
+token and sends the string. With a byte-level tokenizer that is a bug, because <b>a token can end in the
+middle of a character</b>. UTF-8 encodes ASCII in one byte, most European accents in two, Chinese, Japanese,
+Hindi and the euro sign in three, and emoji in four. A byte-level BPE trained mostly on English has no merges
+for those byte sequences, so they arrive one byte per token:</p>
+
+<div class="example">
+<span class="t">Worked example — streaming "€", "🤖" and "面包" token by token</span>
+<div class="step"><div class="i">1</div><div>
+<b>Encode.</b> With the 512-token BPE trained on the English corpus fixture:
+<pre style="margin:.4rem 0"><code class="nohl">"€"    -&gt; [226, 130, 172]                bytes E2 82 AC
+"🤖"   -&gt; [240, 159, 164, 150]           bytes F0 9F A4 96
+"面包"  -&gt; [233, 157, 162, 229, 140, 133] bytes E9 9D A2 | E5 8C 85</code></pre></div></div>
+<div class="step"><div class="i">2</div><div>
+<b>Naive streaming</b>, <code>decode([id])</code> per token: every fragment is an invalid UTF-8 sequence on its
+own, so each becomes the replacement character.
+<pre style="margin:.4rem 0"><code class="nohl">"€"  streams as  '�' '�' '�'        the user sees three garbage glyphs, never a euro sign</code></pre></div></div>
+<div class="step"><div class="i">3</div><div>
+<b>Buffer incomplete bytes.</b> Keep an incremental UTF-8 decoder per request and emit only completed
+characters (<code>tfs.foundations.StreamingDetokenizer</code>, 10 lines around
+<code>codecs.getincrementaldecoder</code>):
+<pre style="margin:.4rem 0"><code class="nohl">"€"    streams as  ''  ''  '€'
+"🤖"   streams as  ''  ''  ''  '🤖'
+"面包"  streams as  ''  ''  '面'  ''  ''  '包'</code></pre></div></div>
+<p style="margin-bottom:0">The fix costs one small buffer per stream and makes the output byte-identical to
+decoding the whole sequence at the end. Two related details: stop-sequence matching must run on the
+<i>decoded text</i>, because a stop string can straddle tokens; and tokenizers with a byte fallback
+(SentencePiece's <code>&lt;0xE2&gt;</code>-style tokens) have exactly the same problem.</p>
+</div>
+
+<pre><code>class StreamingDetokenizer:
+    def __init__(self, tok):
+        self.tok = tok
+        self.dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    def push(self, token_id) -&gt; str:          # call once per generated token
+        return self.dec.decode(self.tok._vocab[token_id], final=False)
+
+    def flush(self) -&gt; str:                   # call at end of stream
+        return self.dec.decode(b"", final=True)</code></pre>
+
+<div class="quiz" data-title="Checkpoint 2 — pipelines and boundaries">
+<div class="qitem" data-answer="2">
+  <div class="qq">Under GPT-4's <code>cl100k</code> pre-tokenizer, how is <code>" 1234567"</code> split before BPE runs?</div>
+  <div class="opts">
+    <div class="opt">One piece, <code>' 1234567'</code>, as in GPT-2</div>
+    <div class="opt">Seven single digits</div>
+    <div class="opt"><code>' '</code>, <code>'123'</code>, <code>'456'</code>, <code>'7'</code>: digit runs are cut into groups of at most three, from the left</div>
+    <div class="opt"><code>' 1'</code>, <code>'234'</code>, <code>'567'</code>, aligned with place value</div>
+  </div>
+  <div class="expl"><b>\p{N}{1,3}, greedy from the left.</b> That makes the split of a digit string
+  consistent, but not aligned with thousands: right-to-left grouping would be needed for that, and some later
+  tokenizers do exactly this or split every digit.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">A chat server tokenizes the user's message with the same call it uses for the template, which parses special-token strings. What can a user do?</div>
+  <div class="opts">
+    <div class="opt">Type <code>&lt;|eot_id|&gt;</code> followed by a fake system or assistant header, and have it encoded as real control tokens</div>
+    <div class="opt">Nothing: special tokens cannot be typed</div>
+    <div class="opt">Only increase the token count</div>
+    <div class="opt">Crash the tokenizer with invalid UTF-8</div>
+  </div>
+  <div class="expl"><b>Template injection.</b> The model has no other way to know where the user's turn ends.
+  Encode untrusted text with special parsing disabled, so the string becomes ordinary byte tokens, and insert
+  the real special ids yourself.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">Your streaming endpoint shows "�" for Chinese output, but the final, non-streamed response is correct. What is wrong?</div>
+  <div class="opts">
+    <div class="opt">The model generates invalid UTF-8</div>
+    <div class="opt">The tokenizer lacks Chinese characters</div>
+    <div class="opt">The client uses the wrong font</div>
+    <div class="opt">Each token is decoded on its own, and a 3-byte character split across tokens decodes as replacement characters; buffer incomplete bytes</div>
+  </div>
+  <div class="expl"><b>Decode incrementally.</b> The bytes are all there and correct, which is why decoding the
+  whole sequence works. Only the per-token decode cuts characters apart.</div>
+</div>
+<div class="qitem" data-answer="1">
+  <div class="qq">Why do byte-level BPE tokenizers for generative models usually skip NFKC normalisation?</div>
+  <div class="opts">
+    <div class="opt">NFKC is too slow</div>
+    <div class="opt">It is lossy: <code>x²</code> and <code>x2</code>, or <code>ﬁ</code> and <code>fi</code>, become identical, so the tokenizer could no longer reproduce the input exactly</div>
+    <div class="opt">NFKC only works for English</div>
+    <div class="opt">Byte-level tokenizers cannot represent normalised text</div>
+  </div>
+  <div class="expl"><b>Lossless round-trips.</b> A generative model must be able to emit exactly the text it was
+  shown, including the superscript. Normalisation is a reasonable choice for retrieval and classification
+  models, where conflating variants helps.</div>
+</div>
+</div>
+
+<h2>3.7 · Tokenizer pathologies — why LLMs are weird about specific things</h2>
 
 <h3>Arithmetic</h3>
 <pre><code># GPT-2 tokenizes numbers inconsistently (illustrative splits; run 3.2 to see your tokenizer's):
@@ -321,22 +541,73 @@ separately, or fixed 3-digit groups. This measurably improves arithmetic.</p>
 a token distribution it has barely ever seen, because in training the space is always glued to the next word.
 <b>Never end a completion prompt with a trailing space.</b> This is a real, reproducible quality drop.</p>
 
+<h3>Token healing: the general fix for prompt boundaries</h3>
+
+<p>The trailing space is one case of a general problem. <b>The prompt's last token was produced by cutting
+the text where the user stopped typing, not where the tokenizer would have cut it.</b> If the user's text ends
+in the middle of what is normally one token, the prompt ends in a token the model has rarely seen in that
+position. The repo's 512-token BPE (trained on the corpus fixture) makes it concrete:</p>
+
+<pre><code class="nohl">"The baker opens the shop"  -&gt;  [... 's the ', 'shop']
+"The baker opens the sh"    -&gt;  [... 's the ', 'sh']</code></pre>
+
+<p>In training, the bytes <code>s h o p</code> were always merged into <code>'shop'</code>. So the sequence
+"token <code>'sh'</code>, then token <code>'op'</code>" essentially never occurred, and a model prompted with
+<code>…'sh'</code> will rarely continue with <code>'op'</code>: the most natural completion has been made
+unlikely by the cut. <b>Token healing</b> (introduced by Microsoft's <code>guidance</code> library) repairs the
+boundary: drop the prompt's last token, then constrain the first generated token to those whose bytes
+<i>start with</i> the dropped text. Here <code>tfs.foundations.token_heal</code> removes <code>'sh'</code> and
+allows exactly four first tokens:</p>
+
+<pre><code class="nohl">allowed first tokens:  'sh'   'she '   'shop'   'shop '</code></pre>
+
+<p>Now the model chooses <code>'shop'</code> as a single token, the way it saw it in training. The cost is one
+token of prompt and a vocabulary scan (or a prefix trie) per request. Constrained-decoding engines (Chapter 13)
+face the same boundary problem from the other side, and many implement healing for this reason.</p>
+
 <h3>Under-trained tokens ("SolidGoldMagikarp")</h3>
 <p>Tokenizers are trained on a different (often larger, messier) corpus than the model. Some tokens end up
 in the vocabulary but appear almost never in the model's training data — their embeddings stay near their
 random initialisation. Prompting GPT-2/GPT-3 with these produced bizarre, evasive, or hallucinated output.
 The 2023 investigation that found them is a genuinely fun read (linked below).</p>
 
-<h3>The multilingual tax</h3>
+<h3>The multilingual tax, measured</h3>
 <pre><code>English:   "The cat sat on the mat"           →  6 tokens
 Hindi:     "बिल्ली चटाई पर बैठी"                    → ~20 tokens (older tokenizers)
 Burmese:   equivalent sentence                 → ~40 tokens
 </code></pre>
+<p>Those figures are from the literature. You can measure the mechanism with the repo's own tokenizer: train
+it on the English corpus fixture (it stops at 707 tokens), then encode the same sentence in eight languages
+(<code>tfs.foundations.fertility_table</code>; translations in <code>PARALLEL</code>):</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Language</th><th class="num">characters</th><th class="num">UTF-8 bytes</th><th class="num">tokens</th><th class="num">× English</th></tr></thead>
+<tbody>
+<tr><td>English</td><td class="num">72</td><td class="num">72</td><td class="num">18</td><td class="num">1.0</td></tr>
+<tr><td>Spanish</td><td class="num">81</td><td class="num">81</td><td class="num">51</td><td class="num">2.8</td></tr>
+<tr><td>French</td><td class="num">83</td><td class="num">84</td><td class="num">52</td><td class="num">2.9</td></tr>
+<tr><td>German</td><td class="num">77</td><td class="num">79</td><td class="num">54</td><td class="num">3.0</td></tr>
+<tr><td>Chinese</td><td class="num">21</td><td class="num">63</td><td class="num">63</td><td class="num">3.5</td></tr>
+<tr><td>Japanese</td><td class="num">28</td><td class="num">84</td><td class="num">84</td><td class="num">4.7</td></tr>
+<tr><td>Russian</td><td class="num">71</td><td class="num">131</td><td class="num">131</td><td class="num">7.3</td></tr>
+<tr><td>Hindi</td><td class="num">64</td><td class="num">166</td><td class="num">166</td><td class="num">9.2</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Two separate taxes show up. The <b>encoding tax</b> is in the bytes column: Cyrillic is 2 bytes per letter,
+Devanagari and CJK 3, before any tokenizer runs. The <b>vocabulary tax</b> is the gap between bytes and
+tokens: for the four non-Latin scripts the tokenizer found no merges at all, so tokens equal bytes exactly,
+while the Latin-script languages reuse some English merges. A real tokenizer trained on 4.8 KB would be
+absurd, but the shape is the same at scale: the tokens a language gets are bought with its share of the
+tokenizer's training data.</p>
+
 <p>Same meaning, 3–7× the tokens. That means: shorter effective context, more compute, and — since APIs bill
 per token — <b>a direct financial penalty for not speaking English</b>. This is a major reason recent models
 moved to 128k–256k vocabularies with better multilingual coverage.</p>
 
-<div class="quiz" data-title="Checkpoint 2 — pathologies">
+<div class="quiz" data-title="Checkpoint 3 — pathologies">
 <div class="qitem" data-answer="2">
   <div class="qq">Your prompt is <code>"The answer is "</code> (with trailing space) and the model produces
   worse output than <code>"The answer is"</code>. Why?</div>
@@ -367,7 +638,7 @@ moved to 128k–256k vocabularies with better multilingual coverage.</p>
 </div>
 </div>
 
-<h2>3.6 · Exercises</h2>
+<h2>3.8 · Exercises</h2>
 
 <div class="exercise">
 <div class="eh"><span class="n">3.1</span><span class="ti">Train your own BPE</span><span class="lvl">code</span></div>
@@ -439,12 +710,77 @@ you expect.</p>
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">3.4</span><span class="ti">Build a streaming endpoint that never prints half a character</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Using the repo's <code>BPETokenizer</code>, write a generator <code>stream(ids)</code> that yields text
+chunks, then test it on <code>"naïve café 面包 🤖"</code>:</p>
+<ol>
+<li>Assert that <code>"".join(stream(ids)) == tok.decode(ids)</code> and that no chunk contains
+<code>"�"</code>.</li>
+<li>Add stop sequences: stop as soon as the decoded text contains <code>"\n\n"</code>, even if the two
+newlines arrive in different tokens, and never emit any part of the stop string.</li>
+<li>What is the largest number of bytes your buffer can ever hold for UTF-8 text, and why?</li>
+</ol>
+<details class="reveal"><summary>Answer to 3, and a hint for 2</summary><div>
+<p style="margin-bottom:0"><b>3 bytes.</b> The longest UTF-8 character is 4 bytes, and the decoder emits it as
+soon as the 4th arrives, so at most 3 are pending. For part 2, hold back the last
+<code>len(stop) − 1</code> characters of decoded text until you know they do not start a stop string; this is
+the same "wait until you are sure" idea one level up.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">3.5</span><span class="ti">Price a vocabulary change</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>A model with 30B non-embedding parameters and <code>d_model = 6144</code> uses a 64k vocabulary at 3.6
+characters per token on your traffic. A 200k vocabulary would give 4.2.</p>
+<ol>
+<li>FLOPs per character for each (use <code>flops_per_character</code>).</li>
+<li>Extra parameters for untied embeddings.</li>
+<li>Your service processes 10<sup>12</sup> characters a day. How many FLOPs a day does the change save or cost?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">1. V = 64k:   (60e9 + 2·65,536·6144) / 3.6   = (60.0 + 0.81) / 3.6 = 16.89 GFLOP/char
+   V = 200k:  (60e9 + 2·200,000·6144) / 4.2  = (60.0 + 2.46) / 4.2 = 14.87 GFLOP/char
+2. (200,000 − 65,536) × 6144 × 2 tables     = 1.65 B parameters
+3. (16.89 − 14.87) × 10^9 × 10^12           ≈ 2.0 × 10^21 FLOPs saved per day (12%)</code></pre>
+<p style="margin-bottom:0">For a model this size the output matmul is a small fraction of the per-token cost,
+so the compression gain dominates. For a small model (say 1B body parameters) the same change can
+<i>cost</i> FLOPs per character: rerun part 1 with <code>n_body = 0.5e9</code> and see.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">3.6</span><span class="ti">Predict, then measure: your language's tax</span><span class="lvl">exploration</span></div>
+<div class="eb">
+<p>Add a sentence in a language you know to <code>tfs.foundations.PARALLEL</code>. Before running
+<code>fertility_table()</code>, predict its token count from its UTF-8 byte count and script. Then retrain the
+tokenizer on the corpus fixture <i>plus</i> 2 KB of text in that language and measure again. How much of the
+tax does a little training data remove, and what happens to English's count?</p>
+<details class="reveal"><summary>What you should see</summary><div>
+<p style="margin-bottom:0">For a non-Latin script the first prediction is exact: tokens = bytes, because the
+English-only tokenizer has no merges for it. A little data in the language buys merges for its most common
+byte pairs and characters, and its count drops sharply; English's count rises slightly, because merges that
+went to English now go to the new language at a fixed vocabulary size. That is the multilingual trade every
+tokenizer makes, in miniature.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://www.youtube.com/watch?v=zduSFxRajkE">Karpathy — Let's build the GPT Tokenizer</a> — 2 hours, and the best thing ever made on this topic. Watch it.</li>
 <li><a href="https://github.com/karpathy/minbpe">karpathy/minbpe</a> — clean reference implementation.</li>
 <li><a href="https://arxiv.org/abs/1508.07909">Sennrich et al. 2015</a> — the paper that brought BPE to NLP.</li>
 <li><a href="https://www.lesswrong.com/posts/aPeJE8bSo6rAFoLqg/solidgoldmagikarp-plus-prompt-generation">SolidGoldMagikarp</a> — the under-trained token investigation.</li>
+<li><a href="https://github.com/openai/tiktoken">tiktoken</a> — the <code>cl100k_base</code> pattern and the <code>allowed_special</code> / <code>disallowed_special</code> API</li>
+<li><a href="https://arxiv.org/abs/1804.10959">Kudo 2018 — Subword Regularization</a> (the Unigram language-model tokenizer) · <a href="https://github.com/google/sentencepiece">SentencePiece</a></li>
+<li><a href="https://arxiv.org/abs/2407.13623">Tao et al. 2024 — Scaling Laws with Vocabulary: Larger Models Deserve Larger Vocabularies</a></li>
+<li><a href="https://arxiv.org/abs/2407.21783">Llama Team 2024 — The Llama 3 Herd of Models</a> (§3: the 128k tokenizer, 3.17 → 3.94 characters per token)</li>
+<li><a href="https://arxiv.org/abs/2412.09871">Pagnoni et al. 2024 — Byte Latent Transformer: Patches Scale Better Than Tokens</a></li>
+<li><a href="https://github.com/guidance-ai/guidance">guidance</a> — token healing</li>
+<li><a href="https://unicode.org/reports/tr15/">Unicode TR15 — Normalization Forms</a> (NFC, NFKC)</li>
+<li>Reference code: <code>tfs/tokenizer.py</code>, <code>tfs/foundations.py</code> (Ch 3 section) · corpus: <code>tests/fixtures/ch03_corpus.txt</code> · tests: <code>tests/test_foundations.py</code></li>
 <li>Companion notebook: not written yet (planned as <code class="planned">notebooks/03_tokenization.ipynb</code>)</li>
 </ul>
 

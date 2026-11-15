@@ -408,6 +408,92 @@ x.permute(0, 2, 1, 3).shape                   # (2, 8, 4, 16) → (B, H, T, D)
 <p>That specific permutation — moving the head axis in front of the time axis — is <b>the</b> reshape of
 multi-head attention. You will do it in Chapter 6 and it will feel obvious by then.</p>
 
+<h3>Stride 0: <code>expand</code> is free, <code>repeat</code> is not</h3>
+
+<p>Strides can do one more trick, and it is the one Chapter 16 depends on. A stride of <b>0</b> means
+"moving along this axis does not move in memory": every index along it reads the same numbers. That is how
+PyTorch makes a tensor <i>look</i> bigger without storing more.</p>
+
+<pre><code>k = torch.arange(24.).view(1, 2, 3, 4)          # (B=1, n_kv=2, T=3, d=4)    stride (24, 12, 4, 1)
+e = k[:, :, None].expand(1, 2, 4, 3, 4)         # (1, 2, n_rep=4, 3, 4)      stride (24, 12, 0, 4, 1)
+r = k.repeat_interleave(4, dim=1)               # (1, 8, 3, 4)               a real copy
+</code></pre>
+
+<div class="tw">
+<table>
+<thead><tr><th>Op</th><th>Result shape</th><th>Stride of the new axis</th><th class="num">Elements stored</th><th>Shares memory with <code>k</code>?</th></tr></thead>
+<tbody>
+<tr><td><code>k</code></td><td><code>(1, 2, 3, 4)</code></td><td>—</td><td class="num">24</td><td>—</td></tr>
+<tr><td><code>expand</code></td><td><code>(1, 2, 4, 3, 4)</code></td><td><b>0</b></td><td class="num">24</td><td>yes</td></tr>
+<tr><td><code>repeat_interleave</code> / <code>repeat</code></td><td><code>(1, 8, 3, 4)</code></td><td>normal</td><td class="num">96</td><td>no</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Three consequences, all of which bite in practice (<code>tfs.foundations.expand_vs_repeat</code> checks
+each one):</p>
+<ol>
+<li><b>Merging an expanded axis forces the copy anyway.</b> <code>e.reshape(1, 8, 3, 4)</code> cannot be
+a view, because no single stride walks "each of 2 heads, 4 times". It silently allocates 96 elements. This is
+exactly what Hugging Face's <code>repeat_kv</code> does for grouped-query attention: <code>expand</code>, then
+<code>reshape</code>, so it copies. The free path is to never merge: keep the group axis and let broadcasting
+in the matmul do the repetition (Chapter 2), or call
+<code>scaled_dot_product_attention(..., enable_gqa=True)</code> (PyTorch 2.5+), whose kernels read the shared
+heads directly.</li>
+<li><b>How much the copy costs.</b> One layer's K for a Llama-3-70B-shaped model (8 KV heads, 64 query heads,
+so <code>n_rep = 8</code>) at 8,192 tokens in bf16: <code>1 × 8 × 8192 × 128 × 2</code> =
+<b>16.8 MB</b> stored; materialised for 64 heads it is <b>134 MB</b>, and the same again for V. That is
+per layer, per forward pass, and it is the whole saving GQA was supposed to deliver.</li>
+<li><b>You cannot write into an expanded tensor.</b> <code>e[0, 0, 0] = 1</code> would change four
+"different" entries at once, so in-place writes to tensors with overlapping memory raise an error. Take a
+<code>.clone()</code> first if you need to modify it.</li>
+</ol>
+
+<h3>In-place operations, views, and autograd</h3>
+
+<p>An op ending in an underscore (<code>add_</code>, <code>mul_</code>, <code>exp_</code>, <code>x[i] = …</code>)
+overwrites its input instead of allocating an output. It saves memory, and it interacts with autograd in two
+ways that produce the two error messages every PyTorch user eventually meets.</p>
+
+<div class="box gotcha">
+<span class="t">Error 1: modifying a leaf that requires grad</span>
+<pre style="margin:.6em 0 .6em"><code class="nohl">w = torch.randn(3, requires_grad=True)
+w.add_(1.0)
+RuntimeError: a leaf Variable that requires grad is being used in an in-place operation.</code></pre>
+<p style="margin-bottom:0">A parameter is a <i>leaf</i>: autograd needs its value as it was when the graph
+was built. Updating weights in-place is legitimate only outside the graph, which is why every optimizer's
+step runs under <code>torch.no_grad()</code>, and why initialisation code does too.</p>
+</div>
+
+<div class="box gotcha">
+<span class="t">Error 2: overwriting something backward needs</span>
+<pre style="margin:.6em 0 .6em"><code class="nohl">x = torch.randn(3, requires_grad=True)
+y = x.sigmoid()          # backward of sigmoid uses its OUTPUT: dy/dx = y (1 - y)
+y.mul_(2)                # ...which we just overwrote
+y.sum().backward()
+RuntimeError: one of the variables needed for gradient computation has been modified
+by an inplace operation: [torch.FloatTensor [3]], which is output 0 of Sigmoid,
+is at version 1; expected version 0 instead.</code></pre>
+<p style="margin-bottom:0">Every tensor carries a <b>version counter</b> that each in-place op increments.
+When an op saves a tensor for backward it records the version; if the version has changed by the time
+backward runs, autograd refuses rather than compute a wrong gradient. The error tells you which op's saved
+tensor was clobbered (here, output 0 of Sigmoid). Find the in-place op after it and make it out-of-place.</p>
+</div>
+
+<p><b>Why views make this worse.</b> A view shares storage with its base, so an in-place op on the view
+modifies the base too, and bumps the base's version counter:</p>
+
+<pre><code>h = x * 1.0              # (4,)  version 0
+view = h[:2]             # a view into h
+view.exp_()              # writes through to h
+h._version               # 1 — anything that saved h for backward is now invalid</code></pre>
+
+<p>The write is invisible at the site where <code>h</code> was used, which is why the error often points at a
+line that looks innocent. The rule that avoids all of this: <b>do not use in-place ops on activations inside
+a model's forward pass</b> unless you have measured that the memory matters. The exceptions that ship
+(<code>ReLU(inplace=True)</code>, fused optimizers, KV-cache writes at inference) are all places where
+nothing downstream needs the overwritten value.</p>
+
 <h2>1.6 · dtype and memory — the numbers that decide what fits</h2>
 
 <p>Shape tells you how many numbers. dtype tells you how big each one is. Multiply them and you get the
@@ -443,6 +529,35 @@ constraint that governs everything in practice.</p>
 <p>That number — roughly <b>16–20 bytes per parameter to train, 2 bytes per parameter to serve</b> — explains
 most of the engineering in Parts IV and V of this course.</p>
 
+<h3>Type promotion: the silent upcast</h3>
+
+<p>When an op mixes dtypes, PyTorch picks a result dtype by <b>type promotion</b>, and it never warns.
+<code>tfs.foundations.promotion_table</code> asks <code>torch.result_type</code> for the cases that matter:</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>Expression</th><th>Result</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><code>int64 tensor + float32 tensor</code></td><td><code>float32</code></td><td>a float category beats an integer one</td></tr>
+<tr><td><code>bf16 tensor + float32 tensor</code></td><td><b><code>float32</code></b></td><td>the wider float wins</td></tr>
+<tr><td><code>bf16 tensor + fp16 tensor</code></td><td><b><code>float32</code></b></td><td>neither can represent the other, so both go up</td></tr>
+<tr><td><code>bf16 tensor + 2.5</code> (Python float)</td><td><code>bfloat16</code></td><td>Python scalars do not promote within a category</td></tr>
+<tr><td><code>bf16 tensor + 0-dim fp32 tensor</code></td><td><code>bfloat16</code></td><td>0-dim tensors behave like scalars</td></tr>
+<tr><td><code>uint8 + int8</code></td><td><code>int16</code></td><td>the smallest type that holds both ranges</td></tr>
+<tr><td><code>int64 / int64</code></td><td><code>float32</code></td><td><code>/</code> is true division; <code>//</code> stays <code>int64</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The expensive row is the second one. Suppose an activation of shape <code>(8, 4096, 4096)</code> is in bf16
+(268 MB) and a bias or scale that someone created with the default dtype is a 1-D fp32 tensor. The sum is
+fp32: <b>537 MB</b>, and every op after it runs in fp32 too, off the bf16 tensor-core path, until something
+casts it back. Nothing crashes, the loss looks normal, and the step is slower and fatter. Two habits prevent
+it: create buffers with <code>dtype=x.dtype</code> (or register them so <code>model.to(dtype)</code> converts
+them), and inside <code>torch.autocast</code> let autocast choose the dtype per op instead of mixing by hand.
+The deliberate upcasts (RMSNorm's reduction in Chapter 8, the softmax in Chapter 5) are written with an
+explicit <code>.float()</code> and an explicit cast back.</p>
+
 <div class="quiz" data-title="Checkpoint 2 — memory arithmetic">
 <div class="qitem" data-answer="1">
   <div class="qq">A tensor of shape <code>(32, 2048, 4096)</code> in bfloat16. How much memory?</div>
@@ -468,6 +583,44 @@ most of the engineering in Parts IV and V of this course.</p>
   bits; fp16 has 5 exponent and 10 mantissa. Training cares far more about not overflowing than about the
   last few decimal digits — so bf16 trains stably without the loss-scaling machinery fp16 requires.
   Both are 2 bytes.</div>
+</div>
+</div>
+
+<div class="quiz" data-title="Checkpoint 3 — views, in-place, promotion">
+<div class="qitem" data-answer="2">
+  <div class="qq"><code>k</code> has shape <code>(B, 8, T, 128)</code>. You write <code>k[:, :, None].expand(B, 8, 8, T, 128).reshape(B, 64, T, 128)</code>. How much new memory does this allocate?</div>
+  <div class="opts">
+    <div class="opt">None: expand and reshape are both views</div>
+    <div class="opt">Only the strides, a few bytes</div>
+    <div class="opt">8× the size of <code>k</code>: the reshape cannot merge a stride-0 axis, so it copies</div>
+    <div class="opt">2× the size of <code>k</code></div>
+  </div>
+  <div class="expl"><b>The reshape copies.</b> <code>expand</code> alone is free (stride 0). Merging the expanded
+  axis with the head axis has no stride that describes it, so <code>reshape</code> materialises all 64 heads. To
+  stay free, keep the group axis and broadcast, or use SDPA's <code>enable_gqa=True</code>.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">Backward fails with "…modified by an inplace operation… which is output 0 of Sigmoid, is at version 1; expected version 0". What is the most direct fix?</div>
+  <div class="opts">
+    <div class="opt">Find the in-place op applied to the sigmoid's output (or a view of it) after the sigmoid, and make it out-of-place</div>
+    <div class="opt">Call <code>.detach()</code> on the sigmoid output</div>
+    <div class="opt">Wrap the forward in <code>torch.no_grad()</code></div>
+    <div class="opt">Set <code>requires_grad=False</code> on the input</div>
+  </div>
+  <div class="expl"><b>Sigmoid's backward needs its output</b> (dy/dx = y(1 − y)), so it saved it at version 0.
+  Something wrote to it afterwards. Options B–D all "fix" the error by deleting the gradient you wanted.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">Your bf16 model runs 30% slower than expected and uses more memory, with no errors. A profiler shows fp32 matmuls in the MLP. Most likely cause?</div>
+  <div class="opts">
+    <div class="opt">bf16 matmuls are not supported on this GPU</div>
+    <div class="opt">Adding a Python float like <code>x * 0.5</code> promoted the activations</div>
+    <div class="opt">A 0-dim fp32 tensor was added to the activations</div>
+    <div class="opt">A 1-D fp32 tensor (for example a bias created with the default dtype) was combined with a bf16 activation, promoting it and everything after it to fp32</div>
+  </div>
+  <div class="expl"><b>Dimensioned tensors promote; scalars do not.</b> <code>bf16 + 2.5</code> and
+  <code>bf16 + 0-dim fp32</code> both stay bf16. A real fp32 tensor with at least one dimension wins, and the
+  upcast propagates through every op that follows.</div>
 </div>
 </div>
 
@@ -600,11 +753,78 @@ not weights, is often what OOMs you.</li>
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">1.5</span><span class="ti">Read a real model's shape trace</span><span class="lvl">essential</span></div>
+<div class="eb">
+<p><code>tfs.foundations.shape_trace()</code> builds Llama-3-8B from its published config on PyTorch's
+<code>meta</code> device (tensors with shapes but no storage, so it needs no memory and no download) and
+records every submodule's input and output shape during a forward pass on a batch of 2 sequences of 16
+tokens. Here is layer 0's trace, with the shapes removed. Fill them in before you run it, and name the axis each
+op consumes or produces.</p>
+<pre><code class="nohl">embed                 (2, 16)          -&gt; ?
+blocks.0.n1           ?                -&gt; ?
+blocks.0.attn.q_proj  ?                -&gt; ?
+blocks.0.attn.k_proj  ?                -&gt; ?
+blocks.0.attn.v_proj  ?                -&gt; ?
+blocks.0.attn.o_proj  ?                -&gt; ?
+blocks.0.mlp.gate     ?                -&gt; ?
+blocks.0.mlp.down     ?                -&gt; ?
+head                  ?                -&gt; ?</code></pre>
+<details class="reveal"><summary>Answer</summary><div>
+<pre><code class="nohl">embed                 (2, 16)          -&gt; (2, 16, 4096)     ids become vectors: a feature axis appears
+blocks.0.n1           (2, 16, 4096)    -&gt; (2, 16, 4096)     normalises along the feature axis, shape unchanged
+blocks.0.attn.q_proj  (2, 16, 4096)    -&gt; (2, 16, 4096)     32 heads × 128, still flat
+blocks.0.attn.k_proj  (2, 16, 4096)    -&gt; (2, 16, 1024)     only 8 KV heads × 128: GQA, Ch 16
+blocks.0.attn.v_proj  (2, 16, 4096)    -&gt; (2, 16, 1024)
+blocks.0.attn.o_proj  (2, 16, 4096)    -&gt; (2, 16, 4096)     heads merged back, then mixed
+blocks.0.mlp.gate     (2, 16, 4096)    -&gt; (2, 16, 14336)    the MLP widens the feature axis 3.5×
+blocks.0.mlp.down     (2, 16, 14336)   -&gt; (2, 16, 4096)     ...and narrows it back
+head                  (2, 16, 4096)    -&gt; (2, 16, 128256)   one score per vocabulary entry, per position</code></pre>
+<p style="margin-bottom:0">Two things to notice. Batch and time never change from the embedding to the head:
+every op here acts on the feature axis only, and the one op that mixes positions (the attention scores) happens
+<i>inside</i> the attention module, between <code>k_proj</code> and <code>o_proj</code>, where the trace does
+not see it. And <code>k_proj</code>'s output is a quarter the width of <code>q_proj</code>'s: if you remember one
+shape from this trace, make it that one. The test <code>test_ch01_llama3_shape_trace</code> asserts these shapes.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">1.6</span><span class="ti">Predict, then measure: views, copies and versions</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>For each line, predict (a) whether the result shares memory with <code>k</code>
+(<code>t.untyped_storage().data_ptr() == k.untyped_storage().data_ptr()</code>), (b) its strides. Then check.</p>
+<pre><code>k = torch.randn(2, 8, 64, 128)
+a = k.transpose(1, 2)
+b = k[:, :, None].expand(2, 8, 4, 64, 128)
+c = b.reshape(2, 32, 64, 128)
+d = k.repeat(1, 4, 1, 1)
+e = k[:, ::2]
+f = e.contiguous()</code></pre>
+<p>Then: make <code>h = k * 1.0</code>, take <code>v = h[:, 0]</code>, call <code>v.zero_()</code>, and print
+<code>h._version</code>. Explain the number.</p>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">a  shares   stride (65536, 128, 8192, 1)      transpose only swaps strides
+b  shares   stride (65536, 8192, 0, 128, 1)   the new axis has stride 0
+c  COPY     stride (262144, 8192, 128, 1)     merging a stride-0 axis forces a copy
+d  COPY     stride (262144, 8192, 128, 1)     repeat always copies (and orders heads 0..7,0..7,...)
+e  shares   stride (65536, 16384, 128, 1)     slicing with a step doubles one stride
+f  COPY     stride (32768, 8192, 128, 1)      contiguous() copies only when it must, and here it must</code></pre>
+<p style="margin-bottom:0"><code>h._version</code> is 1: the in-place write went through the view into
+<code>h</code>'s storage and bumped <code>h</code>'s counter. Note also the difference between <code>c</code>
+and <code>d</code>: same shape, but <code>c</code> orders heads <code>0,0,0,0,1,1,…</code> (what GQA needs)
+and <code>d</code> orders them <code>0,1,…,7,0,1,…</code> (wrong for GQA). That is the
+<code>repeat</code> vs <code>repeat_interleave</code> bug Chapter 16 warns about.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://docs.pytorch.org/docs/stable/tensor_view.html">PyTorch — Tensor Views</a> — the authoritative list of which ops return views vs copies.</li>
 <li><a href="https://numpy.org/doc/stable/reference/arrays.ndarray.html#internal-memory-layout-of-an-ndarray">NumPy — internal memory layout</a> — the clearest written explanation of strides.</li>
 <li><a href="https://jalammar.github.io/visual-numpy/">Jay Alammar — A Visual Intro to NumPy</a> — if any of §1.1–1.4 still felt abstract, read this next.</li>
+<li><a href="https://docs.pytorch.org/docs/stable/tensor_attributes.html#type-promotion-doc">PyTorch — Type promotion</a> and <a href="https://docs.pytorch.org/docs/stable/notes/autograd.html#in-place-operations-with-autograd">Autograd mechanics — in-place operations</a></li>
+<li><a href="https://huggingface.co/meta-llama/Meta-Llama-3-8B/blob/main/config.json">Llama-3-8B <code>config.json</code></a> — the source of exercise 1.5's shapes</li>
+<li>Reference code: <code>tfs/foundations.py</code> (Ch 1 section) · tests: <code>tests/test_foundations.py</code></li>
 <li>Companion notebook: <code>notebooks/01_tensors_and_shapes.ipynb</code></li>
 </ul>
 

@@ -26,28 +26,20 @@ systems/cost estimate, one implementation and one "predict, then measure".
 ### Ch 00 · Numbers in a Machine — **A**
 Written to the standard in October 2026 (8.1k words, 12 exercises, numfmt-tested). No action.
 
-### Ch 01 · Tensors, Shapes — **A−**
-Excellent pacing; strides, view vs reshape, and the memory arithmetic are exactly right for
-the audience. Fact-checked: Llama-3-8B untied embeddings, memory sums.
-Missing, by value:
-1. `expand` vs `repeat` (stride-0 views): needed for GQA's `repeat_kv` in Ch 16 and a classic
-   silent memory blow-up.
-2. In-place ops and autograd ("a leaf Variable that requires grad is being used in an in-place
-   operation"), and why views make in-place dangerous.
-3. dtype promotion rules (`int + float`, `bf16 + fp32` → fp32) with the silent-upcast cost.
-4. A "read this real shape trace" exercise from an actual open model's forward pass.
-
-### Ch 02 · Matrix Multiplication — **A−**
-Fixed: the H100 estimate divided by peak FLOP/s while calling it "realistic utilisation"
-(said 10 days on 100 H100s; at ~45% MFU it is ~3 weeks). Clarified that `12·n_layer·d·T²`
-is a training-step figure.
-Missing:
-1. Tensor-core shape alignment (dimensions as multiples of 8/64/128 and why vocab sizes are
-   padded) — the first place a reader meets "shapes affect speed".
-2. Arithmetic intensity of a matmul in one paragraph, forward-linked to Ch 14.
-3. The FLOP count of a full transformer layer derived from its matmuls (2·12·d² per token
-   for attention + MLP projections), connecting 2.5 to Ch 9's parameter count.
-
+### Ch 01 · Tensors, Shapes — **A** (raised November 2026)
+3.5k → 5.4k words, 8 → 11 quiz questions, 4 → 6 exercises. Added: stride-0 `expand` vs `repeat`, why
+`expand`+`reshape` (HF `repeat_kv`) copies anyway and what that costs for a 70B-shaped layer (16.8 → 134 MB);
+in-place ops and autograd (both error messages reproduced, version counters, writes through views); a type-promotion
+table from `torch.result_type` incl. the 0-dim and Python-scalar exceptions and the bf16 + fp32 silent upcast;
+Checkpoint 3; exercise 1.5 reads Llama-3-8B's real forward trace (built on the meta device from its config);
+exercise 1.6 predict-then-measure on strides and versions. Every new number is computed in `tfs/foundations.py` and asserted in `tests/test_foundations.py`.
+### Ch 02 · Matrix Multiplication — **A** (raised November 2026)
+Earlier fix kept (MFU in the H100 estimate). 3.1k → 4.7k words, 5 → 8 quiz questions, 4 → 6 exercises. Added: one
+layer's FLOPs derived matmul by matmul (24d² weights + 4Td attention; GPT-2 small numbers; the T = 6d crossover);
+new §2.6 on arithmetic intensity (M = 1 … 4096 against the H100 ridge; decode is M = 1) and tile alignment
+(tile utilisation, 50,257 → 50,304, Llama 3 / Qwen2.5 vocab sizes as multiples of 128); Checkpoint 3; exercises
+on the batch size that makes decode compute-bound (M ≈ 326) and a 4096-vs-4097 predict-then-measure.
+Every new number is computed in `tfs/foundations.py` and asserted in `tests/test_foundations.py`.
 ### Ch 20 · Mixture of Experts — rewritten, **A**
 2.1k → ~7.5k words. New: three router types and their equivalence, the top-1 zero-gradient
 trap, sorted dispatch / grouped GEMM, capacity and measured drop rates, aux loss derived,
@@ -58,83 +50,56 @@ experts, training stability, upcycling, a 7-model spec table with arithmetic cro
 8 quiz questions, 7 exercises. Every number from `tfs/moe.py` / `notebooks/20_moe.ipynb`.
 Next: an interactive router widget (tokens × experts, top-k, load bars, bias balancing).
 
-### Ch 03 · Tokenization — **B+**
-Clear BPE build-up; the hand-traced merges are verified (24 → 19 → 14 → 10 → 9 tokens).
-Fixed: Gemma 3's vocabulary is 262,144, not 256,000; the GPT-2 digit splits are now labelled
-illustrative (they were stated without a reproducible source).
-Missing, by value:
-1. **Streaming detokenization**: a token can end mid-way through a UTF-8 character, so a server
-   must buffer bytes before emitting text. Every inference engineer hits this.
-2. **Special-token injection**: user text containing `<|eot_id|>` must not be encoded as the
-   special id (`allowed_special`/`disallowed_special`); this is a security boundary.
-3. Modern pre-tokenization (GPT-4's `cl100k` pattern, digit groups `\p{N}{1,3}`), Unigram LM
-   vs BPE (SentencePiece), normalisation (NFKC) and why it is lossy.
-4. Vocabulary size as a scaling decision (Tao et al. 2024), with the parameter/sequence-length
-   trade computed rather than asserted; byte-level and tokenizer-free models (BLT, 2024).
-5. Token healing / prompt-boundary effects as a mechanism, not only the trailing-space anecdote.
-6. A measured multilingual fertility table produced by code in the repo.
-
-### Ch 04 · Embeddings and the Residual Stream — **B+**
-The residual-stream section is the best explanation in Part I. Fixed: "a token seen once gets one
-gradient update, ever" was wrong under AdamW (momentum keeps moving the row; weight decay shrinks
-every row every step), which also changes the explanation of glitch tokens.
-Missing:
-1. Embedding scale and initialisation (Gemma multiplies by √d_model; std choices; why the
-   residual stream's norm grows with depth and what pre-norm does about it).
-2. A real logit-lens run with output shown (the chapter promises one in a notebook that does
-   not exist yet), plus the tuned-lens caveat.
-3. Output-side details that matter in practice: final-logit soft-capping (Gemma 2), z-loss on
-   the output softmax, vocab padding to a multiple of 64/128 for tensor cores.
-4. Superposition deserves one worked toy example (Elhage et al. 2022), not one sentence.
-
-### Ch 05 · Attention From Scratch — **A−**
-The best chapter in Part II: the √dₖ derivation, a hand-worked causal pass whose every number
-checks, and four "bugs that don't crash". Fixed a self-contradiction: the complexity table used
-d = 64 for both attention and projections, which made attention 16× *larger* at 1k tokens while
-the text said projections dominate there. Rebuilt per layer for a 7B-class model (crossover at
-T = 6·d_model ≈ 25k). Exercise 5.4 compared training attention FLOPs (12·L·d·T²) with
-forward-only parameter FLOPs (2N·T) and got ~9k; like with like it is ~27k.
-Missing:
-1. Padding and batching: left- vs right-padding for batched generation, and the all-masked-row
-   NaN with a worked fix (the chapter mentions it in one clause).
-2. Modern attention details: QK-norm, logit soft-capping, attention sinks as a mechanism
-   (softmax must sum to 1), with the "off-by-one" softmax and sink tokens.
-3. Numerically stable softmax (subtract the row max) shown here, since Ch 17 depends on it.
-4. Multi-query/causal efficiency of training: one forward pass yields T predictions — derive
-   the cross-entropy over all positions here, not only state it.
-
+### Ch 03 · Tokenization — **A** (raised November 2026)
+Earlier fixes kept. 2.7k → 5.7k words, 4 → 8 quiz questions, 3 → 6 exercises. All six items addressed:
+(1) §3.6 streaming detokenization with a worked byte-level example and a `StreamingDetokenizer`; (2) special-token
+injection shown with the repo tokenizer (`allow_special`), tiktoken vs HF defaults; (3) new §3.3: cl100k
+pre-tokenizer vs GPT-2 on the same string, NFKC (lossy, computed), Unigram vs BPE; (4) vocabulary as a scaling
+decision computed as FLOPs per character for Llama-3-8B's body at 32k vs 128k (15% cheaper, from the Llama 3
+paper's 3.17 → 3.94 chars/token), Tao et al. 2024's 216K, a measured vocab sweep on a fixed corpus fixture
+(`tests/fixtures/ch03_corpus.txt`), BLT; (5) token healing as a mechanism with a measured example; (6) a measured
+8-language fertility table. Every new number is computed in `tfs/foundations.py` and asserted in `tests/test_foundations.py`.
+### Ch 04 · Embeddings and the Residual Stream — **A** (raised November 2026)
+Earlier AdamW fix kept. 2.3k → 4.8k words, 3 → 9 quiz questions, 3 → 6 exercises. Added: a whole-chapter box; §4.5
+residual-stream growth measured on `tfs.model` at init (2.9× with GPT-2's scaled init vs 16× without, and at 24/48
+layers), pre-norm dilution, why tied models scale embeddings by √d; §4.6 Gemma 2 soft-capping and PaLM z-loss
+(computed), vocab padding; a reproducible logit-lens run on a 2-layer model trained in the test suite
+(chance → chance → 100%: induction composition) plus the tuned-lens caveat (the promise of a notebook that does not
+exist removed); §4.8 the 5-features-in-2-dimensions superposition toy (2 / 4 / 5 features, a pentagon at 72°); two
+checkpoints; exercises on depth scaling, logits memory (8.4 GB bf16) and importance-weighted superposition.
+Every new number is computed in `tfs/foundations.py` and asserted in `tests/test_foundations.py`.
+### Ch 05 · Attention From Scratch — **A** (raised November 2026)
+Earlier complexity-table fix kept. 3.3k → 5.9k words, 3 → 7 quiz questions, 4 → 6 exercises. All four items:
+(1) §5.9 left vs right padding, position ids under left padding, the all-masked-row NaN reproduced and fixed;
+(2) §5.10 the QK-norm bound (√d·g² = 11.3 at d = 128), soft-capping, attention sinks and the off-by-one / learned-sink
+softmax with computed weights; (3) the stable softmax, with overflow thresholds per dtype; (4) the all-positions
+cross-entropy derived and checked against prefix-by-prefix evaluation on `tfs.model` (3.96008 both). Exercise 5.6's
+measurement showed bf16 rounds 999 to 1000 (softmax [0.5, 0.5]); the answer says so. Every new number is computed in `tfs/foundations.py` and asserted in `tests/test_foundations.py`.
 ### Ch 06 · Multi-Head Attention — **A**
-The reshape-dance treatment (memory positions, the transpose-before-merge bug, the loop-vs-vectorised
-proof test) is excellent. Fixed a quiz explanation that wrote T×64 for T²×64. Small additions:
-per-head QK/OV circuit view (one paragraph), and the fused-QKV weight layout differences between
-codebases (a frequent checkpoint-conversion bug).
-
-### Ch 07 · Position — **A−**
-Clean derivation; the worked RoPE dot product (0.47775 at every offset 2) checks. Fixed exercise
-7.3: the longest wavelengths are 5.4×10⁴ / 2.6×10⁶ tokens (said 5.9×10⁴ / 3.0×10⁶) and 18 / 32
-pairs exceed 4096 tokens (said 21 / 30); added the closed form. Added Llama 4's interleaved NoPE
-global layers. Missing: partial RoPE (rotating only part of the head, used by DeepSeek's decoupled
-RoPE and others), multimodal RoPE (2D/3D, Qwen2-VL M-RoPE), and a measured length-extrapolation
-plot from the repo's own model.
-
-### Ch 08 · The Transformer Block — **A−**
-Checked: 11008 / 22016 / 28672 d_ff arithmetic, GPT-2 12·L·d² sanity check, Llama-2-7B MLP share
-(65%). Strong on norm placement and SwiGLU. Missing:
-1. QK-norm and sandwich norm get one paragraph each; they deserve the same derivation treatment
-   as pre- vs post-LN (logit growth → softmax saturation → loss spikes), with a measured plot.
-2. Parallel attention+MLP blocks (GPT-J, PaLM) and why they fell out of favour.
-3. A per-block FLOP and memory budget (activations saved for backward), linking to Ch 19's
-   activation checkpointing.
-
+2.6k → 4.1k words, 3 → 6 quiz questions, 4 → 6 exercises. Added the two small items: §6.5 QK and OV circuits
+(rank ≤ d_head, checked) and §6.6 fused-QKV layouts (blocked vs NeoX per-head vs separate, a 12-row worked example,
+conversion with a test), plus GPT-2's Conv1D transposition and the Llama RoPE row permutation; a whole-chapter box,
+Checkpoint 2, a conversion exercise and a previous-token-head exploration. Every new number is computed in `tfs/foundations.py` and asserted in `tests/test_foundations.py`.
+### Ch 07 · Position — **A** (raised November 2026)
+Earlier exercise 7.3 fixes kept. 2.7k → 4.6k words, 3 → 6 quiz questions, 3 → 5 exercises. Added: §7.6 partial and
+decoupled RoPE (code, tested relative property, GPT-J / NeoX / Phi-2 / DeepSeek configs); §7.7 M-RoPE (Qwen2-VL
+sections; reduces exactly to 1-D RoPE for text, tested); §7.8 a measured length-extrapolation table from the
+repo's own model (it fails past the trained length even at a trained copy distance, and why); exercise 7.4 measures
+position interpolation without fine-tuning (it makes this model worse: 5.45 vs 3.62), and 7.5 costs partial RoPE.
+A table rather than a plot (there is no plotting component). Every new number is computed in `tfs/foundations.py` and asserted in `tests/test_foundations.py`.
+### Ch 08 · The Transformer Block — **A** (raised November 2026)
+2.6k → 5.0k words, 3 → 7 quiz questions, 4 → 7 exercises. All three items: (1) §8.6 logit growth → saturation →
+vanishing softmax Jacobian → spikes, with a measured saturation table, QK-norm and sandwich/output norms
+(Dehghani 2023, Wortsman 2023, OLMo 2, Gemma 2); (2) §8.7 parallel blocks (GPT-J, PaLM's ~15% and 8B vs 62B), with a
+tested `ParallelBlock`; (3) §8.8 the per-block FLOP budget (Llama-2-7B, MLP 61.7%) and Korthikanti activation memory
+(3.25 GB/layer, 0.57 GB with FlashAttention), linked to Ch 10, 17 and 19. The "measured plot" is a table.
+Every new number is computed in `tfs/foundations.py` and asserted in `tests/test_foundations.py`.
 ### Ch 09 · Whole Architectures + Shape Trace — **A**
-The 20-step shape trace is the course's centrepiece. Fixed: `count_params` was claimed to return
-GPT-2's 124,439,808 but returns 123,551,232; the difference is GPT-2's learned position table
-(786,432), linear biases (82,944) and LayerNorm biases (19,200), now spelled out to the parameter.
-The trace model is ~52M parameters (said ~53M); the 128k-token KV cache of Llama-3-8B equals
-its bf16 weights (said "more than"). Missing: a decoder-only vs encoder-decoder FLOP comparison,
-and modern embedding/reranker models (they are still BERT-shaped; one paragraph on how they are
-trained, contrastively, would help engineers who build retrieval).
-
+Earlier parameter-count fixes kept. 1.9k → 3.8k words, 3 → 6 quiz questions, 4 → 6 exercises. Added both items:
+§9.5 decoder-only vs encoder-decoder FLOPs (220M vs 110M + 110M, the T5 "2P at equal cost" result) and what the count
+omits; §9.6 bi-encoders vs cross-encoder rerankers, InfoNCE with in-batch negatives, a worked example showing
+temperature and a hard negative (10⁻⁴ → 0.777); a whole-chapter box, Checkpoint 2, a retrieval sizing exercise
+and an InfoNCE chance-level exercise (measured: chance is ln B + σ²/2, not ln B). Every new number is computed in `tfs/foundations.py` and asserted in `tests/test_foundations.py`.
 ### Ch 10 · The Backward Pass — **A**
 Every derivation checks numerically (softmax Jacobian at [1, 2, 0.5]; p − y at [2, 1, 0.1]; the
 RMSNorm correction term and its orthogonality to x; attention backward). Missing, by value:
@@ -214,14 +179,18 @@ data-constrained scaling (repeating data, Muennighoff et al. 2023), test-time co
 precision scaling laws (link Ch 20, Ch 12), and the staged long-context training recipe (e.g. Llama 3's
 8k → 128k extension).
 
-### Ch 22 · The 2026 Frontier — **B**
-Most needs refreshing, by design. Fixed: added the 2025 major-lab linear-attention hybrids (Qwen3-Next:
-3 Gated DeltaNet : 1 gated attention; Kimi Linear: 3 KDA : 1 MLA; MiniMax-M1: lightning attention 7 : 1) and a
-sentence on the delta-rule direction; exercise 22.3 pointed to §22.3 for a box that is in §22.4. To check:
-the Nemotron 3 row. Missing: delta-rule / gated linear attention explained (it is now more relevant than
-Mamba), gpt-oss-style alternating sliding/full attention with learned sinks, diffusion language models
-(as a watch item), and an "agentic" section (tool use, long-horizon RL) since that is where 2026 effort went.
-
+### Ch 22 · The 2026 Frontier — **A** (raised November 2026)
+1.8k → 9.0k words, 2 → 13 quiz questions, 3 → 6 exercises. New: whole-chapter box; §22.2 gpt-oss alternating
+128-token windows / full layers (KV arithmetic) and learned sinks (worked example); §22.3 linear attention as a
+fast-weight memory (associativity, a 2-D overwrite example, measured interference √((n−1)/d_k)); §22.4 the delta rule
+as one SGD step per token (tested against autograd), gating, and the update-rule table (linear / Mamba-2 / DeltaNet /
+Gated DeltaNet / KDA); §22.5 the chunked UT-transform algorithm with code, tested equal to the recurrence, and its
+FLOPs vs softmax attention; §22.6 the associative-recall argument (MQAR, Jelassi 2024), Qwen3-Next's config
+(12 × [3 Gated DeltaNet, 1 gated attention]; memory 6.5 vs 25.8 GB at 256k), Kimi Linear (3:1 KDA:MLA, NoPE, the
+ratio-ablation table); diffusion LMs as a watch item; §22.8 agents (tool protocol, injection, prefix caching,
+long-horizon RL with masked tool tokens). Nemotron 3 row corrected to the Nano model card (23 Mamba-2, 23 MoE,
+6 attention). Every computed number is in `tfs/linear_attention.py`, asserted in `tests/test_foundations.py`.
+Not stated because it could not be verified: why Qwen chose 3:1 (the Qwen3-Next blog could not be fetched).
 ### Ch 23 · SFT, RLHF, PPO — **B**
 Reward-model arithmetic checks (0.3133 / 0.0181 / ln 2 / 1.3133). Missing, by value:
 1. **LoRA / QLoRA / parameter-efficient fine-tuning — not taught anywhere in the course.** For a working AI
