@@ -251,30 +251,61 @@ the Nemotron 3 row. Missing: delta-rule / gated linear attention explained (it i
 Mamba), gpt-oss-style alternating sliding/full attention with learned sinks, diffusion language models
 (as a watch item), and an "agentic" section (tool use, long-horizon RL) since that is where 2026 effort went.
 
-### Ch 23 · SFT, RLHF, PPO — **B**
-Reward-model arithmetic checks (0.3133 / 0.0181 / ln 2 / 1.3133). Missing, by value:
-1. **LoRA / QLoRA / parameter-efficient fine-tuning — not taught anywhere in the course.** For a working AI
-   engineer this is the most common fine-tuning tool. Needs its own section: the low-rank update, rank and
-   alpha, which matrices to adapt, memory arithmetic, merging, multi-LoRA serving (Ch 18).
-2. The modern post-training recipe: synthetic SFT data, rejection-sampling fine-tuning, distillation from a
-   stronger model (including reasoning traces), on-policy distillation.
-3. GAE derived (the chapter names it but does not explain it), and the per-token KL penalty as reward shaping.
-4. Evaluation of post-trained models (win rates with length control, LLM-as-judge pitfalls).
+### Ch 23 · SFT, LoRA, RLHF, PPO — raised to **A**
+Was **B**. Reward-model arithmetic still checks (0.3133 / 0.0181 / ln 2 / 1.3133). All four missing items addressed:
+1. **LoRA / PEFT (new §23.3).** ΔW = BA with the gradient argument for B = 0 / A random and the both-zero saddle;
+   rank, α and rsLoRA's α/√r (measured: α/r shrinks the update 4× from r = 4 to 64, α/√r does not); which matrices
+   to adapt; memory for Llama-3-8B computed from the config (8,030,261,248 params; r = 16 adapters 41,943,040 =
+   0.52%; full 128.5 GB / LoRA 16.7 GB / QLoRA 6.4 GB with NF4 at 4.127 bits) and for 70B (1,129 / 144 / 43 GB);
+   what LoRA does not save (activations; ~4N vs 6N FLOPs); merging/unmerging; DoRA in one paragraph; multi-LoRA
+   serving (83.9 MB adapter, 191× smaller than the base, +0.60% FLOPs) cross-linked to Ch 18.
+   Code: `tfs/lora.py`; tests prove merged == unmerged, unmerge restores W, only A/B get gradients, step-0 identity.
+2. **The modern recipe (new §23.4):** synthetic SFT data, rejection-sampling FT with the 1 − (1 − p)^k yield,
+   distillation including reasoning traces (R1, s1), on-policy distillation with a computed forward-vs-reverse KL
+   example (0.3681 / 0.7026 vs 0.5108 / 0.4307).
+3. **Per-token KL as reward shaping and GAE derived (§23.6):** the telescoping n-step identity, the λ-weighted
+   average, both limits, the backward recursion, and a four-token worked example at λ ∈ {0, 0.95, 1}
+   (A = [0.4171, 0.3127, 0.2450, 0.1000] at 0.95). Code: `tfs/rl.py`.
+4. **Evaluation of post-trained models (§23.8)**, pointing to the new Ch 26.
+Now 12 quiz questions in 3 checkpoints, 7 exercises (sizing, implementation, predict-then-measure, GAE).
+Companion notebook still planned (notebooks session).
 
-### Ch 24 · DPO — **A**
-The best derivation in the course; every step follows. Fixed a typo (§24.2–20.4). Missing: online / iterative
-DPO in code, and a short note on DPO with reasoning traces.
+### Ch 24 · DPO — **A** (kept)
+Missing items addressed: **online / iterative DPO in code (new §24.8)** with a tabular policy whose DPO gradient has a
+closed form (a response in no pair gets exactly zero gradient; checked against autograd) and a measured comparison at
+equal budget: reference 0.204, offline 0.395, online 0.483, online better on 40/40 seeds (`tfs/dpo.py`
+`offline_dpo`/`online_dpo`); **DPO on reasoning traces (new §24.9)**: Iterative RPO, the NLL term, length effects.
+Also fixed: malformed `<big(` tags, undefined `var(--q/--k/--o)` borders, a dead `href="#"`. Second checkpoint (3
+questions) and exercise 24.4 added.
 
-### Ch 25 · DPO Variants, GRPO, RLVR — **A−**
-GRPO advantage arithmetic checks (+2.645 / −0.378). Missing: Dr. GRPO (the length and std normalisation
-biases in GRPO), GSPO (sequence-level ratios, introduced for stable RL on MoE models — cross-link Ch 20),
-process vs outcome rewards, and the agentic/tool-use RL setting (multi-turn rollouts, environment rewards).
+### Ch 25 · DPO Variants, GRPO, RLVR — raised to **A**
+Was **A−**. GRPO advantage arithmetic still checks (+2.645 / −0.378). Added: **Dr. GRPO (§25.4)**, both biases with
+computed per-token weights (GRPO 25.0 / 8.33 / −12.5 / −2.5 ×10⁻⁴; a 1,000-token wrong answer penalised 5× less per
+token; std bias 1.51×), DAPO and Dr. GRPO reductions side by side; **GSPO (§25.5)**, sequence-level ratio as a
+geometric mean (1.0513 vs token ratios 1.105 / 0.951 / 1.492 / 0.779), Routing Replay and why MoE needed it
+(cross-linked to Ch 20); **process vs outcome rewards (§25.6)** with a Monte Carlo step-label example; **agentic
+multi-turn RL (§25.7)**: environment rewards, the action-token mask (100 of 500 tokens), trajectory-level advantages,
+asynchronous rollouts, environment hacking, SWE-RL and RAGEN. A checkpoint for the DPO family (it had none), a
+third checkpoint, and exercises 25.4–25.6. Removed an unverifiable blog link. Companion notebook still planned.
 
-### Ch 26 · Capstone — **A−**
-Fixed: the stretch-goal table's chapter numbers all predated Ch 0 (MLA → 16, MoE → 20, FlashAttention → 17,
-speculative decoding → 18, YaRN → 21, GRPO → 25); they are now links, so a label can be checked against its
-target. The model is 12,587,904 parameters (said ≈15 M). Missing: a LoRA milestone (see Ch 23), and an
-evaluation milestone (held-out perplexity plus a tiny task benchmark).
+### Ch 26 · Evaluating LLMs — new, **A**
+Written to the Ch 20 standard (~7.7k words, 11 quiz questions in 3 checkpoints, 6 exercises). What a score is (the
+five-part pipeline, log-likelihood vs generative scoring); benchmarks with item counts and saturation; contamination
+(n-gram overlap, Min-K% Prob worked example, GSM1k, time splits, canaries); scoring (normalised EM, F1, extraction
+bugs); error bars from first principles with the resolution of five real benchmarks (GPQA Diamond ±6.4 pts, AIME
+±17.9); paired vs unpaired bootstrap on the same data ([+0.8, +5.4] vs [−2.4, +8.6]); items for a 2-point gain
+(8,077 unpaired, 1,955 paired); pass@k's unbiased estimator derived and proved unbiased by exact expectation (naive
+plug-in 0.760 vs true 0.832); LLM-as-judge biases with the swap test and a fitted length-controlled win rate (62.0%
+raw → 47.4% LC on a length-only judge); Arena as Bradley-Terry; reasoning and agent evals with pass^k (0.6⁸ = 0.0168);
+building a private eval with Cohen's κ (80% agreement = κ 0.524). Code `tfs/evals.py`, tests
+`tests/test_posttraining.py`, notebook `notebooks/26_evaluation.ipynb`.
+
+### Ch 27 · Capstone — raised to **A** (was Ch 26)
+Renumbered from Ch 26. The stretch-goal table's chapter links are still checked against their targets. Fixed the
+remaining "15M parameters" to 12.6M. Added **M6 — LoRA** (325,632 trainable parameters at r = 8 = 2.59%, asserted;
+step-0 identity, B-only gradient, merge tests; DPO with two adapters on one base) and **M7 — Evaluation** (held-out
+perplexity and bits per byte with document-level bootstrap; a programmatic task benchmark with a contamination test,
+pass@k, paired bootstrap and a power calculation). Final check grown to 8 questions.
 
 ## Priorities, across the whole course
 

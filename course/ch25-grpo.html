@@ -15,10 +15,12 @@
 <p class="lead">
 DPO opened a design space, and the field explored it thoroughly. Then reasoning models arrived and changed
 the question entirely: when you can <em>verify</em> whether an answer is correct, you don't need preferences
-at all. This chapter covers both branches.
+at all. This chapter covers both branches, then the refinements of 2025 that made reasoning RL work at
+scale: <b>Dr. GRPO</b>'s fix for two hidden biases, <b>GSPO</b>'s sequence-level ratios for MoE models, <b>process
+rewards</b>, and <b>agentic</b> multi-turn RL against real environments.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch24-dpo.html">Ch&nbsp;24</a> &mdash; DPO<br><a href="ch23-sft-rlhf.html">Ch&nbsp;23</a> &mdash; PPO<div class="sep"></div><span class="k">Leads to</span><a href="ch26-capstone.html">Ch&nbsp;26</a> &mdash; align your own model<div class="sep"></div><span class="k">Why this chapter</span>When you can verify an answer, you do not need preferences at all.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch24-dpo.html">Ch&nbsp;24</a> &mdash; DPO<br><a href="ch23-sft-rlhf.html">Ch&nbsp;23</a> &mdash; PPO, GAE and the per-token KL<br><a href="ch20-moe.html">Ch&nbsp;20</a> &mdash; discrete routing, for GSPO<div class="sep"></div><span class="k">Leads to</span><a href="ch26-evaluation.html">Ch&nbsp;26</a> &mdash; pass@k, and judging what RL bought<br><a href="ch27-capstone.html">Ch&nbsp;27</a> &mdash; align your own model<div class="sep"></div><span class="k">Why this chapter</span>When you can verify an answer, you do not need preferences at all. The GRPO, Dr. GRPO, GSPO and process-reward numbers come from <code>tfs/rl.py</code> and are asserted in <code>tests/test_posttraining.py</code>.</div>
 <h2>25.1 · The DPO family</h2>
 
 <p>Every variant below changes one specific thing about the DPO loss. Knowing <i>which</i> thing tells you
@@ -69,6 +71,45 @@ Simpler and often stronger than DPO on benchmarks.</p>
 <tr><td><b>SimPO</b></td><td><b>no</b></td><td>yes</td><td>length bias is hurting you; want a simpler, strong baseline</td></tr>
 </tbody>
 </table>
+</div>
+
+<div class="quiz" data-title="Checkpoint 1 — the DPO family">
+<div class="qitem" data-answer="1">
+  <div class="qq">Your preference data is near-deterministic (annotators always prefer A) and DPO's implicit reward margin keeps growing while generations degrade. Which variant targets exactly this?</div>
+  <div class="opts">
+    <div class="opt">KTO</div>
+    <div class="opt">IPO: a squared loss toward a fixed margin 1/(2β), so there is nothing to gain by pushing the margin further</div>
+    <div class="opt">ORPO</div>
+    <div class="opt">SimPO</div>
+  </div>
+  <div class="expl"><b>A finite target.</b> DPO's −log σ is only minimised as the margin goes to infinity; with
+  deterministic preferences nothing stops it. IPO regresses the margin onto a fixed value, so the KL constraint stays
+  in force.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">You have 200k thumbs-up / thumbs-down ratings from production, each on a single response. Which method fits the data without inventing pairs?</div>
+  <div class="opts">
+    <div class="opt">DPO</div>
+    <div class="opt">IPO</div>
+    <div class="opt">SimPO</div>
+    <div class="opt">KTO</div>
+  </div>
+  <div class="expl"><b>Unpaired labels.</b> KTO learns from individually labelled examples relative to a reference
+  point, with losses weighted more than gains. Every other method in the table needs two responses to the same
+  prompt.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">What do ORPO and SimPO have in common that DPO does not?</div>
+  <div class="opts">
+    <div class="opt">Neither needs a reference model in memory</div>
+    <div class="opt">Both use unpaired data</div>
+    <div class="opt">Both sum log-probabilities over the response</div>
+    <div class="opt">Both require a separate SFT stage first</div>
+  </div>
+  <div class="expl"><b>Reference-free.</b> ORPO adds an odds-ratio term to the SFT loss; SimPO uses the
+  length-normalised log-probability with an explicit margin γ. Both drop π<sub>ref</sub>, which saves its memory and
+  its forward passes. SimPO averages rather than sums, which is its other change.</div>
+</div>
 </div>
 
 <h2>25.2 · RLVR — reinforcement learning with verifiable rewards</h2>
@@ -170,7 +211,7 @@ assert advantages([1]*8).abs().sum() < 1e-3   # no gradient signal at all</code>
         rewards = torch.tensor([reward_fn(prompt, c) for c in comps])
 
         # 2. Group-relative advantage — no value model anywhere
-        adv = (rewards - rewards.mean()) / (rewards.std() + 1e-4)      # (G,)
+        adv = (rewards - rewards.mean()) / (rewards.std(unbiased=False) + 1e-4)   # (G,)
 
         # 3. PPO-style clipped objective, with the group advantage
         logp     = policy.logprobs(prompt, comps)                      # (G, T)
@@ -226,7 +267,7 @@ aren't under-weighted.</li>
 simply wrong.</li>
 </ul>
 
-<div class="quiz" data-title="Checkpoint 1 — GRPO and RLVR">
+<div class="quiz" data-title="Checkpoint 2 — GRPO and RLVR">
 <div class="qitem" data-answer="1">
   <div class="qq">How does GRPO eliminate PPO's value model?</div>
   <div class="opts">
@@ -268,7 +309,243 @@ simply wrong.</li>
 </div>
 </div>
 
-<h2>25.4 · How to choose</h2>
+<h2>25.4 · Dr. GRPO: two biases hiding in the normalisation</h2>
+
+<p>GRPO's objective, as DeepSeekMath wrote it, has two normalisations that look like harmless bookkeeping. Liu et
+al. (2025, "Understanding R1-Zero-Like Training") showed that each one biases what the model learns, and that the
+first one is a reason responses grow longer during RL whether or not length helps.</p>
+
+<div class="mathblock" style="text-align:left;padding-left:24px">
+ℒ<sub>GRPO</sub> = <span class="frac"><span class="n">1</span><span class="d">G</span></span> Σ<sub>i</sub> <b><span class="frac"><span class="n">1</span><span class="d">|o<sub>i</sub>|</span></span></b> Σ<sub>t</sub> min( ρ<sub>i,t</sub> Â<sub>i</sub>, clip(ρ<sub>i,t</sub>) Â<sub>i</sub> ) &nbsp;&nbsp;&nbsp;
+Â<sub>i</sub> = <span class="frac"><span class="n">r<sub>i</sub> − mean(r)</span><span class="d"><b>std(r)</b></span></span>
+<span class="lbl">the two bold terms are the biases · |o<sub>i</sub>| = length of completion i in tokens</span>
+</div>
+
+<h3>Bias 1 · dividing by the completion's own length</h3>
+
+<p>Each token of completion i is weighted by Â<sub>i</sub>/(G·|o<sub>i</sub>|). For a correct answer
+(Â &gt; 0) a short completion gets a bigger push per token, so the policy learns to be brief when right. For a wrong
+answer (Â &lt; 0) a <i>long</i> completion gets a smaller penalty per token, so the policy learns that if it is
+going to be wrong, it should be wrong at length.</p>
+
+<div class="example">
+<span class="t">Worked example — one group of four, two right and two wrong</span>
+<p>Rewards [1, 1, 0, 0], so Â = [+1, +1, −1, −1]. Lengths in tokens [100, 300, 200, 1000]. The weight one token
+of each completion gets in the loss (<code>token_weights</code>), in units of 10<sup>−4</sup>:</p>
+<pre style="margin:.4rem 0"><code class="nohl">completion           1 (right)   2 (right)   3 (wrong)   4 (wrong)
+length                 100         300         200        1000
+GRPO   Â/(G·|o|)      +25.0       +8.33      -12.5       -2.5      per-sequence mean
+DAPO   Â/Σ|o|         +6.25       +6.25      -6.25      -6.25     token-level, one weight per group
+Dr.GRPO (r−mean)/(G·L) +1.25      +1.25      -1.25      -1.25     constant L = 1000</code></pre>
+<div class="step"><div class="i">!</div><div>
+<b>Under GRPO, each token of the 1,000-token wrong answer is penalised 5× less than each token of the 200-token
+wrong answer.</b> Summed over the sequence the two penalties are equal (−0.25 each), so nothing in the loss
+pushes against length, while per token, longer wrong answers are cheaper. Over thousands of steps that is a
+steady drift toward longer incorrect responses, which is what Liu et al. observed.
+</div></div>
+<p style="margin-bottom:0"><b>The fix is to divide by a constant.</b> DAPO's token-level loss (25.3) divides by the
+total tokens in the group, which removes the bias within a group; Dr. GRPO divides by a fixed number such as the
+maximum generation length, which removes it everywhere and makes the loss an unbiased policy gradient again.</p>
+</div>
+
+<h3>Bias 2 · dividing by the group's standard deviation</h3>
+
+<p>The z-score's denominator rescales every question's advantages by 1/std(r). That is not neutral: questions on
+which the group mostly agrees (almost all right, or almost all wrong) have a small std and so get <i>amplified</i>.
+Take two groups of eight:</p>
+
+<pre><code class="nohl">rewards            std      GRPO advantages        Dr. GRPO (r − mean)    1/std
+[1,0,0,0,0,0,0,0]  0.3307   +2.645 / −0.378        +0.875 / −0.125        3.02
+[1,1,1,1,0,0,0,0]  0.5000   ±1.000                 ±0.500                 2.00</code></pre>
+
+<p>GRPO weights the nearly-unsolved question <b>1.51×</b> more, relative to the half-solved one, than the raw
+reward differences justify. Whether that is good is a design choice (it is a built-in curriculum toward hard and
+easy extremes), but it is a <b>difficulty bias</b>, not part of the policy gradient. Dr. GRPO drops the std and
+uses Â<sub>i</sub> = r<sub>i</sub> − mean(r). With both fixes, Liu et al. report reasoning accuracy matching
+GRPO with markedly shorter responses on wrong answers, and a minimal recipe reaching 43.3% on AIME 2024 with a 7B
+base model.</p>
+
+<pre><code>def grpo_advantages(rewards, scale_by_std=True, eps=1e-4):       # tfs/rl.py
+    r = torch.as_tensor(rewards, dtype=torch.float64)
+    a = r - r.mean()
+    return a / (r.std(unbiased=False) + eps) if scale_by_std else a  # Dr. GRPO: scale_by_std=False
+
+# the loss reduction is the other half of the fix:
+#   GRPO     (per_token * mask).sum(-1) / mask.sum(-1)   then mean over G     <- length-biased
+#   DAPO     (per_token * mask).sum() / mask.sum()                           <- per group/batch
+#   Dr.GRPO  (per_token * mask).sum() / (G * MAX_LEN)                        <- a constant</code></pre>
+
+<h2>25.5 · GSPO: one ratio per sequence, and why MoE needed it</h2>
+
+<p>Look again at the GRPO objective. The <i>reward</i> and the advantage are per sequence: one number for the
+whole completion. The <i>importance ratio</i> ρ<sub>i,t</sub> = π<sub>θ</sub>(y<sub>t</sub>|…)/π<sub>old</sub>(y<sub>t</sub>|…)
+is per token, and so is the clipping. Each token's ratio is a single-sample correction for the change in one
+next-token distribution; over a 10,000-token completion those noisy corrections accumulate, and clipping
+individual tokens throws away gradient from tokens in the middle of otherwise good sequences. Group Sequence Policy
+Optimization (Zheng et al. 2025, the Qwen team) matches the unit of the correction to the unit of the reward:</p>
+
+<div class="mathblock">
+s<sub>i</sub> = <big>(</big> π<sub>θ</sub>(y<sub>i</sub>|x) / π<sub>old</sub>(y<sub>i</sub>|x) <big>)</big><sup>1/|y<sub>i</sub>|</sup>
+= exp( <span class="frac"><span class="n">1</span><span class="d">|y<sub>i</sub>|</span></span> Σ<sub>t</sub> log ρ<sub>i,t</sub> )
+&nbsp;&nbsp;&nbsp;&nbsp;
+ℒ<sub>GSPO</sub> = <span class="frac"><span class="n">1</span><span class="d">G</span></span> Σ<sub>i</sub> min( s<sub>i</sub>Â<sub>i</sub>, clip(s<sub>i</sub>, 1−ε, 1+ε)Â<sub>i</sub> )
+<span class="lbl">the geometric mean of the token ratios · length-normalised so long and short sequences sit on one scale</span>
+</div>
+
+<div class="example">
+<span class="t">Worked example — four tokens, token ratios vs one sequence ratio</span>
+<div class="step"><div class="i">1</div><div>
+<b>Token log-ratios</b> log π<sub>θ</sub> − log π<sub>old</sub> = [0.10, −0.05, 0.40, −0.25], so the token ratios are
+<pre style="margin:.4rem 0"><code class="nohl">ρ_t = [1.105, 0.951, 1.492, 0.779]      with ε = 0.2: tokens 2 and 3 fall outside [0.8, 1.2]</code></pre>
+GRPO clips two of the four tokens, and which two depends on the noise of single-token probabilities.
+</div></div>
+<div class="step"><div class="i">2</div><div>
+<b>Sequence ratio</b>: mean log-ratio = 0.20/4 = 0.05, s = e<sup>0.05</sup> = <b>1.0513</b>. The sequence as a whole
+barely moved, and GSPO treats it that way: every token of this completion shares the ratio 1.0513.
+</div></div>
+<p style="margin-bottom:0"><code>gspo_ratio</code> computes it with a padding mask, so padded positions do not count
+toward the length; the test checks both the value and the masking.</p>
+</div>
+
+<h3>The MoE connection</h3>
+
+<p>In a Mixture-of-Experts model (Chapter 20) each token is routed to its top-k experts, and top-k is discrete. A
+small weight update can flip one of a token's experts between the policy that generated the sample and the policy
+being trained. That token's log-probability then jumps, its ratio lands far from 1, and its clipped, reweighted
+gradient becomes erratic; across a long sequence with dozens of MoE layers many tokens are affected. The GSPO paper
+reports that with GRPO, the Qwen team needed <b>Routing Replay</b> to make RL on its MoE models converge: cache the
+experts the old policy chose for every token and force the new policy to use the same ones when computing the
+ratio. That costs memory and communication and constrains the model. Because GSPO averages log-ratios over the whole
+sequence, a few tokens whose routing flipped barely move s<sub>i</sub>, and the paper reports stable MoE training
+without Routing Replay. The same averaging makes GSPO more tolerant of small numerical differences between the
+inference engine that generated the samples and the training engine that recomputes their log-probabilities (Ch 12),
+a practical headache in every large RL system. The paper also reports that GSPO clips a far larger fraction of
+tokens than GRPO and still trains more efficiently, which it reads as evidence of how noisy the token-level signal
+is. GSPO was used for Qwen3's RL.</p>
+
+<h2>25.6 · Outcome rewards and process rewards</h2>
+
+<p>Everything so far uses an <b>outcome reward</b>: one number for the final answer. Every token of a solution gets
+the same advantage, the brilliant first step and the arithmetic slip in step three alike. A <b>process reward
+model</b> (PRM) scores each step instead. Lightman et al. (2023, "Let's Verify Step by Step") collected 800k
+human step-level labels (PRM800K) and found a PRM picked correct solutions out of many samples more reliably than an
+outcome reward model. Human step labels are expensive, so Math-Shepherd (Wang et al. 2023) generates them
+automatically: from the prefix ending at each step, roll out several completions and record how many reach the right
+answer. A step's value is that success fraction, and its advantage is how much it changed it.</p>
+
+<div class="example">
+<span class="t">Worked example — Monte Carlo step labels find the mistake</span>
+<p>A four-step solution with a wrong final answer. From the bare prompt the model succeeds 70% of the time. From the
+end of each step, 8 rollouts (<code>mc_step_values</code>, <code>step_advantages</code>):</p>
+<pre style="margin:.4rem 0"><code class="nohl">after step           0 (prompt)    1       2       3       4
+rollouts correct        -         6/8     5/8     1/8     0/8
+value                  0.70      0.750   0.625   0.125   0.000
+step advantage                  +0.050  -0.125  -0.500  -0.125</code></pre>
+<p style="margin-bottom:0"><b>Step 3 dropped the chance of success from 62.5% to 12.5%: that is the mistake.</b> An
+outcome reward would give all four steps the same advantage (0 − 0.70 = −0.70 with the prompt's success rate as
+baseline), blaming the good first step as much as the bad third one. This is exactly what Chapter 23's value model and
+GAE estimate implicitly; Monte Carlo rollouts estimate it explicitly, at the price of many more generations.</p>
+</div>
+
+<p>Why, then, do the strongest 2025–26 reasoning models mostly train on outcome rewards? DeepSeek-R1's report lists
+PRMs among its unsuccessful attempts, for three reasons that generalise: a fine-grained "step" is hard to define in
+free-form reasoning; automatic step labels are noisy and human ones do not scale; and a learned PRM is a reward model,
+so the policy learns to write steps that <i>look</i> good to it, which is Chapter 23's reward hacking again. Outcome
+rewards from verifiers are sparse but exact. PRMs remain useful for search (choosing among sampled solutions, beam
+search over steps) and as a dense signal where outcomes are very delayed, which is the agent setting.</p>
+
+<h2>25.7 · Agentic RL: multi-turn rollouts and environment rewards</h2>
+
+<p>An agent does not answer once. It calls a tool, reads the result, thinks, calls another, and after dozens of turns
+the task is done or not: the tests pass, the ticket is resolved, the file is right. Training that behaviour with RL
+reuses everything above with four changes.</p>
+
+<ol>
+<li><b>The reward comes from an environment.</b> A sandbox (a container with the repository, a browser, a simulated
+user) runs the trajectory and checks the end state. SWE-RL (Wei et al. 2025) trained Llama 3 on real GitHub
+pull-request data with a rule-based reward (similarity of the model's patch to the real one) and reached 41.0% on
+SWE-bench Verified with a 70B model.</li>
+<li><b>Only the policy's tokens are actions.</b> A trajectory interleaves the model's turns with tool outputs and
+observations the model did not choose. Those tokens must be masked out of the policy-gradient loss (and the KL), or the
+model is trained to "predict" compiler errors and web pages, and their gradients swamp the real ones.</li>
+<li><b>Credit assignment spans turns.</b> The outcome arrives after the last turn. The simplest workable recipe is
+GRPO over whole trajectories: sample G trajectories per task, give each its outcome reward, z-score within the group,
+and apply the advantage to every action token of the trajectory. Turn-level advantages, or a process signal per turn,
+are active research.</li>
+<li><b>Rollouts dominate the cost, and they are slow and uneven.</b> One trajectory can take minutes of environment
+time. Systems therefore run generation and training asynchronously, so samples are produced by a slightly older policy
+than the one being trained, which makes the importance ratios of 25.5 do real work.</li>
+</ol>
+
+<pre><code>def agent_loss_mask(segments):                 # tfs/rl.py
+    """segments: [(role, n_tokens), ...]; only the assistant's own tokens get gradient."""
+    return torch.cat([torch.full((n,), float(role == "assistant")) for role, n in segments])
+
+mask = agent_loss_mask([("system", 20), ("user", 30), ("assistant", 40), ("tool", 200),
+                        ("assistant", 25), ("tool", 150), ("assistant", 35)])
+mask.sum(), len(mask)                         # (100, 500): 80% of this trajectory is not the policy's</code></pre>
+
+<div class="box warn">
+<span class="t">Environments are reward functions, and they get hacked like one</span>
+<p style="margin-bottom:0">The code-generation hack of exercise 25.3 gets more inventive with tools: agents have been
+observed editing or deleting the tests they are graded by, special-casing the checker's inputs, and exploiting bugs in
+the sandbox. Treat the environment as part of the reward design: grade with held-out checks the agent cannot read,
+restrict what it can modify, and audit a sample of successful trajectories by hand. RAGEN (Wang et al. 2025) also
+documents a failure specific to multi-turn RL, the "Echo Trap": reward variance across trajectories collapses, the model
+repeats a fixed pattern, and gradients spike, the multi-turn relative of the zero-variance groups in 25.3.</p>
+</div>
+
+<div class="quiz" data-title="Checkpoint 3 — the 2025 refinements">
+<div class="qitem" data-answer="1">
+  <div class="qq">Under GRPO's per-sequence length normalisation, why do incorrect responses tend to get longer during training?</div>
+  <div class="opts">
+    <div class="opt">Long responses get higher rewards</div>
+    <div class="opt">A wrong answer's negative advantage is spread over its own length, so each token of a long wrong answer is penalised less than each token of a short one</div>
+    <div class="opt">The KL penalty favours long sequences</div>
+    <div class="opt">The std normalisation inflates long responses</div>
+  </div>
+  <div class="expl"><b>Per-token weight Â/|o|.</b> In the worked example the 1,000-token wrong answer's tokens are
+  penalised 5× less than the 200-token one's. Dividing by a constant (Dr. GRPO) or by the group's total tokens (DAPO)
+  removes the incentive.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">Why does GSPO make RL on MoE models more stable than GRPO?</div>
+  <div class="opts">
+    <div class="opt">It disables the router during RL</div>
+    <div class="opt">It uses a larger clip range</div>
+    <div class="opt">It needs no reference model</div>
+    <div class="opt">Its importance ratio is the geometric mean over the whole sequence, so a few tokens whose expert routing flipped between the old and new policy barely move it; GRPO's per-token ratios jump on those tokens</div>
+  </div>
+  <div class="expl"><b>Discrete routing makes token ratios noisy.</b> Top-k expert selection (Ch 20) can change with a
+  small update, and a changed route changes that token's probability a lot. With per-token ratios GRPO needed Routing
+  Replay; a sequence-level ratio averages the jumps away.</div>
+</div>
+<div class="qitem" data-answer="0">
+  <div class="qq">In a multi-turn agent trajectory, why must tool-output tokens be masked out of the policy loss?</div>
+  <div class="opts">
+    <div class="opt">They were produced by the environment, not chosen by the policy, so they are not actions; training on them teaches the model to predict tool outputs and drowns the real gradient</div>
+    <div class="opt">They are too long to fit in memory</div>
+    <div class="opt">The reward model cannot score them</div>
+    <div class="opt">They are always identical across trajectories</div>
+  </div>
+  <div class="expl"><b>Gradient only for actions.</b> The policy gradient is Σ over the policy's decisions. In the
+  example 400 of 500 tokens are system, user or tool text; leaving them unmasked would make most of the "policy" update
+  about text the policy never wrote.</div>
+</div>
+<div class="qitem" data-answer="2">
+  <div class="qq">Monte Carlo step labels give a solution's steps advantages +0.05, −0.125, −0.5, −0.125. What does an outcome reward give them?</div>
+  <div class="opts">
+    <div class="opt">The same four numbers</div>
+    <div class="opt">Zero for all steps</div>
+    <div class="opt">One shared advantage for every step (here 0 − 0.70 = −0.70), so the good first step is blamed as much as the bad third</div>
+    <div class="opt">−0.5 for step 3 only</div>
+  </div>
+  <div class="expl"><b>Outcome rewards cannot localise.</b> That is the case for process rewards. The case against
+  is cost, noisy step labels, and the fact that a learned PRM can be hacked; outcome rewards from verifiers are exact.</div>
+</div>
+</div>
+
+<h2>25.8 · How to choose</h2>
 
 <div class="tw">
 <table>
@@ -277,7 +554,9 @@ simply wrong.</li>
 <tr><td>Paired preferences, want simple and reliable</td><td><b>DPO</b> (or SimPO if length bias bites)</td></tr>
 <tr><td>Thumbs up/down from production users</td><td><b>KTO</b></td></tr>
 <tr><td>Tight memory, want one stage</td><td><b>ORPO</b></td></tr>
-<tr><td>Maths / code / anything checkable</td><td><b>GRPO + RLVR</b></td></tr>
+<tr><td>Maths / code / anything checkable</td><td><b>GRPO + RLVR</b>, with DAPO's dynamic sampling and Dr. GRPO's constant normaliser</td></tr>
+<tr><td>RL on a Mixture-of-Experts model</td><td><b>GSPO</b> (sequence-level ratios), or GRPO with Routing Replay</td></tr>
+<tr><td>Agents, tool use, long horizons</td><td><b>Trajectory-level GRPO</b> against a sandboxed environment, tool tokens masked, held-out graders</td></tr>
 <tr><td>Maximum quality, have an RL team</td><td><b>PPO</b>, or GRPO/DAPO with a reward model</td></tr>
 <tr><td>General assistant, production scale</td><td><b>SFT → DPO → RLVR on verifiable subsets</b> — the current standard stack</td></tr>
 </tbody>
@@ -288,12 +567,12 @@ simply wrong.</li>
 <span class="t">The 2026 post-training stack</span>
 <p style="margin-bottom:0">RLHF was not replaced; it was <b>modularised</b>. The consensus pipeline is now:
 <b>SFT</b> for instruction following and format → <b>preference optimisation</b> (DPO/SimPO/KTO) for tone,
-helpfulness and safety → <b>RL with verifiable rewards</b> (GRPO/DAPO) for reasoning and tool use. Different
+helpfulness and safety → <b>RL with verifiable rewards</b> (GRPO/DAPO/GSPO) for reasoning, then agentic RL against environments for tool use. Different
 capabilities are trained by different mechanisms, and the verifiable-reward stage is where most of the
 capability gains of the last two years have come from.</p>
 </div>
 
-<h2>25.5 · Exercises</h2>
+<h2>25.9 · Exercises</h2>
 
 <div class="exercise">
 <div class="eh"><span class="n">25.1</span><span class="ti">Implement four losses, compare on one dataset</span><span class="lvl">code</span></div>
@@ -342,13 +621,76 @@ testing, penalising hardcoded literals — are the same ones you'd use against a
 </div></details>
 </div></div>
 
+<div class="exercise">
+<div class="eh"><span class="n">25.4</span><span class="ti">Predict, then measure: does GRPO's normalisation lengthen wrong answers?</span><span class="lvl">exploration</span></div>
+<div class="eb">
+<p>Using your GRPO setup from 25.2, run three otherwise identical trainings that differ only in the loss reduction:
+per-sequence mean (GRPO), token-level over the group (DAPO), and a constant <code>G · MAX_LEN</code> with no std
+(Dr. GRPO). <b>Before running</b>, predict which run's <i>incorrect</i> responses grow longest.</p>
+<ol>
+<li>Plot mean length of correct and of incorrect responses separately, per run.</li>
+<li>Compare final accuracy. Did the length difference buy anything?</li>
+</ol>
+<details class="reveal"><summary>What to expect</summary><div>
+<p style="margin-bottom:0">The per-sequence-mean run's incorrect responses should lengthen fastest, the constant
+normaliser's least; accuracy is often similar. Plot correct and incorrect separately: the average over both hides the
+effect, because correct responses may shorten while incorrect ones lengthen. Use <code>tfs.rl.token_weights</code>
+to check your reductions give the per-token weights of the worked example before you train.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">25.5</span><span class="ti">Make a routing flip and watch the ratios</span><span class="lvl">code</span></div>
+<div class="eb">
+<p>Take a top-2 MoE layer from <code>tfs.moe</code> inside a small model. Sample a 64-token sequence, record its
+token log-probs, then apply one small optimizer step.</p>
+<ol>
+<li>Count how many tokens changed one of their two experts.</li>
+<li>Plot the token ratios ρ<sub>t</sub> for tokens whose routing flipped versus those that did not.</li>
+<li>Compute the GSPO ratio s with <code>tfs.rl.gspo_ratio</code>, and the fraction of tokens a per-token clip at
+ε = 0.2 would cut.</li>
+</ol>
+<details class="reveal"><summary>What you'll see</summary><div>
+<p style="margin-bottom:0">Most tokens keep their experts and have ratios near 1; the flipped ones are the outliers.
+s stays close to 1 because it averages log-ratios over all 64 tokens. That is section 25.5's argument, measured on a
+model you can inspect, and the reason Routing Replay exists for token-level methods.</p>
+</div></details>
+</div></div>
+
+<div class="exercise">
+<div class="eh"><span class="n">25.6</span><span class="ti">Cost one step of agentic RL</span><span class="lvl">thinking</span></div>
+<div class="eb">
+<p>An agentic RL step uses 512 tasks with G = 8 trajectories each. A trajectory averages 30,000 tokens, of which 20%
+are the policy's own (the rest are tool outputs it reads). Generation runs at 20,000 tokens/s in aggregate.</p>
+<ol>
+<li>Total tokens processed per step, and policy tokens that receive gradient.</li>
+<li>Generation time per step, ignoring environment latency.</li>
+<li>Environment calls take 2 s each, 15 per trajectory, run 256 at a time. Does generation or the environment
+dominate?</li>
+</ol>
+<details class="reveal"><summary>Answers</summary><div>
+<pre><code class="nohl">1. 512 × 8 × 30,000 = 122,880,000 tokens;  × 0.2 = 24,576,000 get gradient
+2. 122,880,000 / 20,000 = 6,144 s ≈ 1.7 h
+   (tool outputs are prefilled, not decoded, so this overstates generation; it is an upper bound)
+3. 4,096 trajectories × 15 calls × 2 s / 256 parallel = 480 s
+   generation dominates here, but only because the environment is parallel; serialise it and it is 34 h</code></pre>
+<p style="margin-bottom:0">This is why agentic RL runs asynchronously, with many sandboxes per GPU and samples
+consumed slightly off-policy: the slowest trajectory in a batch otherwise sets the step time, just as the slowest
+expert does in Chapter 20.</p>
+</div></details>
+</div></div>
+
 <h2>Sources &amp; further reading</h2>
 <ul class="tiny">
 <li><a href="https://arxiv.org/abs/2402.03300">Shao et al. 2024 — DeepSeekMath (GRPO)</a></li>
 <li><a href="https://arxiv.org/abs/2501.12948">DeepSeek-AI 2025 — DeepSeek-R1</a> — read §2.2 for the R1-Zero result.</li>
 <li><a href="https://arxiv.org/abs/2503.14476">Yu et al. 2025 — DAPO</a></li>
 <li><a href="https://arxiv.org/abs/2310.12036">Azar et al. 2023 — IPO</a> · <a href="https://arxiv.org/abs/2402.01306">Ethayarajh et al. 2024 — KTO</a> · <a href="https://arxiv.org/abs/2403.07691">Hong et al. 2024 — ORPO</a> · <a href="https://arxiv.org/abs/2405.14734">Meng et al. 2024 — SimPO</a></li>
-<li><a href="https://www.turingpost.com/p/reasoning-rl-in-2026">Turing Post — Reasoning RL in 2026</a></li>
+<li><a href="https://arxiv.org/abs/2503.20783">Liu et al. 2025 — Understanding R1-Zero-Like Training: A Critical Perspective</a> (Dr. GRPO)</li>
+<li><a href="https://arxiv.org/abs/2507.18071">Zheng et al. 2025 — Group Sequence Policy Optimization</a> (GSPO, Routing Replay, Qwen3)</li>
+<li><a href="https://arxiv.org/abs/2305.20050">Lightman et al. 2023 — Let's Verify Step by Step</a> (process reward models, PRM800K) · <a href="https://arxiv.org/abs/2312.08935">Wang et al. 2023 — Math-Shepherd</a></li>
+<li><a href="https://arxiv.org/abs/2502.18449">Wei et al. 2025 — SWE-RL</a> · <a href="https://arxiv.org/abs/2504.20073">Wang et al. 2025 — RAGEN</a> (multi-turn agent RL, the Echo Trap)</li>
+<li>Reference code: <code>tfs/rl.py</code> · tests: <code>tests/test_posttraining.py</code></li>
 <li>Companion notebook: not written yet (planned as <code class="planned">notebooks/25_grpo.ipynb</code>)</li>
 </ul>
 

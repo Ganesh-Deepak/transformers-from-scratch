@@ -45,9 +45,9 @@ or removed.
 ## What's here
 
 ```
-course/            27 interactive chapters. Open with serve.py. This is the course.
+course/            28 interactive chapters. Open with serve.py. This is the course.
   index.html         roadmap, progress tracking, the dimension cheat sheet
-  ch00..ch26         the chapters (ch00: number formats, from first principles)
+  ch00..ch27         the chapters (ch00: number formats, from first principles)
   assets/            style.css, course.js (quiz engine), viz.js (13 widgets),
                      numfmt.js (every number format, verified against PyTorch)
                      chapters.js — the outline; chapter order lives here and nowhere else
@@ -57,9 +57,13 @@ tfs/               Reference implementation — working, tested code
   tokenizer.py       byte-level BPE (pure Python, no deps)
   model.py           RMSNorm + RoPE + GQA + SwiGLU + KV cache
   train.py           full training loop; `python -m tfs.train` trains a real model
-  dpo.py             DPO, SimPO, sequence log-probs
+  dpo.py             DPO, SimPO, sequence log-probs, online vs offline DPO
+  lora.py            LoRA / rsLoRA / DoRA, merge, multi-LoRA, fine-tuning memory arithmetic
+  rl.py              GAE, per-token KL rewards, Dr. GRPO, GSPO, process rewards, agent masks
+  evals.py           pass@k, bootstrap and power, contamination, judge debiasing, kappa
 tests/
   test_tfs.py        31 tests — every one checks a claim the course makes
+  test_posttraining.py  37 tests for Chapters 23-27 (LoRA, RL, evaluation)
   run_notebooks.py   executes all notebook code cells as a smoke test
 data/              downloaded corpus + trained tokenizers (created on first run)
 ```
@@ -79,10 +83,10 @@ data/              downloaded corpus + trained tokenizers (created on first run)
 | **III · The block and the model** | 8–12 | The block, whole architectures, end-to-end shape trace, **every gradient derived by hand**, training, then **what a float actually is** |
 | **IV · Making it fast** | 13–18 | Sampling, **the GPU and the roofline**, **KV cache & the memory wall**, MQA/GQA/**MLA**, **FlashAttention**, serving |
 | **V · Making it big** | 19–22 | **Distributed training (DP/TP/PP/ZeRO)**, MoE, scaling laws, long context, the 2026 frontier |
-| **VI · Making it useful** | 23–25 | SFT/RLHF/PPO, **DPO derived line by line**, GRPO & RLVR |
-| **VII · Capstone** | 26 | Build the whole thing: RMSNorm+RoPE+GQA+SwiGLU+cache, trained, DPO-aligned |
+| **VI · Making it useful** | 23–26 | SFT, **LoRA**, RLHF/PPO with GAE, **DPO derived line by line**, GRPO & RLVR, **evaluating LLMs** |
+| **VII · Capstone** | 27 | Build the whole thing: RMSNorm+RoPE+GQA+SwiGLU+cache, trained, DPO-aligned, LoRA-tuned, evaluated |
 
-~37 hours of work. 100 quiz questions, 103 exercise and practice sets, 13 interactive widgets.
+~41 hours of work. 137 quiz questions, 123 exercise and practice sets, 13 interactive widgets.
 
 ### Four chapters that are usually missing
 

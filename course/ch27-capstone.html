@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch 26 — Capstone: Build a Modern LLM End to End</title>
+<title>Ch 27 — Capstone: Build a Modern LLM End to End</title>
 <meta name="color-scheme" content="light dark">
 <script>(function(){try{var t=localStorage.getItem("tfs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem("tfs-side")==="collapsed"&&matchMedia("(min-width:82.001rem)").matches)document.documentElement.classList.add("pre-collapsed");}catch(e){}})();</script>
 <link rel="stylesheet" href="assets/style.css?v=27">
@@ -11,14 +11,14 @@
 <body>
 <main>
 
-<h1>26 · Capstone: Build a Modern LLM End to End</h1>
+<h1>27 · Capstone: Build a Modern LLM End to End</h1>
 <p class="lead">
 Everything, assembled. You will build a small but architecturally current language model — RMSNorm, RoPE,
-GQA, SwiGLU, KV cache — train it, make it generate efficiently, then align it with DPO. On a laptop CPU,
-in a few hours.
+GQA, SwiGLU, KV cache — train it, make it generate efficiently, align it with DPO, fine-tune it with LoRA, and
+evaluate it with error bars you can defend. On a laptop CPU, in a few hours.
 </p>
 
-<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; the architecture<br><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; training<br><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; the cache<br><a href="ch16-gqa-mla.html">Ch&nbsp;16</a> &mdash; GQA<br><a href="ch24-dpo.html">Ch&nbsp;24</a> &mdash; DPO<div class="sep"></div><span class="k">Why this chapter</span>Everything, assembled. If you build this, you have built the thing.</div>
+<div class="mn orient"><span class="k">Builds on</span><a href="ch09-architectures.html">Ch&nbsp;09</a> &mdash; the architecture<br><a href="ch11-training.html">Ch&nbsp;11</a> &mdash; training<br><a href="ch15-kvcache.html">Ch&nbsp;15</a> &mdash; the cache<br><a href="ch16-gqa-mla.html">Ch&nbsp;16</a> &mdash; GQA<br><a href="ch23-sft-rlhf.html">Ch&nbsp;23</a> &mdash; SFT and LoRA<br><a href="ch24-dpo.html">Ch&nbsp;24</a> &mdash; DPO<br><a href="ch26-evaluation.html">Ch&nbsp;26</a> &mdash; evaluation<div class="sep"></div><span class="k">Why this chapter</span>Everything, assembled. If you build this, you have built the thing.</div>
 <div class="box intuition">
 <span class="t">Why this matters more than reading another paper</span>
 <p style="margin-bottom:0">You can follow every chapter of this course and still not be able to build one.
@@ -58,6 +58,8 @@ class Config:
 <tr><td>Schedule</td><td>linear warmup → cosine decay to 10%</td><td>Ch 11</td></tr>
 <tr><td>Inference</td><td>KV cache + top-p sampling</td><td>Ch 13, 15</td></tr>
 <tr><td>Alignment</td><td>SFT → DPO</td><td>Ch 23, 24</td></tr>
+<tr><td>Parameter-efficient tuning</td><td>LoRA r = 8 on all projections, merged</td><td>Ch 23</td></tr>
+<tr><td>Evaluation</td><td>held-out perplexity + a programmatic task benchmark, paired bootstrap</td><td>Ch 26</td></tr>
 </tbody>
 </table>
 </div>
@@ -131,7 +133,7 @@ grad clip 1.0, eval every 250 steps.
 <p><b>Deliverables:</b> train/val loss curves, final val perplexity, 500 tokens of generated text, and the
 loss-vs-<code>ln(V)</code> check at step 0.</p>
 <details class="reveal"><summary>Target numbers</summary><div>
-<p style="margin-bottom:0">On TinyStories with 15M parameters, expect val loss around <b>1.6–2.2</b>
+<p style="margin-bottom:0">On TinyStories with 12.6M parameters, expect val loss around <b>1.6–2.2</b>
 (perplexity 5–9) and genuinely coherent short stories with consistent characters — TinyStories is designed
 so small models can actually succeed. On Shakespeare expect loss ~1.4–1.8 with convincing form and no
 meaning. Either is a pass; TinyStories is much more satisfying.</p>
@@ -183,6 +185,87 @@ is the most valuable part of this milestone.</b></p>
 </div></details>
 </div></div>
 
+<h2>Milestone 6 — LoRA</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">M6</span><span class="ti">Fine-tune with LoRA, then merge</span><span class="lvl">~1 hr</span></div>
+<div class="eb">
+<p>Repeat the SFT step of M5, this time freezing the pretrained model and training LoRA adapters (Ch 23.3) on
+all seven projections (<code>q_proj k_proj v_proj o_proj gate up down</code>) at r = 8, α = 16. Write your own
+<code>LoRALinear</code>; check it against <code>tfs/lora.py</code> afterwards.</p>
+<p><b>Tests that must pass:</b></p>
+<pre><code># 1. Your hand count matches the model                               [Ch 23]
+assert trainable_params(model) == 325_632            # r·(in+out) summed: 2.59% of 12,587,904
+# (q and v only would be 61,440 = 0.49%)
+
+# 2. At step 0 the wrapped model IS the pretrained model
+assert torch.equal(lora_model(ids)[0], base_model(ids)[0])
+
+# 3. After one backward pass: only B has a gradient, the base has none
+assert all(m.A.grad.abs().max() == 0 and m.B.grad.abs().max() > 0 for m in lora_modules(model))
+assert all(p.grad is None for n, p in model.named_parameters() if not p.requires_grad)
+
+# 4. After training, merging changes nothing and unmerging restores the weights
+y = model(ids)[0]; merge_all(model)
+assert torch.allclose(model(ids)[0], y, atol=1e-5)
+</code></pre>
+<p><b>Deliverables:</b></p>
+<ol>
+<li>Validation loss curves for full SFT and LoRA SFT on the same data and steps, on one plot.</li>
+<li>A rank sweep r ∈ {2, 8, 32} with α/r and with rsLoRA's α/√r (exercise 23.4).</li>
+<li>Run M5's DPO on top of the LoRA-SFT model, with the policy as a second adapter and the reference as the base
+with adapters off. Does the reward margin curve match the full-model run?</li>
+</ol>
+<details class="reveal"><summary>What success looks like</summary><div>
+<p style="margin-bottom:0">At this scale the memory saving is irrelevant (the whole model's optimizer state is
+201 MB; the adapters' is 5.2 MB), so the point is the mechanics. For a stylistic preference axis, LoRA should
+come close to full SFT; if it lags badly, check the learning rate first (LoRA usually wants a larger one) and
+then the scaling. Doing the DPO with two adapters on one base is how real RLHF systems fit policy, reference and
+value model into one GPU's memory.</p>
+</div></details>
+</div></div>
+
+<h2>Milestone 7 — Evaluation</h2>
+
+<div class="exercise">
+<div class="eh"><span class="n">M7</span><span class="ti">Measure what you built, with error bars</span><span class="lvl">~1-2 hrs</span></div>
+<div class="eb">
+<p>Evaluate every checkpoint you have (pretrained, SFT, DPO, LoRA-SFT) on two things, using Chapter 26.</p>
+<p><b>(a) Held-out perplexity.</b> On a validation split no checkpoint trained on, report perplexity and
+bits per byte (Ch 11), so the number survives a tokenizer change. Report a bootstrap interval over
+documents, not tokens: tokens within a document are not independent.</p>
+<p><b>(b) A tiny task benchmark you write.</b> 300 held-out prompts scored by a <i>program</i> along your M5
+preference axis (for example "the story ends with a happy sentence" by keyword rule, or "the answer is under 40
+words"), plus, if you did the GRPO stretch goal, 300 two-digit additions scored by exact match. Sample n = 10
+completions per prompt at temperature 0.8.</p>
+<p><b>Tests that must pass:</b></p>
+<pre><code># 1. The benchmark is not in the training data                        [Ch 26.3]
+assert max(ngram_overlap(item, train_ngrams, n=13) for item in benchmark) == 0.0
+
+# 2. Your scorer agrees with you: hand-check 30 scored outputs
+assert scorer_errors_on_30_hand_checked &lt;= 1
+
+# 3. Your pass@k matches the unbiased estimator                         [Ch 26.6]
+assert abs(my_pass_at_k(10, 3, 5) - (1 - math.comb(7, 5) / math.comb(10, 5))) &lt; 1e-12
+</code></pre>
+<p><b>Deliverables:</b></p>
+<ol>
+<li>One table: each checkpoint's perplexity, task pass@1 (averaged over the 10 samples) and pass@5, each with a 95%
+interval.</li>
+<li>The <b>paired</b> bootstrap interval for DPO − SFT on the task (26.5). Is it significant? Then the unpaired one
+from the same data, and the ratio of their widths.</li>
+<li>Using the measured disagreement rate between SFT and DPO, how many prompts would you need to detect a 2-point
+change (<code>n_items_paired</code>)?</li>
+</ol>
+<details class="reveal"><summary>What success looks like</summary><div>
+<p style="margin-bottom:0">Perplexity typically gets slightly <i>worse</i> after SFT and DPO (the model moved away
+from the pretraining distribution on purpose) while the task score improves; seeing both is the point of measuring
+both. With 300 prompts expect intervals of several points, and the paired interval to be clearly narrower than the
+unpaired one. If DPO's gain is real it usually survives the paired test; if it only appears in a judge model's win
+rate and not in your programmatic scorer, Chapter 26's length bias is the first suspect.</p>
+</div></details>
+</div></div>
+
 <h2>Stretch goals</h2>
 
 <div class="tw">
@@ -204,7 +287,7 @@ is the most valuable part of this milestone.</b></p>
 
 <p>You have understood this course if you can answer these without looking anything up:</p>
 
-<div class="quiz" data-title="Final check — 6 questions">
+<div class="quiz" data-title="Final check — 8 questions">
 <div class="qitem" data-answer="2">
   <div class="qq">Why is <span class="math">√d<sub>k</sub></span> the right scaling factor?</div>
   <div class="opts">
@@ -265,6 +348,27 @@ is the most valuable part of this milestone.</b></p>
   </div>
   <div class="expl">Ch 25. Trade a learned critic for G× generation.</div>
 </div>
+
+<div class="qitem" data-answer="0">
+  <div class="qq">Why is LoRA's B matrix initialised to zero and A to random values?</div>
+  <div class="opts">
+    <div class="opt">B = 0 makes the update BA zero, so training starts exactly at the pretrained model; A random keeps B's gradient, s·g(Ax)<sup>T</sup>, nonzero</div>
+    <div class="opt">To save memory</div>
+    <div class="opt">So that A can be quantised</div>
+    <div class="opt">Either can be zero; it makes no difference</div>
+  </div>
+  <div class="expl">Ch 23. Each factor's gradient is proportional to the other; both zero is a saddle that never moves.</div>
+</div>
+<div class="qitem" data-answer="3">
+  <div class="qq">Your DPO model beats your SFT model by 3 points on a 300-prompt task. How should you test whether that is real?</div>
+  <div class="opts">
+    <div class="opt">Check whether the two models' 95% intervals overlap</div>
+    <div class="opt">Run the eval again with a different seed</div>
+    <div class="opt">Use a larger judge model</div>
+    <div class="opt">A paired bootstrap over prompts on the per-prompt score differences, since both models answered the same prompts</div>
+  </div>
+  <div class="expl">Ch 26. Pairing cancels the difficulty noise both models share; overlapping separate intervals is the unpaired test and misses real gains.</div>
+</div>
 </div>
 
 <h2>Where to go next</h2>
@@ -293,6 +397,6 @@ idea. If you built this, you have built the thing. Everything else is more of it
 <script src="assets/course.js?v=27"></script>
 <script src="assets/viz.js?v=27"></script>
 <script src="assets/axes.js?v=27"></script>
-<script>initChapter("26");</script>
+<script>initChapter("27");</script>
 </body>
 </html>
